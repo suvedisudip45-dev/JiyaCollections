@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import { prisma } from "../config/db.js";
 import { authenticateAccount, logAuthEvent } from "../services/authService.js";
 import { createOtpChallenge, verifyOtpChallenge } from "../services/otpService.js";

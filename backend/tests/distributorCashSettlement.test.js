@@ -9,8 +9,12 @@ import {
   submitDistributorRemittance,
 } from "../services/distributorCashSettlementService.js";
 
-const createSubmitHarness = (receivableAmount = "1000.00") => {
-  const state = { batches: [], events: [], audits: [] };
+const createSubmitHarness = (
+  receivableAmount = "1000.00",
+  collectedAmount = receivableAmount,
+  collectionOrderId = "order-1",
+) => {
+  const state = { batches: [], events: [], audits: [], collectedAmount };
   const tx = {
     distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
     accountingParty: {
@@ -18,10 +22,20 @@ const createSubmitHarness = (receivableAmount = "1000.00") => {
     },
     accountingDocument: {
       aggregate: async () => ({ _sum: { remainingAmount: new Prisma.Decimal(receivableAmount) } }),
+      findMany: async () => [{ id: "document-1", sourceId: "order-1" }],
     },
     distributorRemittanceBatch: {
       findUnique: async ({ where }) => state.batches.find((batch) => batch.idempotencyKey === where.idempotencyKey) || null,
-      aggregate: async () => ({ _sum: { amount: new Prisma.Decimal(0) } }),
+      aggregate: async ({ where }) => ({
+        _sum: {
+          amount: new Prisma.Decimal(state.batches
+            .filter((batch) => batch.distributorId === where.distributorId)
+            .filter((batch) => where.status.in
+              ? where.status.in.includes(batch.status)
+              : batch.status === where.status)
+            .reduce((sum, batch) => sum.plus(batch.amount), new Prisma.Decimal(0))),
+        },
+      }),
       create: async ({ data }) => {
         const batch = { id: `batch-${state.batches.length + 1}`, ...data };
         state.batches.push(batch);
@@ -29,10 +43,25 @@ const createSubmitHarness = (receivableAmount = "1000.00") => {
       },
     },
     distributorCashEvent: {
+      aggregate: async ({ where }) => {
+        const sourceIds = where.OR?.flatMap((condition) =>
+          condition.orderId?.in || condition.accountingDocumentId?.in || []
+        );
+        return {
+          _sum: {
+            amount: new Prisma.Decimal(!sourceIds || sourceIds.includes(collectionOrderId)
+              ? state.collectedAmount
+              : 0),
+          },
+        };
+      },
       create: async ({ data }) => {
         state.events.push(data);
         return data;
       },
+    },
+    distributorBalanceSettlement: {
+      aggregate: async () => ({ _sum: { cashAmount: new Prisma.Decimal(0) } }),
     },
     systemAuditOutbox: {
       create: async ({ data }) => {
@@ -70,6 +99,7 @@ test("distributor remittance submission is scoped, idempotent, and cannot exceed
     reference: "BANK-REF-001",
     evidenceUrl: "https://evidence.example/remittance-001",
     idempotencyKey: "remit-request-001",
+    recordedByAccountId: "account-dist-1",
     client: harness.client,
   });
   assert.equal(replay.isReplay, true);
@@ -80,8 +110,55 @@ test("distributor remittance submission is scoped, idempotent, and cannot exceed
     reference: "BANK-REF-002",
     evidenceUrl: "https://evidence.example/remittance-002",
     idempotencyKey: "remit-request-002",
-    client: createSubmitHarness("800.00").client,
+    recordedByAccountId: "account-dist-1",
+    client: createSubmitHarness("800.00", "900.00").client,
   }), (error) => error.code === "REMITTANCE_EXCEEDS_RECEIVABLE");
+});
+
+test("distributor remittance cannot exceed verified unremitted collections", async () => {
+  const noCollection = createSubmitHarness("800.00", "0.00");
+  await assert.rejects(() => submitDistributorRemittance({
+    distributorId: "dist-1",
+    amount: "50.00",
+    reference: "BANK-REF-NONE",
+    evidenceUrl: "https://evidence.example/no-collection",
+    idempotencyKey: "remit-without-collection",
+    recordedByAccountId: "account-dist-1",
+    client: noCollection.client,
+  }), (error) => error.code === "REMITTANCE_EXCEEDS_COLLECTED_FUNDS");
+
+  const partialCollection = createSubmitHarness("800.00", "30.00");
+  const partial = await submitDistributorRemittance({
+    distributorId: "dist-1",
+    amount: "20.00",
+    reference: "BANK-REF-PARTIAL",
+    evidenceUrl: "https://evidence.example/partial-collection",
+    idempotencyKey: "remit-partial-collection",
+    recordedByAccountId: "account-dist-1",
+    client: partialCollection.client,
+  });
+  assert.equal(partial.isReplay, false);
+  assert.equal(partialCollection.state.batches[0].amount.toFixed(2), "20.00");
+
+  await assert.rejects(() => submitDistributorRemittance({
+    distributorId: "dist-1",
+    amount: "31.00",
+    reference: "BANK-REF-OVER",
+    evidenceUrl: "https://evidence.example/over-collection",
+    idempotencyKey: "remit-over-collection",
+    recordedByAccountId: "account-dist-1",
+    client: createSubmitHarness("800.00", "30.00").client,
+  }), (error) => error.code === "REMITTANCE_EXCEEDS_COLLECTED_FUNDS");
+
+  await assert.rejects(() => submitDistributorRemittance({
+    distributorId: "dist-1",
+    amount: "20.00",
+    reference: "BANK-REF-UNLINKED",
+    evidenceUrl: "https://evidence.example/unlinked-collection",
+    idempotencyKey: "remit-unlinked-collection",
+    recordedByAccountId: "account-dist-1",
+    client: createSubmitHarness("800.00", "30.00", "unrelated-order").client,
+  }), (error) => error.code === "REMITTANCE_EXCEEDS_COLLECTED_FUNDS");
 });
 
 test("distributor cash position reports COD receivable and refund payable separately", async () => {
@@ -97,7 +174,15 @@ test("distributor cash position reports COD receivable and refund payable separa
       }),
     },
     distributorRemittanceBatch: {
-      aggregate: async () => ({ _sum: { amount: new Prisma.Decimal("100.00") } }),
+      aggregate: async ({ where }) => ({
+        _sum: { amount: new Prisma.Decimal(where.status === "VERIFIED" ? "0.00" : "100.00") },
+      }),
+    },
+    distributorCashEvent: {
+      aggregate: async () => ({ _sum: { amount: new Prisma.Decimal("500.00") } }),
+    },
+    distributorBalanceSettlement: {
+      aggregate: async () => ({ _sum: { cashAmount: new Prisma.Decimal("25.00") } }),
     },
   };
   const position = await getDistributorCashPosition({ distributorId: "dist-1", client });
@@ -105,7 +190,11 @@ test("distributor cash position reports COD receivable and refund payable separa
     outstandingReceivable: "650.00",
     pendingRemittance: "100.00",
     refundPayable: "125.25",
-    availableToRemit: "550.00",
+    verifiedCustomerCollections: "500.00",
+    remittedOrPending: "125.00",
+    companyReceiptRecorded: "25.00",
+    cashHeldByDistributor: "375.00",
+    availableToRemit: "375.00",
     availableToOffset: "125.25",
   });
 });

@@ -1,7 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { getManufacturerSettlementSummary } from "../services/manufacturerSettlementService.js";
-import { applyManufacturerCreditToBill } from "../services/supplierCreditApplicationService.js";
+import { serializeAccountingDecimal } from "../services/accountingDecimal.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const sendError = (res, error, action) => {
@@ -136,8 +137,8 @@ export const getAdminManufacturerFinance = async (req, res) => {
         logisticsOutstanding: summary.logisticsOutstanding,
         supplierCreditOutstanding: summary.supplierCreditOutstanding,
         receivables: {
-          total: Number(receivableTotals?._sum.originalAmount || 0),
-          outstanding: Number(receivableTotals?._sum.remainingAmount || 0),
+          total: serializeAccountingDecimal(receivableTotals?._sum.originalAmount ?? "0"),
+          outstanding: serializeAccountingDecimal(receivableTotals?._sum.remainingAmount ?? "0"),
           documents: Number(receivableTotals?._count._all || 0),
           source: "ACCOUNTING_DOCUMENTS",
         },
@@ -231,17 +232,34 @@ export const getAdminManufacturerCreditApplications = async (req, res) => {
 
 export const postAdminManufacturerCreditApplication = async (req, res) => {
   try {
-    const idempotencyKey = req.headers["idempotency-key"] || req.body?.idempotencyKey;
-    const result = await applyManufacturerCreditToBill({
-      manufacturerId: req.params.id,
-      creditDocumentId: req.params.creditDocumentId,
-      billDocumentId: req.body?.billDocumentId,
-      amount: req.body?.amount,
-      idempotencyKey,
-      notes: req.body?.notes,
-      appliedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    const result = await requestAccountingActionApproval({
+      actionType: "MANUFACTURER_CREDIT_APPLICATION",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        manufacturerId: req.params.id,
+        creditDocumentId: req.params.creditDocumentId,
+        billDocumentId: req.body?.billDocumentId,
+        amount: req.body?.amount,
+        reason: req.body?.notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.get?.("user-agent") || null,
+        correlationId: req.correlationId || null,
+      },
     });
-    return res.status(result.isReplay ? 200 : 201).json(result);
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This manufacturer credit application approval request already exists."
+        : "Manufacturer credit application submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     return res.status(error.statusCode || 500).json({
       success: false,

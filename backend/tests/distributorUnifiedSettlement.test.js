@@ -34,10 +34,14 @@ const createSettlementHarness = ({
   pendingRemittance = "0.00",
   pendingRequests = 0,
   legacyLogisticsPayables = [],
+  verifiedCollections = "1000.00",
+  priorCompanyCollections = "0.00",
+  receivableSourceType = "DISTRIBUTOR_COD_SALE",
+  collectionOrderId = "source-ar-1",
 } = {}) => {
   const state = {
     documents: [
-      ...(Number(receivable) > 0 ? [makeDocument("ar-1", "RECEIVABLE", receivable, "DISTRIBUTOR_COD_SALE")] : []),
+      ...(Number(receivable) > 0 ? [makeDocument("ar-1", "RECEIVABLE", receivable, receivableSourceType)] : []),
       ...(Number(payable) > 0 ? [makeDocument("ap-1", "PAYABLE", payable, "DISTRIBUTOR_SERVICE_EARNING")] : []),
     ],
     batches: [],
@@ -45,6 +49,11 @@ const createSettlementHarness = ({
     journals: [],
     cashTransactions: [],
     cashEvents: [],
+    collectionEvents: [{
+      orderId: collectionOrderId,
+      amount: new Prisma.Decimal(verifiedCollections),
+      status: "VERIFIED",
+    }],
     audits: [],
     requestTokens: [],
     legacyLogisticsPayables,
@@ -94,11 +103,21 @@ const createSettlementHarness = ({
       findUnique: async () => ({ id: "party-dist-1" }),
     },
     accountingDocument: {
-      findMany: async ({ where }) => state.documents.filter((document) =>
-        (!where?.partyId || where.partyId === "party-dist-1") &&
-        (!where?.side || where.side.in.includes(document.side)) &&
-        (!where?.status || where.status.in.includes(document.status)),
-      ),
+      findMany: async ({ where }) => state.documents.filter((document) => {
+        const sideMatches = !where?.side || (
+          typeof where.side === "string" ? where.side === document.side : where.side.in.includes(document.side)
+        );
+        const statusMatches = !where?.status || (
+          typeof where.status === "string" ? where.status === document.status : where.status.in.includes(document.status)
+        );
+        const sourceMatches = !where?.sourceType || (
+          typeof where.sourceType === "string"
+            ? where.sourceType === document.sourceType
+            : where.sourceType.in.includes(document.sourceType)
+        );
+        return (!where?.partyId || where.partyId === "party-dist-1") &&
+          sideMatches && statusMatches && sourceMatches;
+      }),
     },
     customerReturn: {
       findMany: async () => state.legacyLogisticsPayables.some((item) => item.referenceType === "RETURN_LOGISTICS_SETTLEMENT")
@@ -124,7 +143,19 @@ const createSettlementHarness = ({
       })),
     },
     distributorBalanceSettlement: {
-      findUnique: async ({ where }) => state.batches.find((batch) => batch.idempotencyKey === where.idempotencyKey) || null,
+      aggregate: async () => ({
+        _sum: {
+          cashAmount: new Prisma.Decimal(priorCompanyCollections).plus(
+            state.batches
+              .filter((batch) => batch.direction === "COMPANY_COLLECTS" && batch.status === "POSTED")
+              .reduce((sum, batch) => sum.plus(batch.cashAmount), new Prisma.Decimal(0)),
+          ),
+        },
+      }),
+      findUnique: async ({ where }) => state.batches.find((batch) =>
+        (where.id && batch.id === where.id) ||
+        (where.idempotencyKey && batch.idempotencyKey === where.idempotencyKey)
+      ) || null,
       create: async ({ data }) => {
         const batch = { id: `settlement-${state.batches.length + 1}`, ...data };
         state.batches.push(batch);
@@ -166,6 +197,21 @@ const createSettlementHarness = ({
       },
     },
     distributorCashEvent: {
+      aggregate: async ({ where }) => {
+        const sourceIds = where.OR?.flatMap((condition) =>
+          condition.orderId?.in || condition.accountingDocumentId?.in || []
+        );
+        const matches = state.collectionEvents.filter((event) =>
+          where.eventType === "CUSTOMER_COLLECTION" &&
+          (!sourceIds || sourceIds.includes(event.orderId) || sourceIds.includes(event.accountingDocumentId)) &&
+          where.status.in.includes(event.status)
+        );
+        return {
+          _sum: {
+            amount: matches.reduce((sum, event) => sum.plus(event.amount), new Prisma.Decimal(0)),
+          },
+        };
+      },
       create: async ({ data }) => {
         state.cashEvents.push(data);
         return data;
@@ -181,7 +227,10 @@ const createSettlementHarness = ({
   const client = {
     distributorSettlementRequestToken: tx.distributorSettlementRequestToken,
     distributorBalanceSettlement: {
-      findUnique: async ({ where }) => state.batches.find((batch) => batch.idempotencyKey === where.idempotencyKey) || null,
+      findUnique: async ({ where }) => state.batches.find((batch) =>
+        (where.id && batch.id === where.id) ||
+        (where.idempotencyKey && batch.idempotencyKey === where.idempotencyKey)
+      ) || null,
     },
     $transaction: async (callback, options) => {
       state.transactionOptions = options;
@@ -409,6 +458,7 @@ test("Admin-issued collection request requires evidence and is posted only after
     setoffConfirmed: true,
     notes: "Second request.",
     idempotencyKey: "request-collection-002",
+    adminAccountId: "admin-1",
     client: harness.client,
   }), (error) => error.code === "ACTIVE_SETTLEMENT_REQUEST");
 
@@ -423,10 +473,26 @@ test("Admin-issued collection request requires evidence and is posted only after
   assert.equal(submitted.request.status, "EVIDENCE_SUBMITTED");
   assert.equal(harness.state.journals.length, 0);
 
+  await assert.rejects(() => reviewDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestId: created.request.id,
+    decision: "VERIFY",
+    actualReceivedAmount: "299.00",
+    financialAccountId: "treasury-1",
+    adminAccountId: "admin-1",
+    client: harness.client,
+    journalPoster: harness.journalPoster,
+    allocationService: harness.allocationService,
+  }), (error) => error.code === "ACTUAL_RECEIPT_AMOUNT_MISMATCH");
+  assert.equal(harness.state.journals.length, 0);
+  assert.equal(harness.state.cashTransactions.length, 0);
+  assert.equal(harness.state.batches.length, 0);
+
   const reviewed = await reviewDistributorSettlementRequestToken({
     distributorId: "dist-1",
     requestId: created.request.id,
     decision: "VERIFY",
+    actualReceivedAmount: "300.00",
     financialAccountId: "treasury-1",
     adminAccountId: "admin-1",
     client: harness.client,
@@ -435,6 +501,104 @@ test("Admin-issued collection request requires evidence and is posted only after
   });
   assert.equal(reviewed.request.status, "POSTED");
   assert.equal(harness.state.journals.length, 1);
+  assert.equal(harness.state.cashTransactions.length, 1);
+
+  const replay = await reviewDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestId: created.request.id,
+    decision: "VERIFY",
+    actualReceivedAmount: "300.00",
+    financialAccountId: "treasury-1",
+    adminAccountId: "admin-1",
+    client: harness.client,
+    journalPoster: harness.journalPoster,
+    allocationService: harness.allocationService,
+  });
+  assert.equal(replay.isReplay, true);
+  assert.equal(harness.state.journals.length, 1);
+  await assert.rejects(() => reviewDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestId: created.request.id,
+    decision: "VERIFY",
+    actualReceivedAmount: "301.00",
+    financialAccountId: "treasury-1",
+    adminAccountId: "admin-1",
+    client: harness.client,
+    journalPoster: harness.journalPoster,
+    allocationService: harness.allocationService,
+  }), (error) => error.code === "IDEMPOTENCY_KEY_REUSED");
+  assert.equal(harness.state.journals.length, 1);
+  assert.equal(harness.state.cashTransactions.length, 1);
+});
+
+test("company collection requests fail closed without verified COD funds or source linkage", async () => {
+  const noCollections = createSettlementHarness({ verifiedCollections: "0.00" });
+  await assert.rejects(() => createDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestedAmount: "300.00",
+    setoffAgreementReference: "AGREEMENT-SET-OFF-01",
+    setoffConfirmed: true,
+    notes: "Request collection.",
+    idempotencyKey: "request-no-collections",
+    adminAccountId: "admin-1",
+    client: noCollections.client,
+  }), (error) => error.code === "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS");
+
+  const unlinkedCollections = createSettlementHarness({
+    collectionOrderId: "unrelated-order",
+  });
+  await assert.rejects(() => createDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestedAmount: "300.00",
+    setoffAgreementReference: "AGREEMENT-SET-OFF-01",
+    setoffConfirmed: true,
+    notes: "Request against an unrelated collection.",
+    idempotencyKey: "request-unlinked-collections",
+    adminAccountId: "admin-1",
+    client: unlinkedCollections.client,
+  }), (error) => error.code === "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS");
+
+  const unsupportedSource = createSettlementHarness({
+    receivableSourceType: "UNSUPPORTED_RECEIVABLE",
+  });
+  await assert.rejects(() => createDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestedAmount: "100.00",
+    setoffAgreementReference: "AGREEMENT-SET-OFF-01",
+    setoffConfirmed: true,
+    notes: "Request collection.",
+    idempotencyKey: "request-unsupported-source",
+    adminAccountId: "admin-1",
+    client: unsupportedSource.client,
+  }), (error) => error.code === "UNSUPPORTED_COLLECTION_SOURCE");
+});
+
+test("direct company cash settlement cannot exceed verified unremitted COD collections", async () => {
+  const noCollections = createSettlementHarness({ verifiedCollections: "0.00" });
+  await assert.rejects(() => post(noCollections), (error) =>
+    error.code === "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS");
+  assert.equal(noCollections.state.journals.length, 0);
+  assert.equal(noCollections.state.cashTransactions.length, 0);
+  assert.equal(noCollections.state.batches.length, 0);
+
+  const alreadyRemitted = createSettlementHarness({
+    verifiedCollections: "500.00",
+    priorCompanyCollections: "300.00",
+  });
+  await assert.rejects(() => post(alreadyRemitted, { cashAmount: "250.00" }), (error) =>
+    error.code === "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS");
+});
+
+test("authoritative distributor settlement amounts reject JavaScript Number inputs", async () => {
+  const harness = createSettlementHarness();
+  await assert.rejects(() => post(harness, { cashAmount: 300 }), (error) => error.code === "INVALID_AMOUNT");
+  await assert.rejects(() => createDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestedAmount: 300,
+    idempotencyKey: "numeric-request",
+    adminAccountId: "admin-1",
+    client: harness.client,
+  }), (error) => error.code === "INVALID_AMOUNT");
 });
 
 test("unified net-balance requests are blocked while a legacy earnings request is active", async () => {
@@ -446,6 +610,7 @@ test("unified net-balance requests are blocked while a legacy earnings request i
     setoffConfirmed: true,
     notes: "Prevent overlapping settlement requests.",
     idempotencyKey: "request-blocked-by-legacy",
+    adminAccountId: "admin-1",
     client: harness.client,
   }), (error) => error.code === "PENDING_SETTLEMENT_REQUEST");
   assert.equal(harness.state.requestTokens.length, 0);

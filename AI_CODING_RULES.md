@@ -42,6 +42,10 @@ Do not assume the frontend is trusted to enforce business rules. The code explic
 
 Financial source records and posted journals are append-only evidence. Correct them through audited reversals or adjustments, not edit/delete operations. Allocate receipts and payouts to the source-party documents they settle, and do not claim a party balance is reconciled when only a legacy table or a subset of source types was checked. VAT changes must be future effective-dated versions; a later rate must never rewrite a posted transaction or approved refund snapshot.
 
+Manufacturer settlement-request money and eligibility use the shared Decimal helpers. Keep request amounts as decimal strings through validation and serialization, and require a stable client idempotency key for `POST /api/manufacturer/finance/settlement-request`; never generate a fresh server key that makes transport retries create distinct requests. A passing mock test does not establish persisted concurrency or payable-to-journal reconciliation.
+
+Generic payable-payout initiation and receivable collection also require stable caller idempotency keys. Do not silently mint a fresh key for a financial retry. Collection request amounts must remain decimal strings through the Admin caller, validation, calculation, and API serialization; use the shared Decimal helper and preserve HALF_EVEN only at approved posting boundaries. The key must be validated before database reads or side effects; changed-payload reuse must conflict, and confirmation/failure of an existing payout retains its existing payout-ID contract.
+
 Corporate income tax estimates must use the shared effective-dated policy service, not a hard-coded rate. Keep rate brackets, context selectors, discounts, and penalties in validated policy data; do not describe estimates as statutory assessments or silently assume a default when no effective policy exists.
 
 ### 1.2 Never infer successful courier creation from optimistic UI state

@@ -1,6 +1,12 @@
 import { prisma } from "../config/db.js";
 import { previewDistributorAllocation } from "./orderAssignmentController.js";
 import { normalizeShippingRouteOverrides, resolveRouteShippingRate } from "../services/shippingRateService.js";
+import {
+  compareDecimals,
+  quantizeCurrencyAmount,
+  serializeAccountingDecimal,
+} from "../services/accountingDecimal.js";
+import { decimalFromStoredFloat } from "../services/checkoutPricingService.js";
 
 // KTM Valley Cluster: Kathmandu, Lalitpur, Bhaktapur are treated as the same district / delivery zone
 export const KTM_VALLEY_DISTRICTS = ["kathmandu", "lalitpur", "bhaktapur"];
@@ -75,10 +81,17 @@ export const resolveDistrictShippingFee = async ({
     });
   }
 
-  const itemsTotal = Math.max(0, Number(subtotal) || 0);
-  const freeMin = Number(config.freeShippingMin || 0);
-  const sameFee = Number(config.sameDistrictFee ?? 50);
-  const diffFee = Number(config.differentDistrictFee ?? 120);
+  const itemsTotalDecimal = decimalFromStoredFloat(subtotal, "Order subtotal");
+  if (itemsTotalDecimal.isNegative()) {
+    throw Object.assign(new TypeError("Order subtotal cannot be negative."), { status: 400, code: "INVALID_ORDER_AMOUNT" });
+  }
+  const freeMinDecimal = decimalFromStoredFloat(config.freeShippingMin || 0, "Free-shipping minimum");
+  const sameFeeDecimal = decimalFromStoredFloat(config.sameDistrictFee ?? 50, "Same-district shipping fee");
+  const diffFeeDecimal = decimalFromStoredFloat(config.differentDistrictFee ?? 120, "Different-district shipping fee");
+  const isFreeShipping = freeMinDecimal.greaterThan(0) && compareDecimals(itemsTotalDecimal, freeMinDecimal) >= 0;
+  const sameFee = Number(sameFeeDecimal.toString());
+  const diffFee = Number(diffFeeDecimal.toString());
+  const freeMin = Number(freeMinDecimal.toString());
   const requestedDeliveryType = String(deliveryType || "Door2Door");
   if (!["Door2Door", "Door2Branch"].includes(requestedDeliveryType)) {
     throw Object.assign(new Error("Choose door-to-door or door-to-hub delivery."), {
@@ -126,21 +139,21 @@ export const resolveDistrictShippingFee = async ({
     );
     const resolvedDeliveryType = deliveryOptionsAvailable ? requestedDeliveryType : "Door2Door";
     const feeForDeliveryType = (type) => {
-      const configuredFee = type === "Door2Branch"
-        ? Number(config.splitShipmentDoorToHubFee ?? config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee)
-        : Number(config.splitShipmentDoorToDoorFee ?? config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee);
-      return freeMin > 0 && itemsTotal >= freeMin ? 0 : configuredFee;
+      const configuredFee = quantizeCurrencyAmount(decimalFromStoredFloat(type === "Door2Branch"
+        ? config.splitShipmentDoorToHubFee ?? config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee
+        : config.splitShipmentDoorToDoorFee ?? config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee, "Split shipment fee"), "NPR");
+      return isFreeShipping || configuredFee.isNegative() ? decimalFromStoredFloat("0") : configuredFee;
     };
     const deliveryOptions = deliveryOptionsAvailable
       ? [
-          { type: "Door2Door", label: "Door to door", fee: feeForDeliveryType("Door2Door") },
-          { type: "Door2Branch", label: "Door to hub", fee: feeForDeliveryType("Door2Branch") },
+          { type: "Door2Door", label: "Door to door", fee: Number(feeForDeliveryType("Door2Door").toString()), feeDecimal: serializeAccountingDecimal(feeForDeliveryType("Door2Door")) },
+          { type: "Door2Branch", label: "Door to hub", fee: Number(feeForDeliveryType("Door2Branch").toString()), feeDecimal: serializeAccountingDecimal(feeForDeliveryType("Door2Branch")) },
         ]
       : [];
-    const isFreeShipping = freeMin > 0 && itemsTotal >= freeMin;
     const fee = feeForDeliveryType(resolvedDeliveryType);
     return {
-      fee,
+      fee: Number(fee.toString()),
+      feeDecimal: serializeAccountingDecimal(fee),
       tier: isFreeShipping ? "FREE_SHIPPING" : "SPLIT_SHIPMENT",
       rateTier: "SPLIT_SHIPMENT",
       label: isFreeShipping ? "Free Split Delivery" : "Split Delivery",
@@ -150,7 +163,7 @@ export const resolveDistrictShippingFee = async ({
       deliveryOptions,
       shipmentCount: splitShipments.reduce((count, { items: shipmentItems }) =>
         count + new Set(shipmentItems.map((item) => item.productId)).size, 0),
-      splitShipmentFee: fee,
+      splitShipmentFee: Number(fee.toString()),
       shipments: splitShipments.map(({ distributor, items: shipmentItems }) => ({
         distributor,
         items: shipmentItems,
@@ -170,7 +183,7 @@ export const resolveDistrictShippingFee = async ({
       originProvince: routeOrigin.province,
       destinationDistrict: district,
       destinationProvince: province,
-      subtotal: itemsTotal,
+      subtotal: serializeAccountingDecimal(itemsTotalDecimal),
       config: {
         ...DEFAULT_CONFIG,
         ...config,
@@ -182,29 +195,31 @@ export const resolveDistrictShippingFee = async ({
       const deliveryOptionsAvailable = !routeRate.hasLocalHub;
       const resolvedDeliveryType = deliveryOptionsAvailable ? requestedDeliveryType : "Door2Door";
       const feeForDeliveryType = (type) => {
-        if (routeRate.hasLocalHub || routeRate.tier === "ROUTE_OVERRIDE") return routeRate.fee;
+          if (routeRate.hasLocalHub || routeRate.tier === "ROUTE_OVERRIDE") {
+            return decimalFromStoredFloat(routeRate.feeDecimal, "Route shipping fee");
+          }
         const sameProvince = routeRate.origin.province === routeRate.destination.province;
         const configuredFee = sameProvince
           ? type === "Door2Branch"
-            ? Number(config.sameProvinceDoorToHubFee ?? config.sameProvinceFee ?? diffFee)
-            : Number(config.sameProvinceDoorToDoorFee ?? config.sameProvinceFee ?? diffFee)
+              ? quantizeCurrencyAmount(decimalFromStoredFloat(config.sameProvinceDoorToHubFee ?? config.sameProvinceFee ?? diffFee, "Same-province door-to-hub fee"), "NPR")
+              : quantizeCurrencyAmount(decimalFromStoredFloat(config.sameProvinceDoorToDoorFee ?? config.sameProvinceFee ?? diffFee, "Same-province door-to-door fee"), "NPR")
           : type === "Door2Branch"
-            ? Number(config.differentProvinceDoorToHubFee ?? config.differentProvinceFee ?? diffFee)
-            : Number(config.differentProvinceDoorToDoorFee ?? config.differentProvinceFee ?? diffFee);
-        const isFreeShipping = freeMin > 0 && itemsTotal >= freeMin;
-        return isFreeShipping ? 0 : Math.max(0, configuredFee);
+              ? quantizeCurrencyAmount(decimalFromStoredFloat(config.differentProvinceDoorToHubFee ?? config.differentProvinceFee ?? diffFee, "Different-province door-to-hub fee"), "NPR")
+              : quantizeCurrencyAmount(decimalFromStoredFloat(config.differentProvinceDoorToDoorFee ?? config.differentProvinceFee ?? diffFee, "Different-province door-to-door fee"), "NPR");
+          return isFreeShipping || configuredFee.isNegative() ? decimalFromStoredFloat("0") : configuredFee;
       };
       const deliveryOptions = deliveryOptionsAvailable
         ? [
-            { type: "Door2Door", label: "Door to door", fee: feeForDeliveryType("Door2Door") },
-            { type: "Door2Branch", label: "Door to hub", fee: feeForDeliveryType("Door2Branch") },
+              { type: "Door2Door", label: "Door to door", fee: Number(feeForDeliveryType("Door2Door").toString()), feeDecimal: serializeAccountingDecimal(feeForDeliveryType("Door2Door")) },
+              { type: "Door2Branch", label: "Door to hub", fee: Number(feeForDeliveryType("Door2Branch").toString()), feeDecimal: serializeAccountingDecimal(feeForDeliveryType("Door2Branch")) },
           ]
         : [];
       return {
         ...routeRate,
-        fee: feeForDeliveryType(resolvedDeliveryType),
-        tier: freeMin > 0 && itemsTotal >= freeMin ? "FREE_SHIPPING" : routeRate.rateTier,
-        label: freeMin > 0 && itemsTotal >= freeMin ? "Free Delivery" : routeRate.label,
+          fee: Number(feeForDeliveryType(resolvedDeliveryType).toString()),
+          feeDecimal: serializeAccountingDecimal(feeForDeliveryType(resolvedDeliveryType)),
+          tier: isFreeShipping ? "FREE_SHIPPING" : routeRate.rateTier,
+          label: isFreeShipping ? "Free Delivery" : routeRate.label,
         hasLocalHub: routeRate.hasLocalHub,
         deliveryType: resolvedDeliveryType,
         deliveryOptionsAvailable,
@@ -221,9 +236,10 @@ export const resolveDistrictShippingFee = async ({
   }
 
   // Check free shipping threshold
-  if (freeMin > 0 && itemsTotal >= freeMin) {
+  if (isFreeShipping) {
     return {
       fee: 0,
+      feeDecimal: "0",
       tier: "FREE_SHIPPING",
       label: "Free Delivery",
       sameDistrictFee: sameFee,
@@ -239,6 +255,7 @@ export const resolveDistrictShippingFee = async ({
   if (!customerDist) {
     return {
       fee: diffFee,
+      feeDecimal: serializeAccountingDecimal(diffFeeDecimal),
       tier: "DIFFERENT_DISTRICT",
       label: "Standard Delivery",
       sameDistrictFee: sameFee,
@@ -310,6 +327,7 @@ export const resolveDistrictShippingFee = async ({
 
   return {
     fee,
+    feeDecimal: serializeAccountingDecimal(decimalFromStoredFloat(fee, "Shipping fee")),
     tier,
     label,
     sameDistrictFee: sameFee,

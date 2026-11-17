@@ -105,6 +105,15 @@ test("manufacturer quote validates per-piece pricing and batch expenses without 
   }), /non-negative batch expense/);
 });
 
+test("manufacturer VAT quote requires an explicitly supplied positive rate", () => {
+  assert.throws(() => validateManufacturerProductionQuote({
+    unitCogs: "100",
+    otherCost: "0",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatInvoiceReference: "INV-004",
+  }), /VAT rate must be greater than zero/);
+});
+
 test("admin-assigned size/color quantities normalize independently from manufacturer quote terms", () => {
   const assignedLines = normalizeProductionRequestLines([
     { size: "M", color: "Navy", quantity: 12 },

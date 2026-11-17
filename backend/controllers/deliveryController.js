@@ -16,12 +16,12 @@ import {
   validateNcmWebhookPayload,
 } from "../services/deliveryService.js";
 import {
-  confirmNcmSettlementBatch,
   listNcmSettlementBatches,
   listNcmSettlementCandidates,
-  resolveNcmSettlementVariance,
+  summarizeNcmSettlementTotals,
   validateNcmSettlementSelection,
 } from "../services/ncmSettlementService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { applyNcmStockTransferWebhook } from "./stockTransferController.js";
 import { validateCodTransferBankDetails } from "../services/ncmClient.js";
 
@@ -682,31 +682,17 @@ export const getRecentSystemLogs = async (_req, res) => {
 };
 
 export const adminSettlementSummary = async (_req, res) => {
-    const [settlements, deliveries] = await Promise.all([
-      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeExpected: true, deliveryFeeActual: true, deliveryFeeDiscount: true, settlementState: true } }),
+    const [settlements, deliveries, batches] = await Promise.all([
+      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeActual: true, deliveryFeeDiscount: true, settlementState: true } }),
       prisma.deliveryOrder.findMany({ select: { customerDeliveryCharge: true, ncmDeliveryCharge: true, state: true } }),
+      prisma.ncmSettlementBatch.findMany({
+        where: { status: { not: "REVERSED" } },
+        select: { totalCod: true },
+      }),
     ]);
-    const totalDeliveryChargeExpected = deliveries.reduce((sum, item) => sum + Number(item.customerDeliveryCharge || 0), 0);
-    const totalCarrierFees = settlements.reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
-    const totalCarrierDiscounts = settlements.reduce((sum, item) => sum + Number(item.deliveryFeeDiscount || 0), 0);
-    const totalDeliveryChargePaid = settlements
-      .filter((item) => item.settlementState === "SETTLED")
-      .reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
-    const codExpected = settlements.reduce((sum, item) => sum + Number(item.codExpected || 0), 0);
-    const codReceived = settlements.reduce((sum, item) => sum + Number(item.codCollected || 0), 0);
     res.json({
       success: true,
-      summary: {
-        totalDeliveryChargeExpected,
-        totalCarrierDiscounts,
-        totalDeliveryChargePaid,
-        deliveryChargeToPay: Math.max(0, totalCarrierFees - totalDeliveryChargePaid),
-        codExpected,
-        codReceived,
-        codToReceive: Math.max(0, codExpected - codReceived),
-        pendingSettlements: settlements.filter((item) => ["PENDING", "COD_RECEIVED", "REQUESTED"].includes(item.settlementState)).length,
-        settledCount: settlements.filter((item) => item.settlementState === "SETTLED").length,
-      },
+      summary: summarizeNcmSettlementTotals({ settlements, deliveries, batches }),
     });
 };
 
@@ -736,16 +722,30 @@ export const adminListSettlementBatches = async (_req, res) => {
 
 export const adminResolveSettlementVariance = async (req, res) => {
   try {
-    const result = await resolveNcmSettlementVariance({
-      ...req.body,
-      batchId: req.params.batchId,
-      createdBy: req.auth?.email || "ADMIN",
+    const result = await requestAccountingActionApproval({
+      actionType: "NCM_VARIANCE_RESOLUTION",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        ...req.body,
+        batchId: req.params.batchId,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
     });
-    return res.status(200).json({
-      ...result,
-      message: result.alreadyProcessed
-        ? "This NCM variance resolution was already recorded."
-        : "NCM variance resolution recorded and accounted for.",
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This NCM variance approval request already exists."
+        : "NCM variance resolution submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -861,24 +861,40 @@ export const adminConfirmSettlement = async (req, res) => {
     return res.status(400).json({ success: false, message: "Please select at least one settlement to confirm." });
   }
   try {
-    const result = await confirmNcmSettlementBatch({
-      settlementIds: ids,
-      financialAccountId,
-      reference,
-      notes,
-      actualNetDeposit,
-      varianceType,
-      varianceReason,
-      periodStart: startDate,
-      periodEnd: endDate,
-      ncmTicketId: ncmTicketId == null ? null : Number(ncmTicketId),
-      createdBy: req.auth?.email || "ADMIN",
+    const result = await requestAccountingActionApproval({
+      actionType: "NCM_SETTLEMENT_CONFIRM",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        settlementIds: ids,
+        financialAccountId,
+        reference,
+        notes,
+        actualNetDeposit,
+        varianceType,
+        varianceReason,
+        periodStart: startDate,
+        periodEnd: endDate,
+        ncmTicketId: ncmTicketId == null ? null : Number(ncmTicketId),
+        createdBy: req.auth?.email || "ADMIN",
+        reason: notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
     });
-    return res.status(200).json({
-      ...result,
-      message: result.alreadyProcessed
-        ? "This NCM remittance batch was already posted."
-        : `NPR ${Number(result.netDeposit).toLocaleString()} net COD remittance posted.`,
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This NCM remittance approval request already exists."
+        : "NCM remittance submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({

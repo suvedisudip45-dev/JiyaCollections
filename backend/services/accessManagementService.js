@@ -878,8 +878,9 @@ export const exportSystemAuditLogs = async (query = {}, { client = prisma } = {}
     take: 1000,
   });
   const format = String(query.format || "json").toLowerCase() === "csv" ? "csv" : "json";
+  const truncated = rows.length === 1000;
   if (format === "json") {
-    return { format, content: JSON.stringify({ data: rows, truncated: rows.length === 1000 }) };
+    return { format, content: JSON.stringify({ data: rows, truncated }), rowCount: rows.length, truncated };
   }
   const columns = [
     "id", "actorId", "actorRole", "action", "entityType", "entityId",
@@ -890,5 +891,5 @@ export const exportSystemAuditLogs = async (query = {}, { client = prisma } = {}
     columns.map(csvCell).join(","),
     ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
   ].join("\r\n");
-  return { format, content: `\uFEFF${content}` };
+  return { format, content: `\uFEFF${content}`, rowCount: rows.length, truncated };
 };

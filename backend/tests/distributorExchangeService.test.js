@@ -57,6 +57,12 @@ test("distributor receives and records a good exchange return before replacement
   let updatedRequest;
   const ledgerEntries = [];
   const tx = {
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "VAT_REGISTERED", vatNumber: "123456789" }),
+    },
+    vatRateVersion: {
+      findFirst: async () => ({ vatRate: "13.00" }),
+    },
     orderExchangeRequest: {
       findFirst: async () => ({
         id: "exchange-1",
@@ -124,6 +130,12 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
   const ledgerEntries = [];
   let updatedRequest;
   const tx = {
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "VAT_REGISTERED", vatNumber: "123456789" }),
+    },
+    vatRateVersion: {
+      findFirst: async () => ({ vatRate: "13.00" }),
+    },
     orderExchangeRequest: {
       findFirst: async ({ where }) => where.replacementPaperBillNumber ? null : ({
           id: "exchange-1",
@@ -216,6 +228,12 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
 
 test("unequal exchange with a requested physical bill cannot dispatch without a new number", async (t) => {
   const tx = {
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "VAT_REGISTERED", vatNumber: "123456789" }),
+    },
+    vatRateVersion: {
+      findFirst: async () => ({ vatRate: "13.00" }),
+    },
     orderExchangeRequest: {
       findFirst: async () => ({
         id: "exchange-1",

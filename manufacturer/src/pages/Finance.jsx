@@ -2,6 +2,12 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { TrendingUp, Wallet, PackageCheck, RotateCcw, FileText } from "lucide-react";
+import {
+  absoluteDecimalString,
+  compareDecimalStrings,
+  formatNprAmount,
+  subtractDecimalStrings,
+} from "../utils/decimalDisplay";
 
 const rangeOptions = [
   { value: "day", label: "Today" },
@@ -11,7 +17,7 @@ const rangeOptions = [
   { value: "year", label: "Year" },
 ];
 
-const money = (value) => `Rs ${Number(value || 0).toLocaleString("en-NP", { maximumFractionDigits: 0 })}`;
+const money = (value) => `Rs ${formatNprAmount(value ?? "0")}`;
 
 const Finance = () => {
   const { token, backendUrl } = useManufacturer();
@@ -72,8 +78,11 @@ const Finance = () => {
   const summary = data?.summary || {};
   const orders = data?.orders || [];
   const transactions = data?.transactions || [];
-  const netOwed = Number(summary.remainingPayable ?? summary.payable ?? 0)
-    - Number(summary.remainingReceivable ?? summary.receivable ?? 0);
+  const netOwed = subtractDecimalStrings(
+    summary.remainingPayable ?? summary.payable ?? "0",
+    summary.remainingReceivable ?? summary.receivable ?? "0",
+  );
+  const netPayable = compareDecimalStrings(netOwed, "0") >= 0;
 
   return (
     <div className="space-y-6">
@@ -112,9 +121,9 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Approved COGS Earned</p>
                 <TrendingUp className="w-4 h-4 text-emerald-600" />
               </div>
-              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.receivable || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.receivable ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                COGS earned · Remaining this period: {money(summary.remainingReceivable ?? summary.receivable ?? 0)}
+                COGS earned · Remaining this period: {money(summary.remainingReceivable ?? summary.receivable ?? "0")}
               </p>
             </div>
 
@@ -123,9 +132,9 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-red-500 font-bold">Direct Sales Due to Platform</p>
                 <Wallet className="w-4 h-4 text-red-500" />
               </div>
-              <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Received this period: {money(summary.collectedAmount || 0)} · Remaining this period: {money(summary.remainingPayable ?? summary.payable ?? 0)}
+                Received this period: {money(summary.collectedAmount ?? "0")} · Remaining this period: {money(summary.remainingPayable ?? summary.payable ?? "0")}
               </p>
             </div>
 
@@ -134,11 +143,11 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-blue-500 font-bold">Net Settlement Position</p>
                 <PackageCheck className="w-4 h-4 text-blue-500" />
               </div>
-              <p className={`mt-3 text-2xl font-black ${netOwed >= 0 ? "text-amber-700" : "text-blue-700"}`}>
-                {money(Math.abs(netOwed))}
+              <p className={`mt-3 text-2xl font-black ${netPayable ? "text-amber-700" : "text-blue-700"}`}>
+                {money(absoluteDecimalString(netOwed))}
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
-                {netOwed >= 0 ? "⚠️ Net payable owed to platform" : "✅ Net receivable owed to you"}
+                {netPayable ? "⚠️ Net payable owed to platform" : "✅ Net receivable owed to you"}
               </p>
             </div>
 
@@ -147,7 +156,7 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-emerald-500 font-bold">Payouts Received This Period</p>
                 <FileText className="w-4 h-4 text-emerald-500" />
               </div>
-              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.paidAmount || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.paidAmount ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">{transactions.length} settlement transaction(s)</p>
             </div>
           </div>
@@ -337,7 +346,6 @@ const Finance = () => {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {settlementHistory.map((settlement) => {
-                        const remaining = Math.max(0, Number(settlement.amount || 0) - Number(settlement.paidAmount || 0));
                         const statusClass = settlement.status === "PAID"
                           ? "bg-emerald-50 text-emerald-700"
                           : settlement.status === "PARTIALLY_PAID"
@@ -351,7 +359,7 @@ const Finance = () => {
                             <td className="px-4 py-3">{settlement.requestType}</td>
                             <td className="px-4 py-3 text-right">{money(settlement.amount)}</td>
                             <td className="px-4 py-3 text-right">{money(settlement.paidAmount)}</td>
-                            <td className="px-4 py-3 text-right font-semibold">{money(remaining)}</td>
+                            <td className="px-4 py-3 text-right font-semibold">{money(settlement.remainingAmount)}</td>
                             <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusClass}`}>{settlement.status.replaceAll("_", " ")}</span></td>
                             <td className="px-4 py-3 text-slate-600">{settlement.externalPaymentReference || settlement.notes || "—"}</td>
                             <td className="px-4 py-3">
@@ -361,7 +369,10 @@ const Finance = () => {
                                   <div className="mt-2 space-y-2">
                                     {settlement.payoutHistory.map((payout) => (
                                       <div key={payout.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px]">
-                                        <p className="font-bold">{payout.status.replaceAll("_", " ")} · {money(payout.amount)} · {new Date(payout.settledAt || payout.initiatedAt).toLocaleString("en-NP")}</p>
+                                        <p className="font-bold">{payout.status.replaceAll("_", " ")} · Cash {money(payout.amount)} · Settled {money(payout.settlementAmount)} · {new Date(payout.settledAt || payout.initiatedAt).toLocaleString("en-NP")}</p>
+                                        {payout.adjustmentType !== "NONE" && compareDecimalStrings(payout.adjustmentAmount ?? "0", "0") !== 0 ? (
+                                          <p>{payout.adjustmentType.replaceAll("_", " ")} adjustment: {money(payout.adjustmentAmount)}</p>
+                                        ) : null}
                                         <p>Account: {payout.financialAccount?.accountName || "—"}</p>
                                         <p>Transfer reference: {payout.externalPaymentReference || "—"} · Evidence reference: {payout.bankEvidenceReference || "—"}</p>
                                         <p>Cash transaction: {payout.cashTransaction?.id || "Not posted"} · Journal: {payout.journalEntry?.journalNumber || "Not posted"}</p>

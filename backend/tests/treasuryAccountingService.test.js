@@ -51,27 +51,98 @@ test("Treasury mapping rejects liability, inactive, and parent accounts", async 
 test("Treasury reconciliation aggregates multiple accounts mapped to one GL account", () => {
   const accountingAccount = makeGlAccount({ currentBalance: "300.00" });
   const result = buildTreasuryGlReconciliation([
-    { id: "cash-drawer", accountName: "Shop Cash", accountType: "CASH", currentBalance: 125, accountingAccountId: accountingAccount.id, accountingAccount },
-    { id: "cash-office", accountName: "Office Cash", accountType: "CASH", currentBalance: 175, accountingAccountId: accountingAccount.id, accountingAccount },
+    { id: "cash-drawer", accountName: "Shop Cash", accountType: "CASH", currentBalance: "125.10", accountingAccountId: accountingAccount.id, accountingAccount },
+    { id: "cash-office", accountName: "Office Cash", accountType: "CASH", currentBalance: "174.90", accountingAccountId: accountingAccount.id, accountingAccount },
   ]);
 
   assert.equal(result.status, "RECONCILED");
   assert.equal(result.accountMappings.length, 1);
   assert.equal(result.accountMappings[0].treasuryAccounts.length, 2);
-  assert.equal(result.treasuryAccountsTotal, 300);
-  assert.equal(result.glTotalBalance, 300);
+  assert.equal(result.treasuryAccountsTotal, "300.00");
+  assert.equal(result.glTotalBalance, "300.00");
+  assert.equal(result.accountMappings[0].treasuryBalance, "300.00");
+  assert.equal(result.accountMappings[0].variance, "0.00");
+});
+
+test("Treasury reconciliation exposes fractional variance instead of accepting tolerance", () => {
+  const accountingAccount = makeGlAccount({ currentBalance: "300.01" });
+  const result = buildTreasuryGlReconciliation([
+    {
+      id: "cash-drawer",
+      accountName: "Shop Cash",
+      accountType: "CASH",
+      currentBalance: "300.00",
+      accountingAccountId: accountingAccount.id,
+      accountingAccount,
+    },
+  ]);
+
+  assert.equal(result.status, "NOT_RECONCILED");
+  assert.equal(result.isReconciled, false);
+  assert.equal(result.accountMappings[0].variance, "0.01");
+  assert.equal(result.variance, "0.01");
+  assert.equal(result.absoluteVariance, "0.01");
+});
+
+test("Treasury reconciliation reports gross mapping variance when account differences offset", () => {
+  const cashAccount = makeGlAccount({ id: "gl-cash", currentBalance: "100.01" });
+  const bankAccount = makeGlAccount({
+    id: "gl-bank",
+    accountCode: "1120",
+    accountName: "Bank",
+    currentBalance: "199.99",
+  });
+  const result = buildTreasuryGlReconciliation([
+    {
+      id: "cash",
+      accountName: "Cash",
+      accountType: "CASH",
+      currentBalance: "100.00",
+      accountingAccountId: cashAccount.id,
+      accountingAccount: cashAccount,
+    },
+    {
+      id: "bank",
+      accountName: "Bank",
+      accountType: "BANK",
+      currentBalance: "200.00",
+      accountingAccountId: bankAccount.id,
+      accountingAccount: bankAccount,
+    },
+  ]);
+
+  assert.equal(result.status, "NOT_RECONCILED");
+  assert.equal(result.variance, "0.00");
+  assert.equal(result.absoluteVariance, "0.02");
+});
+
+test("Treasury reconciliation rejects JavaScript Number monetary values", () => {
+  const accountingAccount = makeGlAccount();
+  assert.throws(
+    () => buildTreasuryGlReconciliation([
+      {
+        id: "cash-drawer",
+        accountName: "Shop Cash",
+        accountType: "CASH",
+        currentBalance: 250,
+        accountingAccountId: accountingAccount.id,
+        accountingAccount,
+      },
+    ]),
+    { code: "INVALID_DECIMAL_INPUT" },
+  );
 });
 
 test("unmapped Treasury accounts make reconciliation explicitly incomplete", () => {
   const result = buildTreasuryGlReconciliation([
-    { id: "unmapped", accountName: "Wallet", accountType: "WALLET", currentBalance: 500 },
+    { id: "unmapped", accountName: "Wallet", accountType: "WALLET", currentBalance: "500.00" },
   ]);
 
   assert.equal(result.status, "NOT_RECONCILED");
   assert.equal(result.isReconciled, false);
   assert.equal(result.unmappedAccountCount, 1);
   assert.equal(result.unmappedAccounts[0].status, "UNMAPPED");
-  assert.equal(result.treasuryAccountsTotal, 0);
+  assert.equal(result.treasuryAccountsTotal, "0.00");
 });
 
 test("direct cash entries allow only explicitly supported accounting categories", () => {

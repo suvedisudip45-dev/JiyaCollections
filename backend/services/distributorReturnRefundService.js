@@ -336,7 +336,11 @@ export const reviewDistributorCustomerRefund = async ({
         return { success: true, decision: "REJECTED", isReplay: false };
       }
 
-      const vatRate = new Prisma.Decimal(String(returnRecord.refundPolicySnapshot?.vatRatePercent ?? 13));
+      const recordedVatRate = returnRecord.refundPolicySnapshot?.vatRatePercent;
+      if (recordedVatRate === undefined || recordedVatRate === null || recordedVatRate === "") {
+        throw fail("The original return tax-rate snapshot is missing; VAT refund cannot be inferred.", 409, "RETURN_REFUND_TAX_SNAPSHOT_REQUIRED");
+      }
+      const vatRate = new Prisma.Decimal(String(recordedVatRate));
       if (!vatRate.isFinite() || vatRate.isNegative() || vatRate.greaterThan(100)) {
         throw fail("The approved return has an invalid VAT rate.", 409, "RETURN_REFUND_POLICY_INVALID");
       }

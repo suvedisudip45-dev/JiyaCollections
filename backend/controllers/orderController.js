@@ -2,14 +2,17 @@ import { prisma } from "../config/db.js";
 import { randomUUID } from "node:crypto";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPlatformFeatures } from "../services/platformFeatureService.js";
+import { postSalesOrderAccounting } from "../services/accountingPostingEngine.js";
+import { recordDeliveredOrderCashReceipt } from "../services/orderPaymentAccountingService.js";
 import {
-  postSalesOrderAccounting,
-  postCustomerPaymentAccounting,
-} from "../services/accountingPostingEngine.js";
+  createAdminDirectOrderWithStock,
+  validateOrderStock,
+} from "../services/adminDirectOrderService.js";
 import { runAllocationEngine } from "./orderAssignmentController.js";
 import { resolveDistrictShippingFee } from "./shippingController.js";
 import { createInactiveSocialCustomerProfile } from "./userController.js";
 import { isValidMobileNumber } from "../utils/socialCustomerProfile.js";
+import { directOrderReceiptRequiredError } from "../utils/directOrderReceiptPolicy.js";
 import {
   findAdminOrderCustomer,
   getAdminOrderCustomerForCreation,
@@ -18,7 +21,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { productBelongsToCategory } from "../services/productCategoryRules.js";
 import {
-  allocateComboBundleComponentPrices,
+  allocateComboBundleComponentPriceDecimals,
   calculateComboBundlePrice,
   getSharedComboBundleVariants,
 } from "../services/comboBundleRules.js";
@@ -27,12 +30,30 @@ import { getAddressProvince } from "../services/deliveryLocationService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
 import { calculateMarketingCardDiscount } from "../services/marketingCardReward.js";
 import { containsSqlInjection, sanitizeText } from "../middleware/sanitize.js";
-import { roundOrderTotal } from "../utils/orderAmount.js";
 import { bindGiftRewardsToCheckout, createPendingGiftEntitlement } from "../services/giftService.js";
 import { createOrderIdentity } from "../utils/orderReference.js";
+import {
+  addDecimals,
+  compareDecimals,
+  quantizeCurrencyAmount,
+  serializeAccountingDecimal,
+  subtractDecimals,
+} from "../services/accountingDecimal.js";
+import {
+  allocatePricingAmount,
+  applyPercentagePriceDiscount,
+  calculatePricedLine,
+  createOrderPricingSnapshotV3,
+  decimalFromStoredFloat,
+  exactPricingApiFields,
+  hasNoOverDiscount,
+  roundCommercialOrderTotal,
+  toLegacyFloatMirror,
+  wholeOrderQuantity,
+  withOrderPricingSnapshot,
+} from "../services/checkoutPricingService.js";
 
 const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
-const roundOrderAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const validateDeliveryStreet = (value) => {
   if (typeof value !== "string" || containsSqlInjection(value)) {
     return { error: "Enter a valid street address without SQL syntax." };
@@ -66,9 +87,9 @@ export const splitItemsIntoDistributorShipments = (items, shipments) => {
         ) continue;
         const quantity = Math.min(remaining, requirement.remainingQuantity);
         if (!quantity) continue;
-        const unitPrice = Number(orderItem.purchasedUnitPrice ?? orderItem.price ?? (
-          Number(orderItem.lineTotal || 0) / Number(orderItem.quantity || 1)
-        ));
+          const unitPrice = orderItem._pricingDecimal?.unitPrice ??
+            decimalFromStoredFloat(orderItem.purchasedUnitPrice ?? orderItem.price ?? 0, "Accepted unit price").toString();
+          const pricedLine = calculatePricedLine({ unitPrice, quantity: String(quantity) });
         const orderKey = `${shipment.distributor.id}\0${productId}`;
         const packageOrder = ordersByDistributorProduct.get(orderKey) || {
           distributor: shipment.distributor,
@@ -77,7 +98,13 @@ export const splitItemsIntoDistributorShipments = (items, shipments) => {
         packageOrder.items.push({
           ...orderItem,
           quantity,
-          lineTotal: roundOrderAmount(unitPrice * quantity),
+          lineTotal: toLegacyFloatMirror(pricedLine.lineTotal, "Order-item line total"),
+          _pricingDecimal: {
+            ...(orderItem._pricingDecimal || {}),
+            unitPrice: serializeAccountingDecimal(pricedLine.unitPrice),
+            quantity: serializeAccountingDecimal(pricedLine.quantity),
+            lineTotal: serializeAccountingDecimal(pricedLine.lineTotal),
+          },
           ...(orderItem.comboBundleQuantity !== undefined ? { comboBundleQuantity: quantity } : {}),
         });
         ordersByDistributorProduct.set(orderKey, packageOrder);
@@ -134,22 +161,18 @@ const getShipmentPackageSignature = (packages) => {
     .join("\n");
 };
 
+const allocateMoneyAcrossShipmentsExact = (amount, shipments) => allocatePricingAmount(
+  amount,
+  shipments.map(({ items }) => serializeAccountingDecimal(addDecimals(...items.map((item) =>
+    item._pricingDecimal?.lineTotal ??
+      decimalFromStoredFloat(item.lineTotal || 0, "Order-item line total").toString()
+  )))),
+);
+
 export const allocateMoneyAcrossShipments = (amount, shipments) => {
-  const totalCents = Math.max(0, Math.round(Number(amount || 0) * 100));
-  const weights = shipments.map(({ items }) => items.reduce(
-    (total, item) => total + Math.max(0, Number(item.lineTotal || 0)), 0
-  ));
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  let allocatedCents = 0;
-  return shipments.map((_, index) => {
-    const cents = index === shipments.length - 1
-      ? totalCents - allocatedCents
-      : totalWeight > 0
-      ? Math.round(totalCents * weights[index] / totalWeight)
-      : Math.floor(totalCents / shipments.length);
-    allocatedCents += cents;
-    return cents / 100;
-  });
+  const total = decimalFromStoredFloat(amount, "Discount amount");
+  return allocateMoneyAcrossShipmentsExact(total.toString(), shipments)
+    .map((allocation) => Number(allocation));
 };
 
 const allocateOrderToDistributor = async (
@@ -246,17 +269,11 @@ const buildOrderListItem = (order) => {
     items: parsedItems,
     amount: Number(order.amount || 0),
     deliveryFee: Number(order.deliveryFee || 0),
+    ...exactPricingApiFields(order),
     address,
     status: order.status,
     paymentMethod: order.paymentMethod,
-    payment: Boolean(
-      order.payment ||
-      (
-        order.distributorDelivery?.deliveryType === "SELF_DELIVERY" &&
-        String(order.distributorDelivery?.status || "").toLowerCase() === "delivered" &&
-        /cod|cash/i.test(String(order.paymentMethod || ""))
-      )
-    ),
+    payment: Boolean(order.payment),
     date: Number(order.date || 0),
     loyaltyDiscount: Number(order.loyaltyDiscount || 0),
     rewardApplied: parsedReward,
@@ -487,89 +504,6 @@ export const resolveOrderManufacturingPlan = (items = [], inventoryRecords = [])
   };
 };
 
-// Helper to validate stock before order placement
-const validateOrderStock = (items, dbProducts) => {
-  for (const cartItem of items) {
-    const pId = cartItem._id || cartItem.id || cartItem.productId;
-    const matchedProduct = dbProducts.find((p) => p.id === pId);
-    if (!matchedProduct) {
-      return { valid: false, message: `Product not found: ${cartItem.name || pId}` };
-    }
-
-    const orderedQty = Math.max(1, Number(cartItem.quantity || 1));
-    let parsedVariants = typeof matchedProduct.variants === "string"
-      ? JSON.parse(matchedProduct.variants || "[]")
-      : (matchedProduct.variants || []);
-    if (!Array.isArray(parsedVariants)) parsedVariants = [];
-
-    const itemSize = (cartItem.size || "").trim().toLowerCase();
-    const itemColor = (cartItem.color || "").trim().toLowerCase();
-
-    if (parsedVariants.length > 0) {
-      let matchedVariant = null;
-      if (itemSize && itemColor) {
-        matchedVariant = parsedVariants.find(
-          (v) => (v.size || "").trim().toLowerCase() === itemSize &&
-                 (v.color || "").trim().toLowerCase() === itemColor
-        );
-      } else if (itemSize) {
-        matchedVariant = parsedVariants.find(
-          (v) => (v.size || "").trim().toLowerCase() === itemSize
-        );
-      } else if (itemColor) {
-        matchedVariant = parsedVariants.find(
-          (v) => (v.color || "").trim().toLowerCase() === itemColor
-        );
-      }
-
-      if (matchedVariant) {
-        const varQty = Number(matchedVariant.quantity ?? 0);
-        if (varQty <= 0) {
-          return {
-            valid: false,
-            message: `Product "${matchedProduct.name}" (${cartItem.size || ""}${cartItem.color ? ` / ${cartItem.color}` : ""}) is out of stock.`,
-          };
-        }
-        if (orderedQty > varQty) {
-          return {
-            valid: false,
-            message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" (${cartItem.size || ""}${cartItem.color ? ` / ${cartItem.color}` : ""}) exceeds available stock (${varQty}).`,
-          };
-        }
-      } else {
-        const totalVarStock = parsedVariants.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0);
-        if (totalVarStock <= 0) {
-          return {
-            valid: false,
-            message: `Product "${matchedProduct.name}" is completely out of stock.`,
-          };
-        }
-        if (orderedQty > totalVarStock) {
-          return {
-            valid: false,
-            message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" exceeds available stock (${totalVarStock}).`,
-          };
-        }
-      }
-    } else {
-      const stock = Number(matchedProduct.stockQuantity ?? 0);
-      if (stock <= 0) {
-        return {
-          valid: false,
-          message: `Product "${matchedProduct.name}" is out of stock.`,
-        };
-      }
-      if (orderedQty > stock) {
-        return {
-          valid: false,
-          message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" exceeds available stock (${stock}).`,
-        };
-      }
-    }
-  }
-  return { valid: true };
-};
-
 // Placing orders using COD Method with Immutable Price Snapshot
 const placeOrder = async (req, res) => {
   try {
@@ -694,18 +628,27 @@ const placeOrder = async (req, res) => {
     let frozenItemsSnapshot = items.map((cartItem, itemIndex) => {
       const pId = cartItem._id || cartItem.id || cartItem.productId;
       const matchedProduct = dbProducts.find((p) => p.id === pId);
-      const originalUnitPrice = matchedProduct ? matchedProduct.price : Number(cartItem.price || 0);
       const resolvedPrice = locationPricing?.items[itemIndex];
-      const discountPercentage = resolvedPrice
-        ? Number(resolvedPrice.effectiveDiscountPercentage || 0)
-        : matchedProduct ? Number(matchedProduct.discount || 0) : Number(cartItem.discount || 0);
-      const purchasedUnitPrice = resolvedPrice
-        ? Number(resolvedPrice.effectiveUnitPrice)
-        : discountPercentage > 0
-          ? Math.round(originalUnitPrice * (1 - discountPercentage / 100))
-          : originalUnitPrice;
-
-      const qty = Number(cartItem.quantity || 1);
+      const qty = Number(wholeOrderQuantity(cartItem.quantity ?? 1).toString());
+      const originalUnitPriceDecimal = resolvedPrice?.pricing?.basePrice
+        ? decimalFromStoredFloat(resolvedPrice.pricing.basePrice, "Product price")
+        : decimalFromStoredFloat(matchedProduct?.price ?? cartItem.price ?? 0, "Product price");
+      const discountPercentageDecimal = resolvedPrice?.pricing?.effectiveDiscountPercentage
+        ? decimalFromStoredFloat(resolvedPrice.pricing.effectiveDiscountPercentage, "Product discount")
+        : decimalFromStoredFloat(matchedProduct?.discount ?? cartItem.discount ?? 0, "Product discount");
+      const purchasedUnitPriceDecimal = resolvedPrice?.pricing?.effectiveUnitPrice
+        ? decimalFromStoredFloat(resolvedPrice.pricing.effectiveUnitPrice, "Accepted unit price")
+        : applyPercentagePriceDiscount(
+          originalUnitPriceDecimal.toString(),
+          discountPercentageDecimal.toString(),
+        );
+      const line = calculatePricedLine({
+        unitPrice: serializeAccountingDecimal(purchasedUnitPriceDecimal),
+        quantity: String(qty),
+      });
+      const originalUnitPrice = toLegacyFloatMirror(originalUnitPriceDecimal, "Legacy product price snapshot");
+      const discountPercentage = toLegacyFloatMirror(discountPercentageDecimal, "Legacy discount percentage snapshot");
+      const purchasedUnitPrice = toLegacyFloatMirror(line.unitPrice, "Legacy accepted unit price snapshot");
 
       return {
         ...cartItem,
@@ -727,7 +670,20 @@ const placeOrder = async (req, res) => {
         offerTitle: matchedProduct?.offerTitle || cartItem.offerTitle || "",
         purchasedUnitPrice: purchasedUnitPrice, // Price snapshot frozen at purchase time
         price: purchasedUnitPrice, // Standardized unit price snapshot
-        lineTotal: purchasedUnitPrice * qty,
+        lineTotal: toLegacyFloatMirror(line.lineTotal, "Legacy order-item line total"),
+        _pricingDecimal: {
+          unitPrice: serializeAccountingDecimal(line.unitPrice),
+          catalogUnitPrice: serializeAccountingDecimal(originalUnitPriceDecimal),
+          catalogPriceSource: matchedProduct ? "PRODUCT_FLOAT_COMPATIBILITY" : "CART_COMPATIBILITY",
+          quantity: serializeAccountingDecimal(line.quantity),
+          lineTotal: serializeAccountingDecimal(line.lineTotal),
+          discountPercentage: serializeAccountingDecimal(discountPercentageDecimal),
+          discountSource: resolvedPrice?.discountSource ||
+            (discountPercentageDecimal.greaterThan(0) ? "PRODUCT" : "BASE"),
+          discountSourceId: resolvedPrice?.discountSource === "LOCATION"
+            ? resolvedPrice.locationDiscountRuleId
+            : pId,
+        },
       };
     });
 
@@ -738,9 +694,16 @@ const placeOrder = async (req, res) => {
         manualPriceOverride: comboBundleRecord.manualPriceOverride,
         sellingPrice: comboBundleRecord.sellingPrice,
       });
-      const componentPrices = allocateComboBundleComponentPrices(frozenItemsSnapshot, bundlePrice.sellingPrice);
+      const componentPrices = allocateComboBundleComponentPriceDecimals(
+        frozenItemsSnapshot,
+        bundlePrice.sellingPriceDecimal,
+      );
       frozenItemsSnapshot = frozenItemsSnapshot.map((item, index) => {
         const purchasedUnitPrice = componentPrices[index];
+        const line = calculatePricedLine({
+          unitPrice: purchasedUnitPrice,
+          quantity: item._pricingDecimal.quantity,
+        });
         return {
           ...item,
           comboBundleId: comboBundleRecord.id,
@@ -753,18 +716,32 @@ const placeOrder = async (req, res) => {
           comboBundleCalculatedPrice: bundlePrice.calculatedPrice,
           comboBundleDiscountPercentage: bundlePrice.discountPercentage,
           comboBundleManualPriceOverride: bundlePrice.manualPriceOverride,
-          purchasedUnitPrice,
-          price: purchasedUnitPrice,
-          lineTotal: purchasedUnitPrice * Number(item.quantity || 1),
+          purchasedUnitPrice: toLegacyFloatMirror(line.unitPrice, "Legacy bundle component price"),
+          price: toLegacyFloatMirror(line.unitPrice, "Legacy bundle component price"),
+          lineTotal: toLegacyFloatMirror(line.lineTotal, "Legacy bundle component line total"),
+          _pricingDecimal: {
+            ...item._pricingDecimal,
+            preBundleUnitPrice: item._pricingDecimal.unitPrice,
+            unitPrice: serializeAccountingDecimal(line.unitPrice),
+            lineTotal: serializeAccountingDecimal(line.lineTotal),
+            bundleUnitPrice: bundlePrice.sellingPriceDecimal,
+            bundleDiscountPercentage: bundlePrice.manualPriceOverride
+              ? null
+              : bundlePrice.discountPercentageDecimal,
+            bundleDiscountSourceId: comboBundleRecord.id,
+          },
         };
       });
     }
 
-    let itemsTotal = frozenItemsSnapshot.reduce((acc, item) => acc + item.lineTotal, 0);
+    let itemsTotal = addDecimals(...frozenItemsSnapshot.map((item) =>
+      item._pricingDecimal.lineTotal
+    ));
     let manufacturingPlan = resolveOrderManufacturingPlan(frozenItemsSnapshot, manufacturerInventory);
 
     // Resolve dynamic shipping charge from ShippingConfig (authoritative backend calculation)
     let expectedFee = 0;
+    let expectedFeeDecimal = decimalFromStoredFloat("0");
     let packages = [];
     try {
       const customerDistrict = address?.district || address?.city || "";
@@ -772,7 +749,7 @@ const placeOrder = async (req, res) => {
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
-        subtotal: itemsTotal,
+        subtotal: serializeAccountingDecimal(itemsTotal),
         items: frozenItemsSnapshot,
         ncmBranch: address?.ncmBranch || address?.city || "",
         deliveryType: address?.deliveryType || "Door2Door",
@@ -793,20 +770,39 @@ const placeOrder = async (req, res) => {
             ...shipment,
             items: shipment.items.map((item, index) => {
               const resolvedPrice = pricing.items[index];
-              const purchasedUnitPrice = Number(resolvedPrice.effectiveUnitPrice);
+            const purchasedUnitPriceDecimal = decimalFromStoredFloat(
+              resolvedPrice.pricing.effectiveUnitPrice,
+              "Location-priced unit price",
+            );
+            const line = calculatePricedLine({
+              unitPrice: serializeAccountingDecimal(purchasedUnitPriceDecimal),
+              quantity: item._pricingDecimal.quantity,
+            });
               return {
                 ...item,
-                originalUnitPrice: Number(resolvedPrice.basePrice),
-                discountPercentage: Number(resolvedPrice.effectiveDiscountPercentage || 0),
-                globalProductDiscountPercentage: Number(resolvedPrice.productDiscountPercentage || 0),
+              originalUnitPrice: toLegacyFloatMirror(resolvedPrice.pricing.basePrice, "Legacy product price snapshot"),
+              discountPercentage: Number(resolvedPrice.effectiveDiscountPercentage || 0),
+              globalProductDiscountPercentage: Number(resolvedPrice.productDiscountPercentage || 0),
                 locationDiscountPercentage: resolvedPrice.locationDiscountPercentage ?? null,
                 discountSource: resolvedPrice.discountSource,
                 locationDiscountDistributorId: resolvedPrice.discountSource === "LOCATION"
                   ? shipment.distributor.id
                   : null,
-                purchasedUnitPrice,
-                price: purchasedUnitPrice,
-                lineTotal: purchasedUnitPrice * Number(item.quantity || 1),
+              purchasedUnitPrice: toLegacyFloatMirror(line.unitPrice, "Legacy accepted unit price snapshot"),
+              price: toLegacyFloatMirror(line.unitPrice, "Legacy accepted unit price snapshot"),
+              lineTotal: toLegacyFloatMirror(line.lineTotal, "Legacy order-item line total"),
+              _pricingDecimal: {
+                ...item._pricingDecimal,
+                catalogUnitPrice: resolvedPrice.pricing.basePrice,
+                catalogPriceSource: "PRODUCT_FLOAT_COMPATIBILITY",
+                unitPrice: serializeAccountingDecimal(line.unitPrice),
+                lineTotal: serializeAccountingDecimal(line.lineTotal),
+                discountPercentage: resolvedPrice.pricing.effectiveDiscountPercentage,
+                discountSource: resolvedPrice.discountSource,
+                discountSourceId: resolvedPrice.discountSource === "LOCATION"
+                  ? resolvedPrice.locationDiscountRuleId
+                  : item.productId,
+              },
               };
             }),
           };
@@ -814,12 +810,12 @@ const placeOrder = async (req, res) => {
       }
 
       frozenItemsSnapshot = packages.flatMap((shipment) => shipment.items);
-      itemsTotal = frozenItemsSnapshot.reduce((total, item) => total + Number(item.lineTotal || 0), 0);
+      itemsTotal = addDecimals(...frozenItemsSnapshot.map((item) => item._pricingDecimal.lineTotal));
 
       const finalShippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
-        subtotal: itemsTotal,
+        subtotal: serializeAccountingDecimal(itemsTotal),
         items: frozenItemsSnapshot,
         ncmBranch: address?.ncmBranch || address?.city || "",
         deliveryType: address?.deliveryType || "Door2Door",
@@ -832,6 +828,10 @@ const placeOrder = async (req, res) => {
         });
       }
       expectedFee = finalShippingResult.fee;
+      expectedFeeDecimal = decimalFromStoredFloat(
+        finalShippingResult.feeDecimal ?? finalShippingResult.fee,
+        "Delivery fee",
+      );
       address.deliveryType = finalShippingResult.deliveryType || "Door2Door";
     } catch (cfgErr) {
       console.error("Error calculating authoritative shipping fee in placeOrder:", cfgErr);
@@ -845,8 +845,8 @@ const placeOrder = async (req, res) => {
 
     // Rewards are selected explicitly at checkout. Older clients that omit a choice
     // retain the prior loyalty-reward behavior.
-    let loyaltyDiscount = 0;
-    let cardDiscount = 0;
+    let loyaltyDiscount = decimalFromStoredFloat("0");
+    let cardDiscount = decimalFromStoredFloat("0");
     let rewardApplied = null;
     let selectedRedemptionId = null;
     if (rewardChoice === "CARD") {
@@ -878,15 +878,21 @@ const placeOrder = async (req, res) => {
         (benefit.startsAt && benefit.startsAt > now) ||
         (benefit.expiresAt && benefit.expiresAt < now) ||
         (campaign.cardExpiresAt && campaign.cardExpiresAt < now) ||
-        Number(itemsTotal) < Number(campaign.minOrderValue || 0) ||
+        compareDecimals(itemsTotal, decimalFromStoredFloat(campaign.minOrderValue || 0, "Campaign minimum order value")) < 0 ||
         !campaignMatchesOrder(campaign, { address })
       ) {
         return res.status(409).json({ success: false, message: "This Own Store reward is no longer eligible for this order." });
       }
-      cardDiscount = calculateMarketingCardDiscount(benefit.benefitType, benefit.value, itemsTotal, benefit.maxDiscountAmount);
-      if (cardDiscount === null) {
+      const cardDiscountResult = calculateMarketingCardDiscount(
+        benefit.benefitType,
+        benefit.value,
+        itemsTotal,
+        benefit.maxDiscountAmount,
+      );
+      if (cardDiscountResult === null) {
         return res.status(409).json({ success: false, message: "This card reward has an invalid discount configuration." });
       }
+      cardDiscount = decimalFromStoredFloat(cardDiscountResult, "Marketing card discount");
       selectedRedemptionId = redemption.id;
       rewardApplied = {
         source: "MARKETING_CARD",
@@ -901,19 +907,27 @@ const placeOrder = async (req, res) => {
           ...(benefit.maxDiscountAmount !== null ? { maxDiscountAmount: Number(benefit.maxDiscountAmount) } : {}),
         } : {}),
         ...(benefit.benefitType === "VOUCHER" ? { voucherValue: Number(benefit.value) } : {}),
-        discountAmount: cardDiscount,
+        discountAmount: Number(cardDiscount.toString()),
       };
     } else if (rewardChoice === "LOYALTY" && platformFeatures.loyaltyEnabled) {
       try {
         const loyaltyStatus = await calculateUserLoyalty(userId);
         if (loyaltyStatus?.activeReward?.isEligible) {
           const act = loyaltyStatus.activeReward;
-          if (act.freeShipping) expectedFee = 0;
-          if (act.discountAmount > 0) loyaltyDiscount = Math.min(itemsTotal, Number(act.discountAmount));
+          if (act.freeShipping) {
+            expectedFee = 0;
+            expectedFeeDecimal = decimalFromStoredFloat("0");
+          }
+          const requestedLoyaltyDiscount = decimalFromStoredFloat(act.discountAmount || 0, "Loyalty discount");
+          if (requestedLoyaltyDiscount.greaterThan(0)) {
+            loyaltyDiscount = compareDecimals(requestedLoyaltyDiscount, itemsTotal) > 0
+              ? itemsTotal
+              : requestedLoyaltyDiscount;
+          }
           rewardApplied = {
             source: "LOYALTY",
             freeShipping: Boolean(act.freeShipping),
-            discountAmount: loyaltyDiscount,
+            discountAmount: Number(loyaltyDiscount.toString()),
             giftAmount: Number(act.giftAmount || 0),
             giftDescription: act.giftDescription || "",
             letterIncluded: Boolean(act.letterIncluded),
@@ -936,7 +950,19 @@ const placeOrder = async (req, res) => {
 
     // Price-lock: Backend authoritative fee is locked into order amount and deliveryFee
     const resolvedFee = expectedFee;
-    const finalAmount = roundOrderTotal(Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount - cardDiscount));
+    if (expectedFeeDecimal.isZero() && resolvedFee !== 0) {
+      expectedFeeDecimal = decimalFromStoredFloat(resolvedFee, "Delivery fee");
+    }
+    const exactDiscountTotal = addDecimals(loyaltyDiscount, cardDiscount);
+    if (compareDecimals(exactDiscountTotal, itemsTotal) > 0) {
+      return res.status(409).json({ success: false, message: "Applied rewards exceed the order subtotal." });
+    }
+    const preCommercialRoundingTotal = subtractDecimals(
+      addDecimals(itemsTotal, expectedFeeDecimal),
+      exactDiscountTotal,
+    );
+    const exactFinalAmount = roundCommercialOrderTotal(preCommercialRoundingTotal);
+    const finalAmount = toLegacyFloatMirror(exactFinalAmount, "Legacy order amount");
 
     const orderData = {
       userId,
@@ -947,7 +973,7 @@ const placeOrder = async (req, res) => {
       payment: false,
       date: BigInt(Date.now()),
       address,
-      loyaltyDiscount,
+      loyaltyDiscount: toLegacyFloatMirror(loyaltyDiscount, "Legacy loyalty discount mirror"),
       manufacturerId: null,
       locationDiscountManufacturerId: null,
       locationDiscountDistributorId: null,
@@ -961,27 +987,56 @@ const placeOrder = async (req, res) => {
     };
 
     const checkoutGroupId = packages.length > 1 ? randomUUID() : null;
-    const packageLoyaltyDiscounts = allocateMoneyAcrossShipments(loyaltyDiscount, packages);
-    const packageCardDiscounts = allocateMoneyAcrossShipments(cardDiscount, packages);
-    const packageAmounts = packages.map((shipment, index) => {
-      const shipmentSubtotal = shipment.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0);
-      const shipmentFee = index === 0 ? resolvedFee : 0;
-      return roundOrderAmount(
-        shipmentSubtotal + shipmentFee - packageLoyaltyDiscounts[index] - packageCardDiscounts[index]
-      );
-    });
-    const packageRoundingAdjustment = roundOrderAmount(
-      finalAmount - packageAmounts.reduce((total, amount) => total + amount, 0)
+    const packageLoyaltyDiscounts = allocateMoneyAcrossShipmentsExact(loyaltyDiscount.toString(), packages);
+    const packageCardDiscounts = allocateMoneyAcrossShipmentsExact(cardDiscount.toString(), packages);
+    const packageSubtotals = packages.map(({ items: shipmentItems }) =>
+      addDecimals(...shipmentItems.map((item) => item._pricingDecimal.lineTotal))
     );
-    if (packageRoundingAdjustment >= 0) {
-      packageAmounts[0] = roundOrderAmount(packageAmounts[0] + packageRoundingAdjustment);
-    } else {
-      let amountToDeduct = Math.abs(packageRoundingAdjustment);
-      for (let index = 0; index < packageAmounts.length && amountToDeduct > 0; index += 1) {
-        const deduction = Math.min(packageAmounts[index], amountToDeduct);
-        packageAmounts[index] = roundOrderAmount(packageAmounts[index] - deduction);
-        amountToDeduct = roundOrderAmount(amountToDeduct - deduction);
+    const packageAmounts = packages.map((shipment, index) => {
+      const shipmentFee = index === 0 ? expectedFeeDecimal : decimalFromStoredFloat("0");
+      const packageDiscount = addDecimals(
+        packageLoyaltyDiscounts[index],
+        packageCardDiscounts[index],
+      );
+      const rawAmount = subtractDecimals(
+        addDecimals(packageSubtotals[index], shipmentFee),
+        packageDiscount,
+      );
+      if (rawAmount.isNegative()) {
+        throw Object.assign(new Error("A shipment discount exceeds its allocated merchandise and delivery total."), {
+          status: 409,
+          code: "ORDER_SPLIT_OVERALLOCATION",
+        });
       }
+      return quantizeCurrencyAmount(rawAmount, "NPR");
+    });
+    const packageRoundingAdjustment = subtractDecimals(
+      exactFinalAmount,
+      addDecimals(...packageAmounts),
+    );
+    if (!packageRoundingAdjustment.isNegative()) {
+      packageAmounts[0] = addDecimals(packageAmounts[0], packageRoundingAdjustment);
+    } else {
+      let amountToDeduct = packageRoundingAdjustment.abs();
+      for (let index = 0; index < packageAmounts.length && amountToDeduct.greaterThan(0); index += 1) {
+        const deduction = compareDecimals(packageAmounts[index], amountToDeduct) < 0
+          ? packageAmounts[index]
+          : amountToDeduct;
+        packageAmounts[index] = subtractDecimals(packageAmounts[index], deduction);
+        amountToDeduct = subtractDecimals(amountToDeduct, deduction);
+      }
+      if (amountToDeduct.greaterThan(0)) {
+        throw Object.assign(new Error("The shipment allocation cannot reconcile to the accepted checkout total."), {
+          status: 409,
+          code: "ORDER_SPLIT_OVERALLOCATION",
+        });
+      }
+    }
+    if (!addDecimals(...packageAmounts).equals(exactFinalAmount)) {
+      throw Object.assign(new Error("The shipment totals do not reconcile to the accepted checkout total."), {
+        status: 409,
+        code: "ORDER_SPLIT_ALLOCATION_MISMATCH",
+      });
     }
     const packageOrders = await prisma.$transaction(async (tx) => {
       if (selectedRedemptionId) {
@@ -998,20 +1053,25 @@ const placeOrder = async (req, res) => {
       }
       const createdOrders = [];
       for (const [index, shipment] of packages.entries()) {
-        const shipmentFee = index === 0 ? resolvedFee : 0;
+        const shipmentFee = index === 0 ? expectedFeeDecimal : decimalFromStoredFloat("0");
         const shipmentLoyaltyDiscount = packageLoyaltyDiscounts[index];
         const shipmentCardDiscount = packageCardDiscounts[index];
+        const shipmentDiscount = addDecimals(shipmentLoyaltyDiscount, shipmentCardDiscount);
+        const shipmentPreRound = subtractDecimals(
+          addDecimals(packageSubtotals[index], shipmentFee),
+          shipmentDiscount,
+        );
         const shipmentReward = rewardApplied
           ? {
             ...rewardApplied,
             ...(rewardApplied.discountAmount !== undefined
-              ? { discountAmount: shipmentCardDiscount || shipmentLoyaltyDiscount }
+              ? { discountAmount: Number((shipmentCardDiscount.isZero() ? shipmentLoyaltyDiscount : shipmentCardDiscount).toString()) }
               : {}),
           }
           : null;
         const shipmentLocationItems = shipment.items.filter((item) => item.discountSource === "LOCATION");
         const shipmentHasLocationDiscount = shipmentLocationItems.length > 0;
-        const shipmentLocationSnapshot = shipmentHasLocationDiscount
+        const locationSnapshot = shipmentHasLocationDiscount
           ? {
             province: locationPricing.location.province,
             district: locationPricing.location.district,
@@ -1026,14 +1086,79 @@ const placeOrder = async (req, res) => {
             })),
           }
           : null;
+        const pricingSnapshot = createOrderPricingSnapshotV3({
+          lines: shipment.items.map((item) => ({
+            productId: item.productId,
+            size: item.size,
+            color: item.color,
+            unitPrice: item._pricingDecimal.unitPrice,
+            quantity: item._pricingDecimal.quantity,
+            lineTotal: item._pricingDecimal.lineTotal,
+            discountPercentage: item._pricingDecimal.discountPercentage,
+            catalogUnitPrice: item._pricingDecimal.catalogUnitPrice,
+            catalogPriceSource: item._pricingDecimal.catalogPriceSource,
+            provenanceStatus: item._pricingDecimal.catalogPriceSource === "CART_COMPATIBILITY"
+              ? "PARTIAL"
+              : undefined,
+            priceSteps: item._pricingDecimal.bundleUnitPrice
+              ? [
+                  {
+                    source: item._pricingDecimal.discountSource,
+                    sourceId: item._pricingDecimal.discountSourceId,
+                    unitPriceBefore: item._pricingDecimal.catalogUnitPrice,
+                    unitPriceAfter: item._pricingDecimal.preBundleUnitPrice,
+                    rate: item._pricingDecimal.discountPercentage,
+                  },
+                  {
+                    source: "BUNDLE",
+                    sourceId: item._pricingDecimal.bundleDiscountSourceId,
+                    unitPriceBefore: item._pricingDecimal.preBundleUnitPrice,
+                    unitPriceAfter: item._pricingDecimal.unitPrice,
+                    rate: item._pricingDecimal.bundleDiscountPercentage,
+                  },
+                ]
+              : [{
+                  source: item._pricingDecimal.discountSource,
+                  sourceId: item._pricingDecimal.discountSourceId,
+                  unitPriceBefore: item._pricingDecimal.catalogUnitPrice,
+                  unitPriceAfter: item._pricingDecimal.unitPrice,
+                  rate: item._pricingDecimal.discountPercentage,
+                }],
+          })),
+          subtotal: packageSubtotals[index].toString(),
+          discountTotal: shipmentDiscount.toString(),
+          deliveryFee: shipmentFee.toString(),
+          preCommercialRoundingTotal: shipmentPreRound.toString(),
+          finalPayableTotal: packageAmounts[index].toString(),
+          commercialRoundingRule: "NEAREST_NPR_5_V1",
+          orderDiscountComponents: [
+            ...(shipmentLoyaltyDiscount.greaterThan(0) ? [{
+              source: "LOYALTY",
+              amount: shipmentLoyaltyDiscount.toString(),
+            }] : []),
+            ...(shipmentCardDiscount.greaterThan(0) ? [{
+              source: rewardApplied?.source === "MARKETING_CARD" ? "MARKETING_CARD" : "REWARD",
+              sourceId: rewardApplied?.benefitId || rewardApplied?.campaignId || rewardApplied?.cardId,
+              amount: shipmentCardDiscount.toString(),
+              provenanceStatus: rewardApplied?.source === "MARKETING_CARD" ? "COMPLETE" : "PARTIAL",
+            }] : []),
+          ],
+          allocationRule: packages.length > 1 ? "CHECKOUT_SPLIT_RESIDUAL_V1" : null,
+          group: checkoutGroupId ? {
+            checkoutGroupId,
+            finalPayableTotal: exactFinalAmount.toString(),
+          } : null,
+          calculatedAt: new Date(Number(orderData.date)),
+        });
+        const shipmentLocationSnapshot = withOrderPricingSnapshot(locationSnapshot, pricingSnapshot);
         const order = await tx.order.create({
           data: {
             ...orderData,
             ...createOrderIdentity(),
             items: shipment.items,
-            amount: Math.max(0, packageAmounts[index]),
-            deliveryFee: shipmentFee,
-            loyaltyDiscount: shipmentLoyaltyDiscount,
+            amount: toLegacyFloatMirror(packageAmounts[index], "Legacy order amount mirror"),
+            deliveryFee: toLegacyFloatMirror(shipmentFee, "Legacy delivery fee mirror"),
+            loyaltyDiscount: toLegacyFloatMirror(shipmentLoyaltyDiscount, "Legacy loyalty discount mirror"),
             rewardApplied: shipmentReward ? JSON.stringify(shipmentReward) : "{}",
             locationDiscountDistributorId: shipmentHasLocationDiscount ? shipment.distributor?.id || null : null,
             locationDiscountProvince: shipmentHasLocationDiscount ? locationPricing.location.province : null,
@@ -1128,10 +1253,10 @@ const placeOrder = async (req, res) => {
       }
       productDeductions[pId].totalQty += orderedQty;
 
-      if (cartItem.size && cartItem.color) {
+      if (cartItem.size || cartItem.color) {
         productDeductions[pId].variantDeductions.push({
-          size: cartItem.size,
-          color: cartItem.color,
+          size: cartItem.size || "",
+          color: cartItem.color || "",
           quantity: orderedQty,
         });
       }
@@ -1237,6 +1362,10 @@ const placeOrder = async (req, res) => {
       orderIds: packageOrders.map((order) => order.id),
       checkoutGroupId,
       shipmentCount: packageOrders.length,
+      amountDecimal: exactFinalAmount.toString(),
+      deliveryFeeDecimal: expectedFeeDecimal.toString(),
+      pricingSnapshotVersion: 3,
+      pricingSnapshots: packageOrders.map((order) => exactPricingApiFields(order).pricingSnapshot),
     });
 
   } catch (error) {
@@ -1483,23 +1612,7 @@ const updateStatus = async (req, res) => {
 const cashReceived = async (req, res) => {
   try {
     const { orderId } = req.body;
-    const order = await prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) {
-      return res.json({ success: false, message: "Order not found" });
-    }
-    if (order.status !== "Delivered") {
-      return res.json({ success: false, message: "Order not delivered yet" });
-    }
-    const updatedOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: { payment: true },
-    });
-
-    // Post Customer Payment to Double-Entry General Ledger (DR Liquid Cash, CR Accounts Receivable)
-    postCustomerPaymentAccounting(updatedOrder).catch((glErr) => {
-      console.error("General Ledger payment posting error:", glErr);
-    });
-
+    await recordDeliveredOrderCashReceipt(orderId);
     res.json({ success: true, message: "Cash marked as received" });
   } catch (error) {
     console.log(error);
@@ -1547,13 +1660,32 @@ const adminCreateOrder = async (req, res) => {
     const {
       client,
       items,
-      discount = 0,
+      discount = "0",
       deliveryFee,
       deliveryType: requestedDeliveryType = client?.deliveryType || "Door2Door",
       paymentMethod = "COD",
       payment = false,
       status = "Order Placed",
     } = req.body;
+
+    if (typeof discount !== "string" || (
+      deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== "" && typeof deliveryFee !== "string"
+    )) {
+      return res.status(400).json({
+        success: false,
+        message: "Discount and custom delivery fee must be provided as decimal strings.",
+        code: "INVALID_DECIMAL_INPUT",
+      });
+    }
+
+    const receiptDeclarationError = directOrderReceiptRequiredError(payment);
+    if (receiptDeclarationError) {
+      return res.status(receiptDeclarationError.statusCode).json({
+        success: false,
+        message: receiptDeclarationError.message,
+        code: receiptDeclarationError.code,
+      });
+    }
 
     if (!client || !client.phone) {
       return res.json({
@@ -1643,30 +1775,29 @@ const adminCreateOrder = async (req, res) => {
     }
 
     // Freeze snapshot of items
+    let itemsTotal = decimalFromStoredFloat("0");
     const frozenItemsSnapshot = items.map((cartItem) => {
       const pId = cartItem._id || cartItem.id || cartItem.productId;
       const matchedProduct = dbProducts.find((p) => p.id === pId);
 
+      const qty = Number(wholeOrderQuantity(cartItem.quantity ?? 1).toString());
       const originalUnitPrice = matchedProduct
-        ? matchedProduct.price
-        : Number(cartItem.originalUnitPrice || cartItem.price || 0);
+        ? decimalFromStoredFloat(matchedProduct.price, "Product price")
+        : requirePricingDecimal(cartItem.originalUnitPrice ?? cartItem.price ?? "0", "Direct-order unit price");
       const discountPercentage = matchedProduct
-        ? matchedProduct.discount || 0
-        : Number(cartItem.discountPercentage || 0);
-
-      const calculatedUnit =
-        discountPercentage > 0
-          ? Math.round(originalUnitPrice * (1 - discountPercentage / 100))
-          : originalUnitPrice;
-
-      const purchasedUnitPrice =
-        cartItem.purchasedUnitPrice !== undefined
-          ? Number(cartItem.purchasedUnitPrice)
-          : cartItem.price !== undefined
-          ? Number(cartItem.price)
-          : calculatedUnit;
-
-      const qty = Number(cartItem.quantity || 1);
+        ? decimalFromStoredFloat(matchedProduct.discount || 0, "Product discount")
+        : decimalFromStoredFloat(cartItem.discountPercentage || 0, "Product discount");
+      const purchasedUnitPrice = discountPercentage.greaterThan(0)
+        ? applyPercentagePriceDiscount(
+          originalUnitPrice.toString(),
+          discountPercentage.toString(),
+        )
+        : originalUnitPrice;
+      const line = calculatePricedLine({
+        unitPrice: serializeAccountingDecimal(purchasedUnitPrice),
+        quantity: String(qty),
+      });
+      itemsTotal = addDecimals(itemsTotal, line.lineTotal);
 
       return {
         ...cartItem,
@@ -1679,18 +1810,26 @@ const adminCreateOrder = async (req, res) => {
         size: cartItem.size || "",
         color: cartItem.color || "",
         quantity: qty,
-        originalUnitPrice: originalUnitPrice,
-        discountPercentage: discountPercentage,
-        purchasedUnitPrice: purchasedUnitPrice,
-        price: purchasedUnitPrice,
-        lineTotal: purchasedUnitPrice * qty,
+        originalUnitPrice: toLegacyFloatMirror(originalUnitPrice, "Legacy product price snapshot"),
+        discountPercentage: toLegacyFloatMirror(discountPercentage, "Legacy product discount snapshot"),
+        purchasedUnitPrice: toLegacyFloatMirror(line.unitPrice, "Legacy accepted unit price snapshot"),
+        price: toLegacyFloatMirror(line.unitPrice, "Legacy accepted unit price snapshot"),
+        lineTotal: toLegacyFloatMirror(line.lineTotal, "Legacy order-item line total"),
+        _pricingDecimal: {
+          unitPrice: serializeAccountingDecimal(line.unitPrice),
+          catalogUnitPrice: serializeAccountingDecimal(originalUnitPrice),
+          catalogPriceSource: matchedProduct ? "PRODUCT_FLOAT_COMPATIBILITY" : "CART_COMPATIBILITY",
+          quantity: serializeAccountingDecimal(line.quantity),
+          lineTotal: serializeAccountingDecimal(line.lineTotal),
+          discountPercentage: serializeAccountingDecimal(discountPercentage),
+          discountSource: discountPercentage.greaterThan(0) ? "PRODUCT" : "BASE",
+          discountSourceId: pId,
+        },
       };
     });
 
-    const itemsTotal = frozenItemsSnapshot.reduce((acc, item) => acc + item.lineTotal, 0);
-
     // Dynamic shipping calculation according to shipment rates (ShippingConfig)
-    let expectedFee = 50;
+    let expectedFee = decimalFromStoredFloat("50");
     let resolvedDeliveryType = "Door2Door";
     try {
       const customerDistrict = resolvedClient.district || resolvedClient.city || "";
@@ -1698,12 +1837,12 @@ const adminCreateOrder = async (req, res) => {
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
-        subtotal: itemsTotal,
+        subtotal: itemsTotal.toString(),
         items: frozenItemsSnapshot,
         ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || "",
         deliveryType: requestedDeliveryType,
       });
-      expectedFee = shippingResult.fee;
+      expectedFee = decimalFromStoredFloat(shippingResult.feeDecimal ?? shippingResult.fee, "Delivery fee");
       resolvedDeliveryType = shippingResult.deliveryType || "Door2Door";
     } catch (cfgErr) {
       console.error("Error calculating shipping config in admin order:", cfgErr);
@@ -1717,14 +1856,55 @@ const adminCreateOrder = async (req, res) => {
     }
 
     const hasManualDeliveryFee = deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== "";
-    const manualDeliveryFee = Number(deliveryFee);
-    if (hasManualDeliveryFee && (!Number.isFinite(manualDeliveryFee) || manualDeliveryFee < 0)) {
-      return res.status(400).json({ success: false, message: "Delivery fee must be a non-negative number." });
+    const manualDeliveryFee = hasManualDeliveryFee
+      ? requirePricingDecimal(deliveryFee, "Delivery fee")
+      : null;
+    const resolvedFee = manualDeliveryFee ?? expectedFee;
+    const manualDiscount = requirePricingDecimal(discount, "Direct-order discount");
+    hasNoOverDiscount(manualDiscount, itemsTotal, "Direct-order discount");
+    const preCommercialRoundingTotal = subtractDecimals(
+      addDecimals(itemsTotal, resolvedFee),
+      manualDiscount,
+    );
+    if (preCommercialRoundingTotal.isNegative()) {
+      return res.status(400).json({ success: false, message: "Discount cannot exceed the order subtotal." });
     }
-    const resolvedFee = hasManualDeliveryFee ? manualDeliveryFee : expectedFee;
-
-    const manualDiscount = Math.max(0, Number(discount) || 0);
-    const finalAmount = Math.max(0, itemsTotal + resolvedFee - manualDiscount);
+    const exactFinalAmount = quantizeCurrencyAmount(preCommercialRoundingTotal, "NPR");
+    const finalAmount = toLegacyFloatMirror(exactFinalAmount, "Legacy order amount mirror");
+    const pricingAcceptedAt = new Date();
+    const pricingSnapshot = createOrderPricingSnapshotV3({
+      lines: frozenItemsSnapshot.map((item) => ({
+        productId: item.productId,
+        size: item.size,
+        color: item.color,
+        unitPrice: item._pricingDecimal.unitPrice,
+        quantity: item._pricingDecimal.quantity,
+        lineTotal: item._pricingDecimal.lineTotal,
+        discountPercentage: item._pricingDecimal.discountPercentage,
+        catalogUnitPrice: item._pricingDecimal.catalogUnitPrice,
+        catalogPriceSource: item._pricingDecimal.catalogPriceSource,
+        provenanceStatus: item._pricingDecimal.catalogPriceSource === "CART_COMPATIBILITY"
+          ? "PARTIAL"
+          : undefined,
+        priceSteps: [{
+          source: item._pricingDecimal.discountSource,
+          sourceId: item._pricingDecimal.discountSourceId,
+          unitPriceBefore: item._pricingDecimal.catalogUnitPrice,
+          unitPriceAfter: item._pricingDecimal.unitPrice,
+          rate: item._pricingDecimal.discountPercentage,
+        }],
+      })),
+      subtotal: itemsTotal.toString(),
+      discountTotal: manualDiscount.toString(),
+      deliveryFee: resolvedFee.toString(),
+      preCommercialRoundingTotal: preCommercialRoundingTotal.toString(),
+      finalPayableTotal: exactFinalAmount.toString(),
+      source: "ADMIN_DIRECT",
+      orderDiscountComponents: manualDiscount.greaterThan(0)
+        ? [{ source: "ADMIN_MANUAL", amount: manualDiscount.toString() }]
+        : [],
+      calculatedAt: pricingAcceptedAt,
+    });
 
     // Only a verified existing customer may be linked. Invalid-code orders use a
     // unique anonymous identity so their loyalty history cannot be shared.
@@ -1809,139 +1989,39 @@ const adminCreateOrder = async (req, res) => {
       })
     );
 
-    const newOrder = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
-        data: {
+    const newOrder = await createAdminDirectOrderWithStock({
+      orderData: {
         ...createOrderIdentity(),
         userId: orderUserId,
         items: frozenItemsSnapshot,
         amount: finalAmount,
-        deliveryFee: resolvedFee,
+        deliveryFee: toLegacyFloatMirror(resolvedFee, "Legacy delivery fee mirror"),
         paymentMethod: paymentMethod || "COD",
         payment: Boolean(payment),
         status: status || "Order Placed",
-        date: BigInt(Date.now()),
+        date: BigInt(pricingAcceptedAt.getTime()),
         address: addressSnapshot,
-        loyaltyDiscount: manualDiscount,
+        loyaltyDiscount: toLegacyFloatMirror(manualDiscount, "Legacy direct-order discount mirror"),
+        locationPricingSnapshot: withOrderPricingSnapshot(null, pricingSnapshot),
         manufacturerId: null,
         specialOrder: Boolean(manufacturingPlan.specialOrder),
         specialOrderReason: manufacturingPlan.specialOrderReason,
         specialOrderManufacturerIds: manufacturingPlan.specialOrderManufacturerIds,
-        orderType: "ADMIN_DIRECT", // Mark as admin-created for guard in updateStatus
+        orderType: "ADMIN_DIRECT",
         rewardApplied: JSON.stringify({
           source: resolvedClient.source || "Social Media",
-          manualDiscount,
-          deliveryFee: resolvedFee,
+          manualDiscount: Number(manualDiscount.toString()),
+          deliveryFee: Number(resolvedFee.toString()),
           adminCreated: true,
           loyaltyExcluded: !customerDecision.loyaltyEligible,
           giftEligible: customerDecision.giftEligible,
           socialCodeVerified: customerDecision.state === "VERIFIED",
           customerVerificationState: customerDecision.state,
         }),
-        },
-      });
-      return order;
+      },
+      items: frozenItemsSnapshot,
+      source: resolvedClient.source || "Social Media",
     });
-
-
-
-
-    if (newOrder.payment) {
-      postCustomerPaymentAccounting(newOrder).catch((glErr) => {
-        console.error("General Ledger admin payment posting error:", glErr);
-      });
-    }
-
-    // Deduct stock
-    const productDeductions = {};
-    for (const cartItem of frozenItemsSnapshot) {
-      const pId = cartItem.productId || cartItem._id;
-      const orderedQty = Number(cartItem.quantity || 1);
-      if (!pId) continue;
-
-      if (!productDeductions[pId]) {
-        productDeductions[pId] = {
-          totalQty: 0,
-          variantDeductions: [],
-        };
-      }
-      productDeductions[pId].totalQty += orderedQty;
-
-      if (cartItem.size && cartItem.color) {
-        productDeductions[pId].variantDeductions.push({
-          size: cartItem.size,
-          color: cartItem.color,
-          quantity: orderedQty,
-        });
-      }
-    }
-
-    for (const [pId, deduction] of Object.entries(productDeductions)) {
-      const currentProd = await prisma.product.findUnique({ where: { id: pId } });
-      if (!currentProd) continue;
-
-      let updateData = {};
-      let parsedVariants =
-        typeof currentProd.variants === "string"
-          ? JSON.parse(currentProd.variants || "[]")
-          : currentProd.variants || [];
-
-      const hasVariants = Array.isArray(parsedVariants) && parsedVariants.length > 0;
-
-      if (hasVariants && deduction.variantDeductions.length > 0) {
-        for (const vd of deduction.variantDeductions) {
-          const vIdx = parsedVariants.findIndex(
-            (v) =>
-              (v.size || "").trim().toLowerCase() === (vd.size || "").trim().toLowerCase() &&
-              (v.color || "").trim().toLowerCase() === (vd.color || "").trim().toLowerCase()
-          );
-          if (vIdx !== -1) {
-            const currentVariantQty = Number(parsedVariants[vIdx].quantity || 0);
-            parsedVariants[vIdx].quantity = Math.max(0, currentVariantQty - vd.quantity);
-          }
-        }
-        updateData.variants = parsedVariants;
-        const totalVariantStock = parsedVariants.reduce(
-          (acc, v) => acc + (Number(v.quantity) || 0),
-          0
-        );
-        updateData.stockQuantity = totalVariantStock;
-      } else if (
-        currentProd.stockQuantity !== undefined &&
-        currentProd.stockQuantity !== null
-      ) {
-        const newStock = Math.max(0, Number(currentProd.stockQuantity) - deduction.totalQty);
-        updateData.stockQuantity = newStock;
-      }
-
-      await prisma.product.update({
-        where: { id: pId },
-        data: updateData,
-      });
-
-      // Record StockLog entry
-      try {
-        const channelSource = (resolvedClient.source || "admin").toLowerCase().replace(/\s+/g, "_");
-        const finalQty = updateData.stockQuantity !== undefined ? updateData.stockQuantity : (currentProd.stockQuantity || 0);
-        await prisma.stockLog.create({
-          data: {
-            productId: pId,
-            productName: currentProd.name,
-            variantLabel: deduction.variantDeductions.length > 0
-              ? deduction.variantDeductions.map((v) => `${v.size}/${v.color}`).join(", ")
-              : null,
-            previousQty: currentProd.stockQuantity || 0,
-            newQty: finalQty,
-            changeQty: -deduction.totalQty,
-            reason: "order_sale",
-            note: `Manual Order (${resolvedClient.source || "Social Media"})`,
-            source: channelSource || "admin",
-          },
-        });
-      } catch (logErr) {
-        console.error("StockLog creation failed in adminCreateOrder:", logErr);
-      }
-    }
 
     const allocation = await allocateOrderToDistributor(newOrder.id, "ADMIN", req);
 
@@ -1956,6 +2036,7 @@ const adminCreateOrder = async (req, res) => {
         ...newOrder,
         _id: newOrder.id,
         date: Number(newOrder.date),
+        ...exactPricingApiFields(newOrder),
       },
     });
   } catch (error) {

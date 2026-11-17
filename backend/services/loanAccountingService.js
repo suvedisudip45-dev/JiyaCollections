@@ -310,7 +310,9 @@ export const recordLoanRepayment = async ({
   };
 
   try {
-    return await client.$transaction(execute, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    return typeof client.$transaction === "function"
+      ? await client.$transaction(execute, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
+      : await execute(client);
   } catch (error) {
     if (error.code === "P2002") {
       const concurrentReplay = await findRepaymentReplay(client, key, input);

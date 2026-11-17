@@ -27,6 +27,7 @@ import {
   saveLoyaltyTierConfig,
 } from "../services/giftService.js";
 import { claimCustomerReward } from "../services/marketingCardCustomerService.js";
+import { withOrderPricingSnapshot } from "../services/checkoutPricingService.js";
 
 test("order value promotions require an exact configured gift value", () => {
   const order = { amount: 6500, rewardApplied: "{}" };
@@ -45,6 +46,23 @@ test("order value promotions require an exact configured gift value", () => {
     orderValueGiftValue: 450,
     loyaltyGiftDescription: "",
   });
+});
+
+test("order-value gift eligibility uses the accepted order snapshot, not its Float mirror", () => {
+  const order = {
+    amount: 1,
+    rewardApplied: "{}",
+    locationPricingSnapshot: withOrderPricingSnapshot(null, {
+      version: 2,
+      currency: "NPR",
+      totals: { finalPayableTotal: "6500.00", deliveryFee: "0" },
+      lines: [],
+    }),
+  };
+  const result = calculateOrderGiftEligibility(order, [
+    { triggerType: "ORDER_VALUE", minSpendThreshold: 6000, giftTargetValue: 450, isActive: true },
+  ]);
+  assert.equal(result.orderValueGiftValue, 450);
 });
 
 test("an active loyalty tier reward automatically qualifies the order", () => {

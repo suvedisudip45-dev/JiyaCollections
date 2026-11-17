@@ -302,10 +302,11 @@ const Sidebar = ({ isOpen = false, onClose }) => {
           label="General Ledger"
           icon={Icon.gl}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.accounting}
-          routes={["/chart-of-accounts", "/journal-entries", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
+          routes={["/chart-of-accounts", "/journal-entries", "/accounting-approvals", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
         >
           <NavItem to="/chart-of-accounts"  icon={Icon.chartAcct}  label="Chart of Accounts" />
           <NavItem to="/journal-entries"    icon={Icon.journal}    label="Journal Entries" />
+          <NavItem to="/accounting-approvals" icon={Icon.lock} label="Accounting Approvals" />
           <NavItem to="/general-ledger"     icon={Icon.ledger}     label="General Ledger" />
           <NavItem to="/trial-balance"      icon={Icon.balance}    label="Trial Balance" />
           <NavItem to="/fiscal-periods"     icon={Icon.lock}       label="Fiscal Periods" />

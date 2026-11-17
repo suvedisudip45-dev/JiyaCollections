@@ -1,3 +1,4 @@
+import "../utils/requireMaintenanceDatabaseSafety.js";
 import "dotenv/config";
 import { createHash } from "node:crypto";
 import { prisma } from "../config/db.js";

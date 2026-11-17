@@ -31,13 +31,58 @@ const requiredText = (value, label, maxLength = 191) => {
   return normalized;
 };
 
+const requiredActor = (value, label, code) => {
+  const normalized = String(value || "").trim();
+  if (!normalized) throw fail(label, 401, code);
+  return normalized;
+};
+
+export const assertIndependentPayoutReviewer = ({
+  initiatedByAccountId,
+  reviewerAccountId,
+  action = "APPROVAL",
+} = {}) => {
+  const isFailureReview = String(action).toUpperCase() === "FAILURE";
+  const reviewerId = requiredActor(
+    reviewerAccountId,
+    isFailureReview
+      ? "An authenticated Admin reviewer is required to fail a payout."
+      : "An authenticated Admin checker is required to confirm a payout.",
+    isFailureReview ? "PAYOUT_REVIEWER_REQUIRED" : "PAYOUT_CHECKER_REQUIRED",
+  );
+  const makerId = String(initiatedByAccountId || "").trim();
+  if (!makerId) {
+    throw fail(
+      isFailureReview
+        ? "Payout maker identity is missing; it cannot be reviewed."
+        : "Payout maker identity is missing; the payout cannot be approved.",
+      409,
+      "PAYOUT_MAKER_MISSING",
+    );
+  }
+  if (makerId === reviewerId) {
+    throw fail(
+      isFailureReview
+        ? "A payout initiator cannot reject or fail their own payout request."
+        : "The Admin who initiated a payout cannot confirm it.",
+      403,
+      isFailureReview ? "PAYOUT_SELF_REVIEW" : "PAYOUT_SELF_APPROVAL",
+    );
+  }
+  return reviewerId;
+};
+
 const assertReplayMatches = (existing, input) => {
   if (
     existing.targetType !== input.targetType ||
     existing.targetId !== input.targetId ||
     existing.financialAccountId !== input.financialAccountId ||
     !new Prisma.Decimal(String(existing.amount)).equals(input.amount) ||
-    !new Prisma.Decimal(String(existing.settlementAmount)).equals(input.settlementAmount)
+    !new Prisma.Decimal(String(existing.settlementAmount)).equals(input.settlementAmount) ||
+    existing.adjustmentType !== input.adjustmentType ||
+    !new Prisma.Decimal(String(existing.adjustmentAmount ?? 0)).equals(input.adjustmentAmount) ||
+    (existing.externalPaymentReference || null) !== input.externalPaymentReference ||
+    (existing.notes || null) !== input.notes
   ) {
     throw fail("This payout idempotency key was already used with different details.", 409, "IDEMPOTENCY_KEY_REUSED");
   }
@@ -60,12 +105,17 @@ export const initiateFinancialPayout = async ({
   writeAudit = recordSystemAudit,
 } = {}) => {
   const normalizedTargetType = requiredText(targetType, "Payout target type", 32).toUpperCase();
-  if (!["MANUFACTURER_SETTLEMENT", "MANUFACTURER_PAYABLE", "DISTRIBUTOR_SETTLEMENT", "ACCOUNT_PAYABLE"].includes(normalizedTargetType)) {
+  if (!["MANUFACTURER_SETTLEMENT", "MANUFACTURER_PAYABLE", "DISTRIBUTOR_SETTLEMENT", "ACCOUNT_PAYABLE", "MARKETING_CPA_PAYABLE"].includes(normalizedTargetType)) {
     throw fail("Payout target type is not supported.");
   }
   const normalizedTargetId = requiredText(targetId, "Payout target ID");
   const normalizedAccountId = requiredText(financialAccountId, "Source Treasury account ID");
   const key = requiredText(idempotencyKey, "Payout idempotency key");
+  const makerAccountId = requiredActor(
+    initiatedByAccountId,
+    "An authenticated Admin initiator is required to create a payout.",
+    "PAYOUT_MAKER_REQUIRED",
+  );
   const payoutAmount = money(amount, "Payout amount");
   const payableReduction = money(settlementAmount, "Settlement amount");
   const adjustment = adjustmentType == null ? "NONE" : String(adjustmentType).trim().toUpperCase();
@@ -108,6 +158,10 @@ export const initiateFinancialPayout = async ({
     financialAccountId: normalizedAccountId,
     amount: payoutAmount,
     settlementAmount: payableReduction,
+    adjustmentType: adjustment,
+    adjustmentAmount: adjustmentValue,
+    externalPaymentReference: normalizedReference,
+    notes: normalizedNotes,
   };
   const execute = async (tx) => {
     const existing = await tx.financialPayout.findUnique({ where: { idempotencyKey: key } });
@@ -128,7 +182,7 @@ export const initiateFinancialPayout = async ({
       adjustmentAmount: adjustmentValue,
     });
     const targetAvailable = new Prisma.Decimal(String(target?.availableAmount ?? 0));
-    if (payoutAmount.greaterThan(targetAvailable) || payableReduction.greaterThan(targetAvailable)) {
+    if (payableReduction.greaterThan(targetAvailable)) {
       throw fail("Payout exceeds the verified outstanding payable.", 409, "PAYOUT_EXCEEDS_PAYABLE");
     }
 
@@ -167,12 +221,12 @@ export const initiateFinancialPayout = async ({
         adjustmentAmount: adjustmentValue,
         status: "INITIATED",
         externalPaymentReference: normalizedReference,
-        initiatedByAccountId,
+        initiatedByAccountId: makerAccountId,
         notes: normalizedNotes,
       },
     });
     await writeAudit(
-      { actorId: initiatedByAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+      { actorId: makerAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
       {
         action: "FINANCIAL_PAYOUT_INITIATED",
         entityType: "FinancialPayout",
@@ -190,9 +244,24 @@ export const initiateFinancialPayout = async ({
     );
     return { success: true, payout, isReplay: false };
   };
-  return typeof client.$transaction === "function"
-    ? client.$transaction(execute, { isolationLevel: "Serializable" })
-    : execute(client);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return typeof client.$transaction === "function"
+        ? await client.$transaction(execute, { isolationLevel: "Serializable" })
+        : await execute(client);
+    } catch (error) {
+      if (!["P2002", "P2034", "PAYOUT_RESERVATION_CONFLICT"].includes(error?.code)) {
+        throw error;
+      }
+      const existing = await client.financialPayout.findUnique({ where: { idempotencyKey: key } });
+      if (existing) {
+        assertReplayMatches(existing, payoutInput);
+        return { success: true, payout: existing, isReplay: true };
+      }
+      if (error.code !== "P2034" || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+    }
+  }
 };
 
 export const confirmFinancialPayout = async ({
@@ -205,6 +274,11 @@ export const confirmFinancialPayout = async ({
 } = {}) => {
   const id = requiredText(payoutId, "Payout ID");
   const evidenceReference = requiredText(bankEvidenceReference, "Bank transfer evidence reference");
+  const checkerAccountId = requiredActor(
+    confirmedByAccountId,
+    "An authenticated Admin checker is required to confirm a payout.",
+    "PAYOUT_CHECKER_REQUIRED",
+  );
   if (typeof finalizePayout !== "function") {
     throw fail("Payout settlement handler is required.", 500, "PAYOUT_FINALIZER_REQUIRED");
   }
@@ -214,6 +288,10 @@ export const confirmFinancialPayout = async ({
     if (payout.status !== "INITIATED") {
       throw fail("Only an initiated payout can be confirmed as settled.", 409, "PAYOUT_NOT_INITIATED");
     }
+    assertIndependentPayoutReviewer({
+      initiatedByAccountId: payout.initiatedByAccountId,
+      reviewerAccountId: checkerAccountId,
+    });
     const reservation = await tx.financialAccount.updateMany({
       where: { id: payout.financialAccountId, reservedBalance: { gte: payout.amount } },
       data: { reservedBalance: { decrement: payout.amount } },
@@ -221,14 +299,14 @@ export const confirmFinancialPayout = async ({
     if (reservation.count !== 1) {
       throw fail("Payout reservation is missing; settlement was rolled back.", 409, "PAYOUT_RESERVATION_MISSING");
     }
-    const evidence = await finalizePayout(tx, payout);
+    const evidence = await finalizePayout(tx, { ...payout, bankEvidenceReference: evidenceReference });
     const settledAt = new Date();
     const updated = await tx.financialPayout.updateMany({
       where: { id: payout.id, status: "INITIATED" },
       data: {
         status: "SETTLED",
         bankEvidenceReference: evidenceReference,
-        confirmedByAccountId,
+        confirmedByAccountId: checkerAccountId,
         settledAt,
       },
     });
@@ -236,7 +314,7 @@ export const confirmFinancialPayout = async ({
       throw fail("Payout state changed during confirmation; settlement was rolled back.", 409, "PAYOUT_STATE_CONFLICT");
     }
     await writeAudit(
-      { actorId: confirmedByAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+      { actorId: checkerAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
       {
         action: "FINANCIAL_PAYOUT_SETTLED",
         entityType: "FinancialPayout",
@@ -267,6 +345,11 @@ export const failFinancialPayout = async ({
 } = {}) => {
   const id = requiredText(payoutId, "Payout ID");
   const reason = requiredText(failureReason, "Payout failure reason", 2000);
+  const reviewerAccountId = requiredActor(
+    failedByAccountId,
+    "An authenticated Admin reviewer is required to fail a payout.",
+    "PAYOUT_REVIEWER_REQUIRED",
+  );
   const execute = async (tx) => {
     const payout = await tx.financialPayout.findUnique({ where: { id } });
     if (!payout) throw fail("Payout was not found.", 404, "PAYOUT_NOT_FOUND");
@@ -276,6 +359,11 @@ export const failFinancialPayout = async ({
     if (payout.status !== "INITIATED") {
       throw fail("Only an initiated payout can be marked failed.", 409, "PAYOUT_NOT_INITIATED");
     }
+    assertIndependentPayoutReviewer({
+      initiatedByAccountId: payout.initiatedByAccountId,
+      reviewerAccountId,
+      action: "FAILURE",
+    });
     const reservation = await tx.financialAccount.updateMany({
       where: { id: payout.financialAccountId, reservedBalance: { gte: payout.amount } },
       data: { reservedBalance: { decrement: payout.amount } },
@@ -286,13 +374,13 @@ export const failFinancialPayout = async ({
     const failedAt = new Date();
     const updated = await tx.financialPayout.updateMany({
       where: { id: payout.id, status: "INITIATED" },
-      data: { status: "FAILED", failureReason: reason, failedByAccountId, failedAt },
+      data: { status: "FAILED", failureReason: reason, failedByAccountId: reviewerAccountId, failedAt },
     });
     if (updated.count !== 1) {
       throw fail("Payout state changed before failure could be recorded.", 409, "PAYOUT_STATE_CONFLICT");
     }
     await writeAudit(
-      { actorId: failedByAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+      { actorId: reviewerAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
       {
         action: "FINANCIAL_PAYOUT_FAILED",
         entityType: "FinancialPayout",

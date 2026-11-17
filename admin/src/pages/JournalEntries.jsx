@@ -12,6 +12,7 @@ const SOURCE_TYPE_BADGES = {
   CUSTOMER_PAYMENT: "bg-emerald-50 text-emerald-700 border-emerald-200",
   PURCHASE_BILL: "bg-orange-50 text-orange-700 border-orange-200",
   SUPPLIER_PAYMENT: "bg-teal-50 text-teal-700 border-teal-200",
+  MARKETING_CPA_PAYMENT: "bg-violet-50 text-violet-700 border-violet-200",
   SALES_RETURN: "bg-rose-50 text-rose-700 border-rose-200",
   EXPENSE_PAYMENT: "bg-amber-50 text-amber-700 border-amber-200",
   ASSET_ACQUISITION: "bg-indigo-50 text-indigo-700 border-indigo-200",
@@ -44,6 +45,8 @@ const JournalEntries = ({ token }) => {
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualDescription, setManualDescription] = useState("");
   const [manualReference, setManualReference] = useState("");
+  const [manualReason, setManualReason] = useState("");
+  const [journalActionType, setJournalActionType] = useState("MANUAL_JOURNAL");
   const [manualDate, setManualDate] = useState(() => formatNepaliDate(new Date()));
   const [lines, setLines] = useState([
     { accountId: "", debit: "", credit: "", description: "" },
@@ -158,8 +161,10 @@ const JournalEntries = ({ token }) => {
       const payload = {
         transactionDate: manualDate,
         calendar: "BS",
-        description: manualDescription.trim() || "Manual Journal Entry",
+        actionType: journalActionType,
+        description: manualDescription.trim(),
         referenceNumber: manualReference.trim() || "",
+        reason: manualReason.trim(),
         lines: lines.map((l) => ({
           accountId: l.accountId,
           debit: Number(l.debit || 0),
@@ -169,14 +174,16 @@ const JournalEntries = ({ token }) => {
       };
 
       const res = await axios.post(`${backendUrl}/api/accounting/manual-journal`, payload, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": crypto.randomUUID() },
       });
 
       if (res.data.success) {
-        toast.success(res.data.message || "Journal entry posted successfully");
+        toast.success(res.data.message || "Journal submitted for independent approval");
         setShowManualModal(false);
         setManualDescription("");
         setManualReference("");
+        setManualReason("");
+        setJournalActionType("MANUAL_JOURNAL");
         setLines([
           { accountId: "", debit: "", credit: "", description: "" },
           { accountId: "", debit: "", credit: "", description: "" },
@@ -200,13 +207,13 @@ const JournalEntries = ({ token }) => {
         `${backendUrl}/api/accounting/reverse-journal`,
         {
           journalEntryId: selectedEntryForReverse.id,
-          reversalReason: reverseReason.trim() || "Reversed by Admin",
+          reversalReason: reverseReason.trim(),
         },
-        { headers: { token } }
+        { headers: { token, "Idempotency-Key": crypto.randomUUID() } }
       );
 
       if (res.data.success) {
-        toast.success(res.data.message || "Journal entry reversed successfully");
+        toast.success(res.data.message || "Journal reversal submitted for independent approval");
         setShowReverseModal(false);
         setSelectedEntryForReverse(null);
         setReverseReason("");
@@ -297,6 +304,7 @@ const JournalEntries = ({ token }) => {
               <option value="CUSTOMER_PAYMENT">Customer Receipts / COD</option>
               <option value="PURCHASE_BILL">Purchase Bills</option>
               <option value="SUPPLIER_PAYMENT">Supplier / Manufacturer Payments</option>
+              <option value="MARKETING_CPA_PAYMENT">Marketing CPA Payments</option>
               <option value="SALES_RETURN">Sales Returns & RMA</option>
               <option value="EXPENSE_PAYMENT">Operating Expenses</option>
               <option value="ASSET_ACQUISITION">Fixed Assets</option>
@@ -439,7 +447,7 @@ const JournalEntries = ({ token }) => {
                       </div>
                     </div>
 
-                    {ent.status === "POSTED" && ent.sourceType !== "REVERSAL" && (
+                    {ent.status === "POSTED" && ent.sourceType === "MANUAL_JOURNAL" && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -526,13 +534,20 @@ const JournalEntries = ({ token }) => {
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Create Manual Journal Entry</h2>
-                <p className="text-[11px] text-slate-400">Total Debits must equal Total Credits before posting to the authoritative ledger.</p>
+                <h2 className="text-base font-bold text-slate-900">Submit Journal for Approval</h2>
+                <p className="text-[11px] text-slate-400">No ledger entry is posted until a different Admin approves the request.</p>
               </div>
               <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
             <form onSubmit={handlePostManualEntry} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Journal type *</label>
+                <select value={journalActionType} onChange={(event) => setJournalActionType(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <option value="MANUAL_JOURNAL">Manual journal</option>
+                  <option value="OPENING_BALANCE">Opening balance</option>
+                </select>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Posting Date *</label>
@@ -559,15 +574,20 @@ const JournalEntries = ({ token }) => {
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reference Document #</label>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Source / Evidence Reference {journalActionType === "OPENING_BALANCE" ? "*" : ""}</label>
                   <input
                     type="text"
-                    placeholder="e.g. ADJ-2026-09"
+                    required={journalActionType === "OPENING_BALANCE"}
+                    placeholder="e.g. source document or opening balance schedule"
                     value={manualReference}
                     onChange={(e) => setManualReference(e.target.value)}
                     className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reason for journal *</label>
+                <textarea required minLength={3} maxLength={2000} rows="2" value={manualReason} onChange={(event) => setManualReason(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs" />
               </div>
 
               {/* Dynamic Line Items Table */}
@@ -696,7 +716,7 @@ const JournalEntries = ({ token }) => {
                   disabled={!isBalanced}
                   className="px-5 py-2 bg-slate-900 disabled:bg-slate-300 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
                 >
-                  Post Journal Entry
+                  Submit for Approval
                 </button>
               </div>
             </form>
@@ -714,7 +734,7 @@ const JournalEntries = ({ token }) => {
             </div>
 
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
-              This action will mark <strong>{selectedEntryForReverse.journalNumber || selectedEntryForReverse.entryNumber}</strong> as REVERSED and generate an offsetting double-entry reversal to preserve the full audit trail.
+              This manual journal will be marked reversed and a linked offsetting entry will be posted atomically. Source-backed business transactions must be corrected through their originating workflow.
             </div>
 
             <form onSubmit={handleReverseEntry} className="space-y-4">
@@ -725,6 +745,7 @@ const JournalEntries = ({ token }) => {
                 <textarea
                   rows="2"
                   required
+                  minLength={3}
                   placeholder="Explain why this journal entry is being reversed..."
                   value={reverseReason}
                   onChange={(e) => setReverseReason(e.target.value)}
@@ -742,9 +763,10 @@ const JournalEntries = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={reverseReason.trim().length < 3}
                   className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs"
                 >
-                  Confirm Reversal
+                  Submit Reversal for Approval
                 </button>
               </div>
             </form>

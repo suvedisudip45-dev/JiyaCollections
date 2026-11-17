@@ -4,9 +4,11 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../../App";
 import Pagination from "../Pagination";
+import { compareDecimalStrings, formatNprAmount } from "../../utils/decimalDisplay";
 
 const limit = 10;
 const amount = (value) => `${currency}${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const settlementAmount = (value) => `${currency}${formatNprAmount(value ?? "0")}`;
 const date = (value) => (value ? new Date(value).toLocaleString() : "—");
 const getProductionUnitCostBreakdown = (request) => {
   const entered = Number(request.approvedUnitCogs ?? request.proposedUnitCogs) || 0;
@@ -253,7 +255,11 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token, canApplyCred
     }
     setApplyingCreditId(credit.id);
     try {
-      const idempotencyKey = `mfg-credit:${credit.id}:${input.billDocumentId}:${crypto.randomUUID()}`;
+      const idempotencyKey = input.idempotencyKey || `mfg-credit:${credit.id}:${input.billDocumentId}:${crypto.randomUUID()}`;
+      setApplicationInputs((current) => ({
+        ...current,
+        [credit.id]: { ...current[credit.id], idempotencyKey },
+      }));
       const response = await axios.post(
         `${creditEndpoint}/${credit.id}/apply`,
         {
@@ -265,7 +271,7 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token, canApplyCred
         { headers: { token, "Idempotency-Key": idempotencyKey } },
       );
       if (!response.data?.success) throw new Error(response.data?.message || "Supplier credit application failed.");
-      toast.success("Supplier credit applied to the selected bill. No second journal was posted.");
+      toast.info(response.data.message || "Supplier credit application submitted for independent Admin approval.");
       setApplicationInputs((current) => ({ ...current, [credit.id]: {} }));
       await Promise.all([loadCreditOptions(), axios.get(endpoint, { headers: { token } }).then((res) => {
         if (res.data?.success) setFinance(res.data.finance);
@@ -282,21 +288,21 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token, canApplyCred
   if (!finance) return null;
   return <div className="space-y-4">
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-      <SummaryCard label="Recognized production value" value={amount(finance.totalManufacturedGoodsValue)} />
-      <SummaryCard label="Logistics reimbursements accrued" value={amount(finance.logisticsReimbursements)} />
-      <SummaryCard label="Outstanding payable" value={amount(finance.outstandingPayable)} />
-      <SummaryCard label="Supplier credit outstanding" value={amount(finance.supplierCreditOutstanding)} />
-      <SummaryCard label="Pending settlement requests" value={amount(finance.pendingSettlements)} />
-      <SummaryCard label="Completed payments" value={amount(finance.completedPayments)} />
-      <SummaryCard label="Receivables outstanding" value={amount(finance.receivables?.outstanding)} />
+      <SummaryCard label="Recognized production value" value={settlementAmount(finance.totalManufacturedGoodsValue)} />
+      <SummaryCard label="Logistics reimbursements accrued" value={settlementAmount(finance.logisticsReimbursements)} />
+      <SummaryCard label="Outstanding payable" value={settlementAmount(finance.outstandingPayable)} />
+      <SummaryCard label="Supplier credit outstanding" value={settlementAmount(finance.supplierCreditOutstanding)} />
+      <SummaryCard label="Pending settlement requests" value={settlementAmount(finance.pendingSettlements)} />
+      <SummaryCard label="Completed payments" value={settlementAmount(finance.completedPayments)} />
+      <SummaryCard label="Receivables outstanding" value={settlementAmount(finance.receivables?.outstanding)} />
     </div>
     <section className="rounded-2xl border border-slate-200 bg-white p-5 text-xs text-slate-600">
       <h2 className="font-bold text-slate-900">Payable and receivable breakdown</h2>
       <div className="mt-3 grid gap-3 sm:grid-cols-3">
-        <Fact label="Production payable" value={amount(finance.productionOutstanding)} />
-        <Fact label="Logistics payable" value={amount(finance.logisticsOutstanding)} />
-        <Fact label="Supplier credit outstanding" value={amount(finance.supplierCreditOutstanding)} />
-        <Fact label="Receivable documents / total" value={`${finance.receivables?.documents || 0} / ${amount(finance.receivables?.total)}`} />
+        <Fact label="Production payable" value={settlementAmount(finance.productionOutstanding)} />
+        <Fact label="Logistics payable" value={settlementAmount(finance.logisticsOutstanding)} />
+        <Fact label="Supplier credit outstanding" value={settlementAmount(finance.supplierCreditOutstanding)} />
+        <Fact label="Receivable documents / total" value={`${finance.receivables?.documents || 0} / ${settlementAmount(finance.receivables?.total)}`} />
       </div>
       <p className="mt-3 text-[11px] text-slate-500">Payables reuse the manufacturer settlement accounting service. Receivables are from manufacturer-linked accounting documents; they are not inferred from unrelated supplier/customer balances.</p>
     </section>
@@ -325,16 +331,16 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token, canApplyCred
                     eligibleBills.length === 0 ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">No open bill for the same delivered order and currency was found. Do not apply this credit to another bill.</p> : (
                       <div className="grid gap-3 md:grid-cols-4">
                         <label className="text-xs font-semibold text-slate-700 md:col-span-1">Original bill
-                          <select value={input.billDocumentId || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], billDocumentId: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2">
+                          <select value={input.billDocumentId || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], billDocumentId: event.target.value, idempotencyKey: "" } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2">
                             <option value="">Select bill</option>
                             {eligibleBills.map((bill) => <option key={bill.id} value={bill.id}>{bill.documentNumber} · open {amount(bill.remainingAmount)}</option>)}
                           </select>
                         </label>
                         <label className="text-xs font-semibold text-slate-700">Amount
-                          <input type="number" min="0.01" max={credit.remainingAmount} step="0.01" value={input.amount || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], amount: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
+                          <input type="number" min="0.01" max={credit.remainingAmount} step="0.01" value={input.amount || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], amount: event.target.value, idempotencyKey: "" } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
                         </label>
                         <label className="text-xs font-semibold text-slate-700 md:col-span-1">Audit notes
-                          <input maxLength={1000} value={input.notes || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], notes: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
+                          <input maxLength={1000} value={input.notes || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], notes: event.target.value, idempotencyKey: "" } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
                         </label>
                         <button type="button" disabled={applyingCreditId === credit.id || !input.billDocumentId || !input.amount || !input.notes?.trim()} onClick={() => applySupplierCredit(credit)} className="self-end rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{applyingCreditId === credit.id ? "Applying…" : "Apply to bill"}</button>
                       </div>
@@ -384,12 +390,13 @@ export const ManufacturerSettlementsSection = ({ manufacturerId, token }) => {
     <RecordFrame title="Payable requests" description="Manufacturer requests show requested amount, paid amount, and remaining balance." loading={loading} errorMessage={errorMessage} emptyMessage="No settlement requests found." pagination={pagination} page={page} setPage={setPage}>
       {records.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[1180px] text-left text-xs">
         <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Requested</th><th className="px-4 py-3">Type</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3 text-right">Paid</th><th className="px-4 py-3 text-right">Remaining</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Paid date</th><th className="px-4 py-3">Transfer reference</th><th className="px-4 py-3">Payout trail</th><th className="px-4 py-3">Notes</th></tr></thead>
-        <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 text-right font-semibold">{amount(settlement.amount)}</td><td className="px-4 py-3 text-right">{amount(settlement.paidAmount)}</td><td className="px-4 py-3 text-right font-semibold">{amount(Math.max(0, Number(settlement.amount || 0) - Number(settlement.paidAmount || 0)))}</td><td className="px-4 py-3">{settlement.status.replaceAll("_", " ")}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.externalPaymentReference || "—"}</td><td className="px-4 py-3">
+        <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 text-right font-semibold">{settlementAmount(settlement.amount)}</td><td className="px-4 py-3 text-right">{settlementAmount(settlement.paidAmount)}</td><td className="px-4 py-3 text-right font-semibold">{settlementAmount(settlement.remainingAmount)}</td><td className="px-4 py-3">{settlement.status.replaceAll("_", " ")}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.externalPaymentReference || "—"}</td><td className="px-4 py-3">
           {settlement.payoutHistory?.length ? <details className="min-w-52">
             <summary className="cursor-pointer font-semibold text-indigo-700">{settlement.payoutHistory.length} payout attempt(s)</summary>
             <div className="mt-2 space-y-2">
               {settlement.payoutHistory.map((payout) => <div key={payout.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px]">
-                <p className="font-bold">{payout.status.replaceAll("_", " ")} · {amount(payout.amount)} · {date(payout.settledAt || payout.initiatedAt)}</p>
+                <p className="font-bold">{payout.status.replaceAll("_", " ")} · Cash {settlementAmount(payout.amount)} · Settled {settlementAmount(payout.settlementAmount)} · {date(payout.settledAt || payout.initiatedAt)}</p>
+                {payout.adjustmentType !== "NONE" && compareDecimalStrings(payout.adjustmentAmount ?? "0", "0") !== 0 ? <p>{payout.adjustmentType.replaceAll("_", " ")} adjustment: {settlementAmount(payout.adjustmentAmount)}</p> : null}
                 <p>Account: {payout.financialAccount?.accountName || "—"} · Transfer: {payout.externalPaymentReference || "—"}</p>
                 <p>Evidence: {payout.bankEvidenceReference || "—"} · Cash: {payout.cashTransaction?.id || "not posted"} · Journal: {payout.journalEntry?.journalNumber || "not posted"}</p>
               </div>)}

@@ -4,6 +4,7 @@ import { ensureAccountingParty } from "./accountingPartyService.js";
 import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 import { postJournalEntry, postSupplierPaymentAccounting } from "./accountingPostingEngine.js";
 import { recordSystemAudit } from "./auditService.js";
+import { parseNprAmountString } from "./accountingDecimal.js";
 
 const fail = (message, statusCode = 400, code = "DISTRIBUTOR_CASH_ERROR") => {
   const error = new Error(message);
@@ -13,14 +14,16 @@ const fail = (message, statusCode = 400, code = "DISTRIBUTOR_CASH_ERROR") => {
 };
 
 const parseMoney = (value) => {
-  if ((typeof value !== "number" && typeof value !== "string") || !/^\d{1,18}(?:\.\d{1,2})?$/.test(String(value).trim())) {
+  if (typeof value !== "string" || !/^\d{1,18}(?:\.\d{1,2})?$/.test(value.trim())) {
     throw fail("Amount must be positive with no more than two decimal places.", 400, "INVALID_AMOUNT");
   }
-  const amount = new Prisma.Decimal(String(value).trim());
-  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
+  let amount;
+  try {
+    amount = parseNprAmountString(value.trim(), "Amount", { allowZero: false });
+  } catch {
     throw fail("Amount must be greater than zero.", 400, "INVALID_AMOUNT");
   }
-  return amount.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  return amount;
 };
 
 const validateText = (value, label, maxLength, { required = false } = {}) => {
@@ -32,6 +35,11 @@ const validateText = (value, label, maxLength, { required = false } = {}) => {
   if (text.length > maxLength) throw fail(`${label} must be ${maxLength} characters or fewer.`, 400, "INVALID_INPUT");
   return text || null;
 };
+
+const runSerializable = (client, callback) =>
+  typeof client.$transaction === "function"
+    ? client.$transaction(callback, { isolationLevel: "Serializable" })
+    : callback(client);
 
 const ensureDistributorParty = async (tx, distributorId) => {
   const distributor = await tx.distributor.findUnique({
@@ -60,6 +68,43 @@ const getDistributorReceivableBalance = async (tx, partyId) => {
   return new Prisma.Decimal(String(result._sum.remainingAmount || 0));
 };
 
+const getAvailableCollectedFunds = async (tx, distributorId, receivableDocuments = []) => {
+  const sourceIds = [...new Set(receivableDocuments.flatMap((document) => [
+    document.id,
+    document.sourceId,
+  ]).filter((value) => typeof value === "string" && value.trim()))];
+  if (!sourceIds.length) return new Prisma.Decimal(0);
+  const [collectionResult, remittanceResult, settlementResult] = await Promise.all([
+    tx.distributorCashEvent.aggregate({
+      where: {
+        distributorId,
+        eventType: "CUSTOMER_COLLECTION",
+        status: { in: ["VERIFIED", "POSTED"] },
+        OR: [
+          { orderId: { in: sourceIds } },
+          { accountingDocumentId: { in: sourceIds } },
+        ],
+      },
+      _sum: { amount: true },
+    }),
+    tx.distributorRemittanceBatch.aggregate({
+      where: { distributorId, status: { in: ["PENDING_REVIEW", "VERIFIED"] } },
+      _sum: { amount: true },
+    }),
+    tx.distributorBalanceSettlement.aggregate({
+      where: { distributorId, direction: "COMPANY_COLLECTS", status: "POSTED" },
+      _sum: { cashAmount: true },
+    }),
+  ]);
+  const alreadyRemitted = new Prisma.Decimal(String(remittanceResult._sum.amount || 0))
+    .plus(new Prisma.Decimal(String(settlementResult._sum.cashAmount || 0)));
+  return Prisma.Decimal.max(
+    new Prisma.Decimal(String(collectionResult._sum.amount || 0))
+      .minus(alreadyRemitted),
+    0,
+  );
+};
+
 export const getDistributorCashPosition = async ({ distributorId, client = prisma } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.");
   const party = await client.accountingParty.findUnique({
@@ -76,12 +121,24 @@ export const getDistributorCashPosition = async ({ distributorId, client = prism
       outstandingReceivable: "0.00",
       pendingRemittance: "0.00",
       refundPayable: "0.00",
+      verifiedCustomerCollections: "0.00",
+      remittedOrPending: "0.00",
+      companyReceiptRecorded: "0.00",
+      cashHeldByDistributor: "0.00",
       availableToRemit: "0.00",
       availableToOffset: "0.00",
     };
   }
 
-  const [receivableResult, pendingResult, payableResult] = await Promise.all([
+  const [
+    receivableResult,
+    pendingResult,
+    payableResult,
+    collectionResult,
+    remittanceResult,
+    verifiedRemittanceResult,
+    settlementResult,
+  ] = await Promise.all([
     client.accountingDocument.aggregate({
       where: { partyId: party.id, side: "RECEIVABLE", sourceType: "DISTRIBUTOR_COD_SALE", status: { in: ["OPEN", "PARTIALLY_PAID"] } },
       _sum: { remainingAmount: true },
@@ -94,16 +151,44 @@ export const getDistributorCashPosition = async ({ distributorId, client = prism
       where: { partyId: party.id, side: "PAYABLE", sourceType: "DISTRIBUTOR_CUSTOMER_REFUND", status: { in: ["OPEN", "PARTIALLY_PAID"] } },
       _sum: { remainingAmount: true },
     }),
+    client.distributorCashEvent.aggregate({
+      where: { distributorId, eventType: "CUSTOMER_COLLECTION", status: { in: ["VERIFIED", "POSTED"] } },
+      _sum: { amount: true },
+    }),
+    client.distributorRemittanceBatch.aggregate({
+      where: { distributorId, status: { in: ["PENDING_REVIEW", "VERIFIED"] } },
+      _sum: { amount: true },
+    }),
+    client.distributorRemittanceBatch.aggregate({
+      where: { distributorId, status: "VERIFIED" },
+      _sum: { amount: true },
+    }),
+    client.distributorBalanceSettlement.aggregate({
+      where: { distributorId, direction: "COMPANY_COLLECTS", status: "POSTED" },
+      _sum: { cashAmount: true },
+    }),
   ]);
   const outstanding = new Prisma.Decimal(String(receivableResult._sum.remainingAmount || 0));
   const pending = new Prisma.Decimal(String(pendingResult._sum.amount || 0));
   const refundPayable = new Prisma.Decimal(String(payableResult._sum.remainingAmount || 0));
+  const verifiedCustomerCollections = new Prisma.Decimal(String(collectionResult._sum.amount || 0));
+  const settledCompanyReceipts = new Prisma.Decimal(String(settlementResult._sum.cashAmount || 0));
+  const remittedOrPending = new Prisma.Decimal(String(remittanceResult._sum.amount || 0))
+    .plus(settledCompanyReceipts);
+  const companyReceiptRecorded = new Prisma.Decimal(String(verifiedRemittanceResult._sum.amount || 0))
+    .plus(settledCompanyReceipts);
   const availableReceivable = Prisma.Decimal.max(outstanding.minus(pending), 0);
+  const cashHeldByDistributor = Prisma.Decimal.max(verifiedCustomerCollections.minus(remittedOrPending), 0);
+  const availableToRemit = Prisma.Decimal.min(availableReceivable, cashHeldByDistributor);
   return {
     outstandingReceivable: outstanding.toFixed(2),
     pendingRemittance: pending.toFixed(2),
     refundPayable: refundPayable.toFixed(2),
-    availableToRemit: availableReceivable.toFixed(2),
+    verifiedCustomerCollections: verifiedCustomerCollections.toFixed(2),
+    remittedOrPending: remittedOrPending.toFixed(2),
+    companyReceiptRecorded: companyReceiptRecorded.toFixed(2),
+    cashHeldByDistributor: cashHeldByDistributor.toFixed(2),
+    availableToRemit: availableToRemit.toFixed(2),
     availableToOffset: Prisma.Decimal.min(availableReceivable, refundPayable).toFixed(2),
   };
 };
@@ -120,12 +205,16 @@ export const getDistributorCashPositions = async ({ distributorIds = [], client 
       outstandingReceivable: "0.00",
       pendingRemittance: "0.00",
       refundPayable: "0.00",
+      verifiedCustomerCollections: "0.00",
+      remittedOrPending: "0.00",
+      companyReceiptRecorded: "0.00",
+      cashHeldByDistributor: "0.00",
       availableToRemit: "0.00",
       availableToOffset: "0.00",
     }]));
   }
   const partyIdToDistributorId = new Map(parties.map((party) => [party.id, party.sourceEntityId]));
-  const [documentBalances, pendingBatches] = await Promise.all([
+  const [documentBalances, remittanceBatches, collectionEvents, companySettlements] = await Promise.all([
     client.accountingDocument.groupBy({
       by: ["partyId", "side", "sourceType"],
       where: {
@@ -136,15 +225,36 @@ export const getDistributorCashPositions = async ({ distributorIds = [], client 
       _sum: { remainingAmount: true },
     }),
     client.distributorRemittanceBatch.groupBy({
-      by: ["distributorId"],
-      where: { distributorId: { in: ids }, status: "PENDING_REVIEW" },
+      by: ["distributorId", "status"],
+      where: { distributorId: { in: ids }, status: { in: ["PENDING_REVIEW", "VERIFIED"] } },
       _sum: { amount: true },
+    }),
+    client.distributorCashEvent.groupBy({
+      by: ["distributorId"],
+      where: {
+        distributorId: { in: ids },
+        eventType: "CUSTOMER_COLLECTION",
+        status: { in: ["VERIFIED", "POSTED"] },
+      },
+      _sum: { amount: true },
+    }),
+    client.distributorBalanceSettlement.groupBy({
+      by: ["distributorId"],
+      where: {
+        distributorId: { in: ids },
+        direction: "COMPANY_COLLECTS",
+        status: "POSTED",
+      },
+      _sum: { cashAmount: true },
     }),
   ]);
   const balances = new Map(ids.map((id) => [id, {
     outstanding: new Prisma.Decimal(0),
     refund: new Prisma.Decimal(0),
     pending: new Prisma.Decimal(0),
+    collected: new Prisma.Decimal(0),
+    remittedOrPending: new Prisma.Decimal(0),
+    companyReceiptRecorded: new Prisma.Decimal(0),
   }]));
   for (const document of documentBalances) {
     const distributorId = partyIdToDistributorId.get(document.partyId);
@@ -157,18 +267,41 @@ export const getDistributorCashPositions = async ({ distributorIds = [], client 
       balance.refund = balance.refund.plus(amount);
     }
   }
-  for (const batch of pendingBatches) {
+  for (const batch of remittanceBatches) {
     const balance = balances.get(batch.distributorId);
-    if (balance) balance.pending = new Prisma.Decimal(String(batch._sum.amount || 0));
+    if (!balance) continue;
+    const amount = new Prisma.Decimal(String(batch._sum.amount || 0));
+    balance.remittedOrPending = balance.remittedOrPending.plus(amount);
+    if (batch.status === "PENDING_REVIEW") balance.pending = balance.pending.plus(amount);
+    if (batch.status === "VERIFIED") {
+      balance.companyReceiptRecorded = balance.companyReceiptRecorded.plus(amount);
+    }
+  }
+  for (const event of collectionEvents) {
+    const balance = balances.get(event.distributorId);
+    if (balance) balance.collected = new Prisma.Decimal(String(event._sum.amount || 0));
+  }
+  for (const settlement of companySettlements) {
+    const balance = balances.get(settlement.distributorId);
+    if (!balance) continue;
+    const amount = new Prisma.Decimal(String(settlement._sum.cashAmount || 0));
+    balance.remittedOrPending = balance.remittedOrPending.plus(amount);
+    balance.companyReceiptRecorded = balance.companyReceiptRecorded.plus(amount);
   }
   return new Map([...balances].map(([id, balance]) => {
-    const available = Prisma.Decimal.max(balance.outstanding.minus(balance.pending), 0);
+    const availableReceivable = Prisma.Decimal.max(balance.outstanding.minus(balance.pending), 0);
+    const cashHeldByDistributor = Prisma.Decimal.max(balance.collected.minus(balance.remittedOrPending), 0);
+    const available = Prisma.Decimal.min(availableReceivable, cashHeldByDistributor);
     return [id, {
       outstandingReceivable: balance.outstanding.toFixed(2),
       pendingRemittance: balance.pending.toFixed(2),
       refundPayable: balance.refund.toFixed(2),
+      verifiedCustomerCollections: balance.collected.toFixed(2),
+      remittedOrPending: balance.remittedOrPending.toFixed(2),
+      companyReceiptRecorded: balance.companyReceiptRecorded.toFixed(2),
+      cashHeldByDistributor: cashHeldByDistributor.toFixed(2),
       availableToRemit: available.toFixed(2),
-      availableToOffset: Prisma.Decimal.min(available, balance.refund).toFixed(2),
+      availableToOffset: Prisma.Decimal.min(availableReceivable, balance.refund).toFixed(2),
     }];
   }));
 };
@@ -214,7 +347,7 @@ export const netDistributorRefundPayable = async ({
   const journalKey = offsetKey;
 
   try {
-    return await client.$transaction(async (tx) => {
+    return await runSerializable(client, async (tx) => {
       const replay = await tx.distributorSettlementOffset.findUnique({
         where: { idempotencyKey: offsetKey },
       });
@@ -352,7 +485,7 @@ export const netDistributorRefundPayable = async ({
         },
       }, { client: tx });
       return { success: true, offset, journalEntryId: journal.id, isReplay: false };
-    }, { isolationLevel: "Serializable" });
+    });
   } catch (error) {
     if (error?.code === "P2034") {
       throw fail("Distributor balances changed while approving the offset. Refresh and retry.", 409, "OFFSET_CONCURRENCY_CONFLICT");
@@ -412,6 +545,7 @@ export const settleDistributorRefundPayable = async ({
   amount,
   idempotencyKey,
   reviewerAccountId = null,
+  reason = null,
   actorContext = {},
   client = prisma,
   paymentAccountingPoster = postSupplierPaymentAccounting,
@@ -422,9 +556,10 @@ export const settleDistributorRefundPayable = async ({
   }
   const payoutAmount = parseMoney(amount);
   const normalizedKey = validateText(idempotencyKey, "Idempotency key", 150, { required: true });
+  const payoutReason = validateText(reason, "Refund payout reason", 2000);
 
   try {
-    return await client.$transaction(async (tx) => {
+    return await runSerializable(client, async (tx) => {
       const eventKey = `DISTRIBUTOR_REFUND_PAYOUT:${normalizedKey}`;
       const replay = await tx.distributorCashEvent.findUnique({ where: { idempotencyKey: eventKey } });
       if (replay) {
@@ -540,7 +675,7 @@ export const settleDistributorRefundPayable = async ({
           verifiedAt: now,
           journalEntryId: journal.id,
           cashTransactionId: cashTransaction.id,
-          notes: "Admin payout against verified distributor customer-refund payable.",
+          notes: payoutReason || "Admin payout against verified distributor customer-refund payable.",
         },
       });
       await recordSystemAudit({
@@ -555,13 +690,14 @@ export const settleDistributorRefundPayable = async ({
         beforeState: { remainingAmount: document.remainingAmount.toString() },
         afterState: {
           amount: payoutAmount.toFixed(2),
+          reason: payoutReason,
           journalEntryId: journal.id,
           cashTransactionId: cashTransaction.id,
           cashEventId: cashEvent.id,
         },
       }, { client: tx });
       return { success: true, cashEvent, isReplay: false };
-    }, { isolationLevel: "Serializable" });
+    });
   } catch (error) {
     if (error?.code === "P2034") {
       throw fail("Another payout changed this payable or treasury balance. Refresh and retry.", 409, "PAYOUT_CONFLICT");
@@ -604,6 +740,9 @@ export const submitDistributorRemittance = async ({
     throw fail("Evidence URL must use HTTPS.", 400, "INVALID_EVIDENCE_URL");
   }
   const normalizedKey = validateText(idempotencyKey, "Idempotency key", 160, { required: true });
+  if (typeof recordedByAccountId !== "string" || !recordedByAccountId.trim()) {
+    throw fail("An authenticated remittance actor is required.", 401, "REMITTANCE_ACTOR_REQUIRED");
+  }
 
   try {
     return await client.$transaction(async (tx) => {
@@ -631,10 +770,28 @@ export const submitDistributorRemittance = async ({
         }),
       ]);
       const pending = new Prisma.Decimal(String(pendingResult._sum.amount || 0));
-      const available = outstanding.minus(pending);
-      if (decAmount.greaterThan(available)) {
+      const availableReceivable = Prisma.Decimal.max(outstanding.minus(pending), 0);
+      const receivableDocuments = await tx.accountingDocument.findMany({
+        where: {
+          partyId: party.id,
+          side: "RECEIVABLE",
+          sourceType: "DISTRIBUTOR_COD_SALE",
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          remainingAmount: { gt: 0 },
+        },
+        select: { id: true, sourceId: true },
+      });
+      const availableCollected = await getAvailableCollectedFunds(tx, distributorId, receivableDocuments);
+      if (decAmount.greaterThan(availableCollected)) {
         throw fail(
-          `Remittance exceeds the available distributor receivable of NPR ${Prisma.Decimal.max(available, 0).toFixed(2)}.`,
+          `Remittance exceeds verified, unremitted customer collections of NPR ${availableCollected.toFixed(2)}.`,
+          409,
+          "REMITTANCE_EXCEEDS_COLLECTED_FUNDS",
+        );
+      }
+      if (decAmount.greaterThan(availableReceivable)) {
+        throw fail(
+          `Remittance exceeds the available distributor receivable of NPR ${availableReceivable.toFixed(2)}.`,
           409,
           "REMITTANCE_EXCEEDS_RECEIVABLE",
         );
@@ -1124,15 +1281,14 @@ export const listDistributorBalanceSettlements = async ({
 };
 
 const parseSettlementCashAmount = (value) => {
-  if ((typeof value !== "number" && typeof value !== "string") ||
-      !/^\d{1,18}(?:\.\d{1,2})?$/.test(String(value).trim())) {
+  if (typeof value !== "string" || !/^\d{1,18}(?:\.\d{1,2})?$/.test(value.trim())) {
     throw fail("Settlement cash amount must be zero or a positive amount with no more than two decimals.", 400, "INVALID_AMOUNT");
   }
-  const amount = new Prisma.Decimal(String(value).trim());
-  if (!amount.isFinite() || amount.isNegative()) {
-    throw fail("Settlement cash amount cannot be negative.", 400, "INVALID_AMOUNT");
+  try {
+    return parseNprAmountString(value.trim(), "Settlement cash amount", { allowZero: true });
+  } catch {
+    throw fail("Settlement cash amount must be zero or a positive amount with no more than two decimals.", 400, "INVALID_AMOUNT");
   }
-  return amount.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 };
 
 export const postDistributorBalanceSettlement = async ({
@@ -1154,6 +1310,7 @@ export const postDistributorBalanceSettlement = async ({
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.");
   const cash = parseSettlementCashAmount(cashAmount);
+  const postingAdminAccountId = validateText(adminAccountId, "Admin account ID", 191, { required: true });
   const normalizedKey = validateText(idempotencyKey, "Idempotency key", 150, { required: true });
   const normalizedReference = validateText(reference, "Transfer reference", 191);
   const agreementReference = validateText(setoffAgreementReference, "Set-off agreement reference", 191);
@@ -1168,7 +1325,7 @@ export const postDistributorBalanceSettlement = async ({
 
   const settlementKey = `DISTRIBUTOR_BALANCE_SETTLEMENT:${normalizedKey}`;
   try {
-    return await client.$transaction(async (tx) => {
+    return await runSerializable(client, async (tx) => {
       const replay = await tx.distributorBalanceSettlement.findUnique({
         where: { idempotencyKey: settlementKey },
       });
@@ -1306,6 +1463,23 @@ export const postDistributorBalanceSettlement = async ({
         : netBalance.lessThan(0)
           ? "COMPANY_PAYS"
           : "OFFSET_ONLY";
+      if (direction === "COMPANY_COLLECTS" && cash.greaterThan(0)) {
+        if (receivableDocuments.some((document) => document.sourceType !== "DISTRIBUTOR_COD_SALE")) {
+          throw fail(
+            "Cash collection is blocked because the distributor balance includes receivable sources without a verified COD collection linkage.",
+            409,
+            "UNSUPPORTED_COLLECTION_SOURCE",
+          );
+        }
+        const availableCollected = await getAvailableCollectedFunds(tx, distributorId, receivableDocuments);
+        if (cash.greaterThan(availableCollected)) {
+          throw fail(
+            `Cash collection exceeds verified, unremitted customer collections of NPR ${availableCollected.toFixed(2)}.`,
+            409,
+            "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS",
+          );
+        }
+      }
       const receivableApplied = offsetAmount.plus(direction === "COMPANY_COLLECTS" ? cash : 0);
       const payableApplied = offsetAmount.plus(direction === "COMPANY_PAYS" ? cash : 0);
       const batch = await tx.distributorBalanceSettlement.create({
@@ -1321,12 +1495,12 @@ export const postDistributorBalanceSettlement = async ({
           setoffAgreementReference: agreementReference,
           setoffConfirmed: setoffConfirmed === true,
           setoffConfirmedAt: offsetAmount.greaterThan(0) ? now : null,
-          setoffConfirmedByAccountId: offsetAmount.greaterThan(0) ? adminAccountId : null,
+          setoffConfirmedByAccountId: offsetAmount.greaterThan(0) ? postingAdminAccountId : null,
           financialAccountId: account?.id || null,
           idempotencyKey: settlementKey,
-          createdByAccountId: adminAccountId,
+          createdByAccountId: postingAdminAccountId,
           transferConfirmedAt: cash.greaterThan(0) ? now : null,
-          transferConfirmedByAccountId: cash.greaterThan(0) ? adminAccountId : null,
+          transferConfirmedByAccountId: cash.greaterThan(0) ? postingAdminAccountId : null,
           postedAt: now,
           notes: settlementNotes,
         },
@@ -1386,7 +1560,7 @@ export const postDistributorBalanceSettlement = async ({
         idempotencyKey: settlementKey,
         referenceNumber: normalizedReference || `DIST-SET-${batch.id.slice(-8)}`,
         description: `Unified balance settlement with ${distributor.name}`,
-        createdBy: adminAccountId || "admin",
+        createdBy: postingAdminAccountId,
         lines: journalLines,
         client: tx,
       });
@@ -1421,9 +1595,9 @@ export const postDistributorBalanceSettlement = async ({
           where: {
             id: account.id,
             status: "ACTIVE",
-            ...(inflow ? {} : { currentBalance: { gte: cash.toNumber() } }),
+            ...(inflow ? {} : { currentBalance: { gte: cash } }),
           },
-          data: { currentBalance: inflow ? { increment: cash.toNumber() } : { decrement: cash.toNumber() } },
+          data: { currentBalance: inflow ? { increment: cash } : { decrement: cash } },
         });
         if (treasuryUpdate.count !== 1) {
           throw fail(
@@ -1458,8 +1632,8 @@ export const postDistributorBalanceSettlement = async ({
             externalReference: normalizedReference,
             idempotencyKey: `${settlementKey}:CASH_EVENT`,
             occurredAt: now,
-            recordedByAccountId: adminAccountId,
-            verifiedByAccountId: adminAccountId,
+            recordedByAccountId: postingAdminAccountId,
+            verifiedByAccountId: postingAdminAccountId,
             verifiedAt: now,
             journalEntryId: journal.id,
             cashTransactionId: cashTransaction.id,
@@ -1477,7 +1651,7 @@ export const postDistributorBalanceSettlement = async ({
       });
       await recordSystemAudit({
         ...actorContext,
-        actorId: adminAccountId,
+        actorId: postingAdminAccountId,
         actorRole: "ADMIN",
         portalSource: "ADMIN",
       }, {
@@ -1505,7 +1679,7 @@ export const postDistributorBalanceSettlement = async ({
       }, { client: tx });
 
       return { success: true, settlement, journalEntryId: journal.id, isReplay: false };
-    }, { isolationLevel: "Serializable" });
+    });
   } catch (error) {
     if (error?.code === "P2034") {
       throw fail("Distributor balances changed while posting settlement. Refresh and retry.", 409, "SETTLEMENT_CONCURRENCY_CONFLICT");
@@ -1579,6 +1753,7 @@ export const postDistributorBalanceSettlement = async ({
       } = {}) => {
         if (!distributorId) throw fail("Distributor ID is required.");
         const amount = parseMoney(requestedAmount);
+        const creatorAdminAccountId = validateText(adminAccountId, "Admin account ID", 191, { required: true });
         const normalizedKey = validateText(idempotencyKey, "Idempotency key", 150, { required: true });
         const agreementReference = validateText(setoffAgreementReference, "Set-off agreement reference", 191);
         const requestNotes = validateText(notes, "Settlement request note", 2000);
@@ -1626,6 +1801,31 @@ export const postDistributorBalanceSettlement = async ({
           if (amount.greaterThan(netBalance.abs())) {
             throw fail(`The request cannot exceed the current net balance of NPR ${netBalance.abs().toFixed(2)}.`, 409, "REQUEST_EXCEEDS_NET_BALANCE");
           }
+          if (netBalance.greaterThan(0)) {
+            const receivableDocuments = position.receivableDocuments || [];
+            if (
+              receivableDocuments.length === 0 ||
+              receivableDocuments.some((document) => document.sourceType !== "DISTRIBUTOR_COD_SALE")
+            ) {
+              throw fail(
+                "A company-collection request is blocked because its receivable sources are not exclusively verified-linkable distributor COD sales.",
+                409,
+                "UNSUPPORTED_COLLECTION_SOURCE",
+              );
+            }
+            const availableCollected = await getAvailableCollectedFunds(
+              tx,
+              distributorId,
+              position.receivableDocuments || [],
+            );
+            if (amount.greaterThan(availableCollected)) {
+              throw fail(
+                `The request exceeds verified, unremitted customer collections of NPR ${availableCollected.toFixed(2)}.`,
+                409,
+                "SETTLEMENT_EXCEEDS_VERIFIED_COLLECTIONS",
+              );
+            }
+          }
           const offsetAmount = Prisma.Decimal.min(
             new Prisma.Decimal(position.outstandingReceivable),
             new Prisma.Decimal(position.outstandingPayable),
@@ -1655,12 +1855,12 @@ export const postDistributorBalanceSettlement = async ({
               requestNotes,
               setoffAgreementReference: agreementReference,
               setoffConfirmed: setoffConfirmed === true,
-              createdByAccountId: adminAccountId,
+              createdByAccountId: creatorAdminAccountId,
               createdAt: now,
             },
           });
           await recordSystemAudit({
-            actorId: adminAccountId,
+            actorId: creatorAdminAccountId,
             actorRole: "ADMIN",
             portalSource: "ADMIN",
           }, {
@@ -1693,6 +1893,12 @@ export const postDistributorBalanceSettlement = async ({
         now = new Date(),
       } = {}) => {
         if (!distributorId || !requestId) throw fail("Distributor and settlement request IDs are required.");
+        const evidenceSubmittedByAccountId = validateText(
+          distributorAccountId,
+          "Distributor account ID",
+          191,
+          { required: true },
+        );
         const reference = validateText(transferReference, "Transfer reference", 191, { required: true });
         const evidence = validateText(evidenceUrl, "Evidence URL", 2000, { required: true });
         const request = await client.distributorSettlementRequestToken.findFirst({
@@ -1706,7 +1912,7 @@ export const postDistributorBalanceSettlement = async ({
             transferReference: reference,
             evidenceUrl: evidence,
             evidenceSubmittedAt: now,
-            evidenceSubmittedByAccountId: distributorAccountId,
+            evidenceSubmittedByAccountId,
           },
         });
         if (updated.count !== 1) throw fail("This request changed while submitting evidence. Refresh and retry.", 409, "SETTLEMENT_REQUEST_CONFLICT");
@@ -1720,6 +1926,7 @@ export const postDistributorBalanceSettlement = async ({
         distributorId,
         requestId,
         decision,
+        actualReceivedAmount,
         financialAccountId = null,
         reviewNotes = null,
         adminAccountId = null,
@@ -1732,68 +1939,113 @@ export const postDistributorBalanceSettlement = async ({
         if (!distributorId || !requestId) throw fail("Distributor and settlement request IDs are required.");
         const normalizedDecision = String(decision || "").trim().toUpperCase();
         const notes = validateText(reviewNotes, "Review note", 2000);
-        const request = await client.distributorSettlementRequestToken.findFirst({
-          where: { id: requestId, distributorId, direction: "COMPANY_COLLECTS" },
-        });
-        if (!request || request.status !== "EVIDENCE_SUBMITTED") {
-          throw fail("This request has no submitted transfer evidence awaiting review.", 409, "SETTLEMENT_EVIDENCE_NOT_PENDING");
-        }
-        if (normalizedDecision === "REJECT") {
-          const updated = await client.distributorSettlementRequestToken.updateMany({
-            where: { id: request.id, status: "EVIDENCE_SUBMITTED" },
+        const reviewerAdminAccountId = validateText(adminAccountId, "Admin account ID", 191, { required: true });
+
+        return runSerializable(client, async (tx) => {
+          const request = await tx.distributorSettlementRequestToken.findFirst({
+            where: { id: requestId, distributorId, direction: "COMPANY_COLLECTS" },
+          });
+          if (!request) throw fail("This settlement request was not found.", 404, "SETTLEMENT_REQUEST_NOT_FOUND");
+
+          if (request.status === "POSTED" && normalizedDecision === "VERIFY") {
+            const receivedAmount = parseMoney(actualReceivedAmount);
+            if (
+              !receivedAmount.equals(new Prisma.Decimal(String(request.requestedAmount))) ||
+              request.financialAccountId !== financialAccountId ||
+              request.reviewNotes !== notes
+            ) {
+              throw fail("This request was already posted with different verification details.", 409, "IDEMPOTENCY_KEY_REUSED");
+            }
+            const settlement = await tx.distributorBalanceSettlement.findUnique({
+              where: { id: request.settlementId },
+            });
+            return { success: true, request, settlement, isReplay: true };
+          }
+          if (request.status === "REJECTED" && normalizedDecision === "REJECT" && request.reviewNotes === notes) {
+            return { success: true, request, isReplay: true };
+          }
+          if (request.status !== "EVIDENCE_SUBMITTED") {
+            throw fail("This request has no submitted transfer evidence awaiting review.", 409, "SETTLEMENT_EVIDENCE_NOT_PENDING");
+          }
+
+          if (normalizedDecision === "REJECT") {
+            if (!notes) throw fail("A review reason is required to reject transfer evidence.", 400, "REVIEW_NOTE_REQUIRED");
+            const updated = await tx.distributorSettlementRequestToken.updateMany({
+              where: { id: request.id, distributorId, status: "EVIDENCE_SUBMITTED" },
+              data: {
+                status: "REJECTED",
+                reviewedAt: now,
+                reviewedByAccountId: reviewerAdminAccountId,
+                reviewNotes: notes,
+              },
+            });
+            if (updated.count !== 1) throw fail("This request changed while it was being reviewed.", 409, "SETTLEMENT_REQUEST_CONFLICT");
+            await recordSystemAudit({
+              ...actorContext,
+              actorId: reviewerAdminAccountId,
+              actorRole: "ADMIN",
+              portalSource: "ADMIN",
+            }, {
+              action: "DISTRIBUTOR_SETTLEMENT_EVIDENCE_REJECTED",
+              entityType: "DistributorSettlementRequestToken",
+              entityId: request.id,
+              beforeState: { status: request.status },
+              afterState: { status: "REJECTED", reviewNotes: notes },
+            }, { client: tx });
+            return {
+              success: true,
+              request: await tx.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
+              isReplay: false,
+            };
+          }
+          if (normalizedDecision !== "VERIFY") {
+            throw fail("Decision must be VERIFY or REJECT.", 400, "INVALID_SETTLEMENT_DECISION");
+          }
+          if (!financialAccountId) throw fail("Select the active NPR treasury account that received the transfer.", 400, "TREASURY_ACCOUNT_REQUIRED");
+          const receivedAmount = parseMoney(actualReceivedAmount);
+          if (!receivedAmount.equals(new Prisma.Decimal(String(request.requestedAmount)))) {
+            throw fail(
+              "The confirmed amount must exactly match the request; partial or mismatched receipts cannot be posted through this workflow.",
+              409,
+              "ACTUAL_RECEIPT_AMOUNT_MISMATCH",
+            );
+          }
+
+          const posted = await postDistributorBalanceSettlement({
+            distributorId,
+            cashAmount: receivedAmount.toFixed(2),
+            reference: request.transferReference,
+            setoffAgreementReference: request.setoffAgreementReference,
+            setoffConfirmed: request.setoffConfirmed,
+            financialAccountId,
+            transferConfirmed: true,
+            idempotencyKey: request.idempotencyKey,
+            notes: request.requestNotes || `Verified distributor settlement request ${request.id}.`,
+            adminAccountId: reviewerAdminAccountId,
+            actorContext,
+            client: tx,
+            journalPoster,
+            allocationService,
+            now,
+          });
+          const updatedRequest = await tx.distributorSettlementRequestToken.update({
+            where: { id: request.id },
             data: {
-              status: "REJECTED",
+              status: "POSTED",
+              financialAccountId,
+              settlementId: posted.settlement.id,
               reviewedAt: now,
-              reviewedByAccountId: adminAccountId,
-              reviewNotes: notes || "Transfer evidence rejected by Admin.",
+              reviewedByAccountId: reviewerAdminAccountId,
+              reviewNotes: notes,
             },
           });
-          if (updated.count !== 1) throw fail("This request changed while it was being reviewed.", 409, "SETTLEMENT_REQUEST_CONFLICT");
           return {
             success: true,
-            request: await client.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
-            isReplay: false,
+            request: updatedRequest,
+            settlement: posted.settlement,
+            isReplay: posted.isReplay,
           };
-        }
-        if (normalizedDecision !== "VERIFY") {
-          throw fail("Decision must be VERIFY or REJECT.", 400, "INVALID_SETTLEMENT_DECISION");
-        }
-        if (!financialAccountId) throw fail("Select the active NPR treasury account that received the transfer.", 400, "TREASURY_ACCOUNT_REQUIRED");
-
-        const posted = await postDistributorBalanceSettlement({
-          distributorId,
-          cashAmount: String(request.requestedAmount),
-          reference: request.transferReference,
-          setoffAgreementReference: request.setoffAgreementReference,
-          setoffConfirmed: request.setoffConfirmed,
-          financialAccountId,
-          transferConfirmed: true,
-          idempotencyKey: request.idempotencyKey,
-          notes: request.requestNotes || `Verified distributor settlement request ${request.id}.`,
-          adminAccountId,
-          actorContext,
-          client,
-          journalPoster,
-          allocationService,
-          now,
         });
-        await client.distributorSettlementRequestToken.update({
-          where: { id: request.id },
-          data: {
-            status: "POSTED",
-            financialAccountId,
-            settlementId: posted.settlement.id,
-            reviewedAt: now,
-            reviewedByAccountId: adminAccountId,
-            reviewNotes: notes,
-          },
-        });
-        return {
-          success: true,
-          request: await client.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
-          settlement: posted.settlement,
-          isReplay: posted.isReplay,
-        };
       };
 
       export const recordDistributorSettlementPayout = async ({
@@ -1803,6 +2055,7 @@ export const postDistributorBalanceSettlement = async ({
         evidenceUrl,
         financialAccountId,
         adminAccountId = null,
+        reason = null,
         actorContext = {},
         client = prisma,
         journalPoster = postJournalEntry,
@@ -1812,47 +2065,50 @@ export const postDistributorBalanceSettlement = async ({
         if (!distributorId || !requestId) throw fail("Distributor and settlement request IDs are required.");
         const reference = validateText(transferReference, "Transfer reference", 191, { required: true });
         const evidence = validateText(evidenceUrl, "Evidence URL", 2000, { required: true });
+        const payoutReason = validateText(reason, "Settlement payout reason", 2000);
         if (!financialAccountId) throw fail("Select the active NPR treasury account used for the payment.", 400, "TREASURY_ACCOUNT_REQUIRED");
-        const request = await client.distributorSettlementRequestToken.findFirst({
-          where: { id: requestId, distributorId, direction: "COMPANY_PAYS", status: "REQUESTED" },
-        });
-        if (!request) throw fail("This payout request is not open for Admin transfer evidence.", 409, "SETTLEMENT_REQUEST_NOT_OPEN");
+        return runSerializable(client, async (tx) => {
+          const request = await tx.distributorSettlementRequestToken.findFirst({
+            where: { id: requestId, distributorId, direction: "COMPANY_PAYS", status: "REQUESTED" },
+          });
+          if (!request) throw fail("This payout request is not open for Admin transfer evidence.", 409, "SETTLEMENT_REQUEST_NOT_OPEN");
 
-        const posted = await postDistributorBalanceSettlement({
-          distributorId,
-          cashAmount: String(request.requestedAmount),
-          reference,
-          setoffAgreementReference: request.setoffAgreementReference,
-          setoffConfirmed: request.setoffConfirmed,
-          financialAccountId,
-          transferConfirmed: true,
-          idempotencyKey: request.idempotencyKey,
-          notes: request.requestNotes || `Admin payout for distributor settlement request ${request.id}.`,
-          adminAccountId,
-          actorContext,
-          client,
-          journalPoster,
-          allocationService,
-          now,
-        });
-        await client.distributorSettlementRequestToken.update({
-          where: { id: request.id },
-          data: {
-            status: "PAYMENT_SENT",
-            transferReference: reference,
-            evidenceUrl: evidence,
+          const posted = await postDistributorBalanceSettlement({
+            distributorId,
+            cashAmount: String(request.requestedAmount),
+            reference,
+            setoffAgreementReference: request.setoffAgreementReference,
+            setoffConfirmed: request.setoffConfirmed,
             financialAccountId,
-            transferSentAt: now,
-            transferSentByAccountId: adminAccountId,
-            settlementId: posted.settlement.id,
-          },
+            transferConfirmed: true,
+            idempotencyKey: request.idempotencyKey,
+            notes: payoutReason || request.requestNotes || `Admin payout for distributor settlement request ${request.id}.`,
+            adminAccountId,
+            actorContext,
+            client: tx,
+            journalPoster,
+            allocationService,
+            now,
+          });
+          await tx.distributorSettlementRequestToken.update({
+            where: { id: request.id },
+            data: {
+              status: "PAYMENT_SENT",
+              transferReference: reference,
+              evidenceUrl: evidence,
+              financialAccountId,
+              transferSentAt: now,
+              transferSentByAccountId: adminAccountId,
+              settlementId: posted.settlement.id,
+            },
+          });
+          return {
+            success: true,
+            request: await tx.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
+            settlement: posted.settlement,
+            isReplay: posted.isReplay,
+          };
         });
-        return {
-          success: true,
-          request: await client.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
-          settlement: posted.settlement,
-          isReplay: posted.isReplay,
-        };
       };
 
       export const acknowledgeDistributorSettlementPayout = async ({

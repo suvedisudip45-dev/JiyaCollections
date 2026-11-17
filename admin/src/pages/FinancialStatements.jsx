@@ -6,9 +6,19 @@ import { backendUrl, currency } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
 import { getCurrentNepaliDateRange, getNepaliDateRangeForDate } from "../utils/nepaliDate";
+import { compareDecimalStrings, formatNprAmount } from "../utils/decimalDisplay";
 
 const formatPostedAmount = (value) =>
-  value === null || value === undefined ? "Unavailable" : `Rs ${Number(value).toLocaleString()}`;
+  value === null || value === undefined ? "Unavailable" : `Rs ${formatNprAmount(value)}`;
+const displayAmount = (value) => formatNprAmount(value ?? "0");
+const compareAmountToZero = (value) => compareDecimalStrings(value ?? "0", "0");
+const absoluteAmount = (value) => {
+  const amount = String(value ?? "0");
+  return amount.startsWith("-") ? amount.slice(1) : amount;
+};
+const cashFlowAmount = displayAmount;
+const isCashFlowNonNegative = (value) => compareDecimalStrings(value ?? "0", "0") >= 0;
+const isCashFlowPositive = (value) => compareDecimalStrings(value ?? "0", "0") > 0;
 
 const FinancialStatements = ({ token }) => {
   const [activeTab, setActiveTab] = useState("PL"); // PL, BS, CF
@@ -131,51 +141,51 @@ const FinancialStatements = ({ token }) => {
   const rtCogs = rtPl.costOfGoodsSold || {};
   const rtOpex = rtPl.operatingExpenses || {};
   const plRevenue = {
-    grossSales: Number(rtRevenue.grossSales || 0),
-    shippingRevenue: Number(rtRevenue.shippingRevenue || 0),
-    salesReturns: Number(rtRevenue.salesReturns || 0),
-    salesDiscounts: Number(rtRevenue.salesDiscounts || 0),
-    netRevenue: Number(rtRevenue.netRevenue || 0),
+    grossSales: rtRevenue.grossSales ?? "0",
+    shippingRevenue: rtRevenue.shippingRevenue ?? "0",
+    salesReturns: rtRevenue.salesReturns ?? "0",
+    salesDiscounts: rtRevenue.salesDiscounts ?? "0",
+    netRevenue: rtRevenue.netRevenue ?? "0",
   };
 
   const plCogs = {
-    directCOGS: Number(rtCogs.directCOGS || 0),
-    freightTransport: Number(rtCogs.freightTransport || 0),
-    packagingExpense: Number(rtCogs.packagingExpense || 0),
-    scrapLoss: Number(rtCogs.scrapLoss || 0),
-    purchaseReturns: Number(rtCogs.purchaseReturns || 0),
-    totalCOGS: Number(rtCogs.totalCOGS || 0),
+    directCOGS: rtCogs.directCOGS ?? "0",
+    freightTransport: rtCogs.freightTransport ?? "0",
+    packagingExpense: rtCogs.packagingExpense ?? "0",
+    scrapLoss: rtCogs.scrapLoss ?? "0",
+    purchaseReturns: rtCogs.purchaseReturns ?? "0",
+    totalCOGS: rtCogs.totalCOGS ?? "0",
   };
 
   const plGrossProfit = rtPl.grossProfit === null || rtPl.grossProfit === undefined
     ? null
-    : Number(rtPl.grossProfit);
+    : rtPl.grossProfit;
 
   const plOpex = {
-    salaries: Number(rtOpex.salaries || 0),
-    rent: Number(rtOpex.rent || 0),
-    utilities: Number(rtOpex.utilities || 0),
-    marketing: Number(rtOpex.marketing || 0),
-    manufacturerCommission: Number(rtOpex.manufacturerCommission || 0),
-    marketingPartnerCpa: Number(rtOpex.marketingPartnerCpa || 0),
-    deliveryExpense: Number(rtOpex.deliveryExpense || 0),
-    ncmTransferExpense: Number(rtOpex.ncmTransferExpense || 0),
-    softwareTools: Number(rtOpex.softwareTools || 0),
-    miscExpenses: Number(rtOpex.miscExpenses || 0),
-    totalOperatingExpenses: Number(rtOpex.totalOperatingExpenses || 0),
+    salaries: rtOpex.salaries ?? "0",
+    rent: rtOpex.rent ?? "0",
+    utilities: rtOpex.utilities ?? "0",
+    marketing: rtOpex.marketing ?? "0",
+    manufacturerCommission: rtOpex.manufacturerCommission ?? "0",
+    marketingPartnerCpa: rtOpex.marketingPartnerCpa ?? "0",
+    deliveryExpense: rtOpex.deliveryExpense ?? "0",
+    ncmTransferExpense: rtOpex.ncmTransferExpense ?? "0",
+    softwareTools: rtOpex.softwareTools ?? "0",
+    miscExpenses: rtOpex.miscExpenses ?? "0",
+    totalOperatingExpenses: rtOpex.totalOperatingExpenses ?? "0",
   };
 
-  const plEbitda = rtPl.ebitda === null || rtPl.ebitda === undefined ? null : Number(rtPl.ebitda);
+  const plEbitda = rtPl.ebitda === null || rtPl.ebitda === undefined ? null : rtPl.ebitda;
   const rtNonOp = rtPl.nonOperating || {};
   const plNonOp = {
-    depreciationExpense: Number(rtNonOp.depreciationExpense || 0),
-    loanInterest: Number(rtNonOp.loanInterest || 0),
-    bankCharges: Number(rtNonOp.bankCharges || 0),
-    otherIncome: Number(rtNonOp.otherIncome || 0),
+    depreciationExpense: rtNonOp.depreciationExpense ?? "0",
+    loanInterest: rtNonOp.loanInterest ?? "0",
+    bankCharges: rtNonOp.bankCharges ?? "0",
+    otherIncome: rtNonOp.otherIncome ?? "0",
   };
   const plNetProfit = rtPl.netProfitBeforeTax === null || rtPl.netProfitBeforeTax === undefined
     ? null
-    : Number(rtPl.netProfitBeforeTax);
+    : rtPl.netProfitBeforeTax;
 
   // Balance Sheet details
   const bsCurrentAssets = rtBs.assets?.currentAssets || {
@@ -198,7 +208,7 @@ const FinancialStatements = ({ token }) => {
     netFixedAssets: 0,
   };
 
-  const bsTotalAssets = rtBs.assets?.totalAssets ?? 0;
+  const bsTotalAssets = rtBs.assets?.totalAssets ?? "0";
 
   const bsCurrentLiab = rtBs.liabilities?.currentLiabilities || {
     accountsPayable: 0,
@@ -218,7 +228,7 @@ const FinancialStatements = ({ token }) => {
     totalLongTermLiabilities: 0,
   };
 
-  const bsTotalLiab = rtBs.liabilities?.totalLiabilities ?? 0;
+  const bsTotalLiab = rtBs.liabilities?.totalLiabilities ?? "0";
 
   const bsEquity = rtBs.equity || {
     shareCapital: 0,
@@ -228,7 +238,7 @@ const FinancialStatements = ({ token }) => {
     totalEquity: 0,
   };
 
-  const bsTotalLiabEquity = rtBs.totalLiabilitiesAndEquity ?? 0;
+  const bsTotalLiabEquity = rtBs.totalLiabilitiesAndEquity ?? "0";
   const isBsBalanced = Boolean(rtBs.isBalanceSheetBalanced);
 
   const handlePrint = () => {
@@ -327,29 +337,29 @@ const FinancialStatements = ({ token }) => {
               <div className="space-y-1.5 pl-4 text-slate-700">
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Gross Product Sales (Account 4100)</span>
-                  <span className="font-mono font-semibold">Rs {Number(plRevenue.grossSales || 0).toLocaleString()}</span>
+                  <span className="font-mono font-semibold">Rs {displayAmount(plRevenue.grossSales)}</span>
                 </div>
-                {Number(plRevenue.shippingRevenue || 0) > 0 && (
+                {compareAmountToZero(plRevenue.shippingRevenue) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Shipping &amp; Delivery Revenue (Account 4200)</span>
-                    <span className="font-mono">Rs {Number(plRevenue.shippingRevenue).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(plRevenue.shippingRevenue)}</span>
                   </div>
                 )}
-                {Number(plRevenue.salesReturns || 0) > 0 && (
+                {compareAmountToZero(plRevenue.salesReturns) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Less: Sales Returns &amp; RMA (Account 4500)</span>
-                    <span className="font-mono">(Rs {Number(plRevenue.salesReturns).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plRevenue.salesReturns)})</span>
                   </div>
                 )}
-                {Number(plRevenue.salesDiscounts || 0) > 0 && (
+                {compareAmountToZero(plRevenue.salesDiscounts) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Less: Sales Discounts &amp; Vouchers (Account 4600)</span>
-                    <span className="font-mono">(Rs {Number(plRevenue.salesDiscounts).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plRevenue.salesDiscounts)})</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-2 border-t border-slate-200">
                   <span>Net Operating Revenue</span>
-                  <span className="font-mono text-emerald-700 font-extrabold">Rs {Number(plRevenue.netRevenue || 0).toLocaleString()}</span>
+                  <span className="font-mono text-emerald-700 font-extrabold">Rs {displayAmount(plRevenue.netRevenue)}</span>
                 </div>
               </div>
             </div>
@@ -360,24 +370,24 @@ const FinancialStatements = ({ token }) => {
               <div className="space-y-1.5 pl-4 text-slate-700">
                 <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                   <span>Approved Manufacturer COGS (Account 5100)</span>
-                  <span className="font-mono">(Rs {Number(plCogs.directCOGS || 0).toLocaleString()})</span>
+                  <span className="font-mono">(Rs {displayAmount(plCogs.directCOGS)})</span>
                 </div>
-                {Number(plCogs.freightTransport || 0) > 0 && (
+                {compareAmountToZero(plCogs.freightTransport) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Inbound Freight &amp; Transport (Account 5200)</span>
-                    <span className="font-mono">(Rs {Number(plCogs.freightTransport).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plCogs.freightTransport)})</span>
                   </div>
                 )}
-                {Number(plCogs.packagingExpense || 0) > 0 && (
+                {compareAmountToZero(plCogs.packagingExpense) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Packaging &amp; Materials (Account 5300)</span>
-                    <span className="font-mono">(Rs {Number(plCogs.packagingExpense).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plCogs.packagingExpense)})</span>
                   </div>
                 )}
-                {Number(plCogs.scrapLoss || 0) > 0 && (
+                {compareAmountToZero(plCogs.scrapLoss) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Inventory Damage, Scrap &amp; Expiry Loss (Account 5500)</span>
-                    <span className="font-mono">(Rs {Number(plCogs.scrapLoss).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plCogs.scrapLoss)})</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1.5 font-black text-slate-900 pt-2 border-t border-slate-200">
@@ -393,55 +403,55 @@ const FinancialStatements = ({ token }) => {
               <div className="space-y-1.5 pl-4 text-slate-700">
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Staff Salaries &amp; Payroll (Account 6100)</span>
-                  <span className="font-mono">Rs {Number(plOpex.salaries || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.salaries)}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Office Rent &amp; Hub Lease (Account 6200)</span>
-                  <span className="font-mono">Rs {Number(plOpex.rent || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.rent)}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Electricity &amp; Utilities (Account 6300)</span>
-                  <span className="font-mono">Rs {Number(plOpex.utilities || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.utilities)}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Marketing &amp; Advertising (Account 6400)</span>
-                  <span className="font-mono">Rs {Number(plOpex.marketing || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.marketing)}</span>
                 </div>
-                {Number(plOpex.manufacturerCommission || 0) > 0 && (
+                {compareAmountToZero(plOpex.manufacturerCommission) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Manufacturer Commission (Account 6410)</span>
-                    <span className="font-mono">Rs {Number(plOpex.manufacturerCommission).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(plOpex.manufacturerCommission)}</span>
                   </div>
                 )}
-                {Number(plOpex.marketingPartnerCpa || 0) > 0 && (
+                {compareAmountToZero(plOpex.marketingPartnerCpa) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Marketing Partner CPA (Account 6420)</span>
-                    <span className="font-mono">Rs {Number(plOpex.marketingPartnerCpa).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(plOpex.marketingPartnerCpa)}</span>
                   </div>
                 )}
-                {Number(plOpex.deliveryExpense || 0) > 0 && (
+                {compareAmountToZero(plOpex.deliveryExpense) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Delivery &amp; Carrier Expense (Account 6430)</span>
-                    <span className="font-mono">Rs {Number(plOpex.deliveryExpense).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(plOpex.deliveryExpense)}</span>
                   </div>
                 )}
-                {Number(plOpex.ncmTransferExpense || 0) > 0 && (
+                {compareAmountToZero(plOpex.ncmTransferExpense) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Distributor NCM Fulfillment Expense (Account 6440)</span>
-                    <span className="font-mono">Rs {Number(plOpex.ncmTransferExpense).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(plOpex.ncmTransferExpense)}</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Software &amp; Digital Tools (Account 6500)</span>
-                  <span className="font-mono">Rs {Number(plOpex.softwareTools || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.softwareTools)}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Other &amp; Miscellaneous Operating Expenses (Account 6700)</span>
-                  <span className="font-mono">Rs {Number(plOpex.miscExpenses || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {displayAmount(plOpex.miscExpenses)}</span>
                 </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-2 border-t border-slate-200">
                   <span>Total Operating Expenses</span>
-                  <span className="font-mono text-rose-600">(Rs {Number(plOpex.totalOperatingExpenses || 0).toLocaleString()})</span>
+                  <span className="font-mono text-rose-600">(Rs {displayAmount(plOpex.totalOperatingExpenses)})</span>
                 </div>
               </div>
             </div>
@@ -450,37 +460,37 @@ const FinancialStatements = ({ token }) => {
             <div>
               <div className="flex justify-between py-1.5 font-bold text-slate-900 border-t border-b border-slate-200">
                 <span className="uppercase tracking-wider text-[11px]">Operating Profit (EBITDA)</span>
-                <span className={`font-mono ${plEbitda === null ? "text-slate-500" : plEbitda >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                <span className={`font-mono ${plEbitda === null ? "text-slate-500" : compareAmountToZero(plEbitda) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
                   {formatPostedAmount(plEbitda)}
                 </span>
               </div>
 
               <div className="space-y-1.5 pl-4 text-slate-700 mt-2">
-                {Number(plNonOp.depreciationExpense || 0) > 0 && (
+                {compareAmountToZero(plNonOp.depreciationExpense) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-amber-700">
                     <span>Asset Depreciation (Account 6600)</span>
-                    <span className="font-mono">(Rs {Number(plNonOp.depreciationExpense).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plNonOp.depreciationExpense)})</span>
                   </div>
                 )}
-                {Number(plNonOp.loanInterest || 0) > 0 && (
+                {compareAmountToZero(plNonOp.loanInterest) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Financing Loan Interest (Account 7100)</span>
-                    <span className="font-mono">(Rs {Number(plNonOp.loanInterest).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plNonOp.loanInterest)})</span>
                   </div>
                 )}
-                {Number(plNonOp.bankCharges || 0) > 0 && (
+                {compareAmountToZero(plNonOp.bankCharges) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                     <span>Payment Gateway &amp; Bank Fees (Account 7200)</span>
-                    <span className="font-mono">(Rs {Number(plNonOp.bankCharges).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(plNonOp.bankCharges)})</span>
                   </div>
                 )}
-                {Math.abs(Number(plNonOp.otherIncome || 0)) > 0.005 && (
-                  <div className={`flex justify-between py-1 border-b border-slate-50 ${Number(plNonOp.otherIncome) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                {compareAmountToZero(plNonOp.otherIncome) !== 0 && (
+                  <div className={`flex justify-between py-1 border-b border-slate-50 ${compareAmountToZero(plNonOp.otherIncome) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
                     <span>Other Income (Account 8100)</span>
                     <span className="font-mono">
-                      {Number(plNonOp.otherIncome) > 0
-                        ? `+Rs ${Number(plNonOp.otherIncome).toLocaleString()}`
-                        : `(Rs ${Math.abs(Number(plNonOp.otherIncome)).toLocaleString()})`}
+                      {compareAmountToZero(plNonOp.otherIncome) > 0
+                        ? `+Rs ${displayAmount(plNonOp.otherIncome)}`
+                        : `(Rs ${displayAmount(absoluteAmount(plNonOp.otherIncome))})`}
                     </span>
                   </div>
                 )}
@@ -490,7 +500,7 @@ const FinancialStatements = ({ token }) => {
             {/* NET PROFIT BEFORE TAX */}
             <div className="pt-4 border-t-2 border-slate-900 flex justify-between items-center">
               <span className="text-base font-black text-slate-900 uppercase">Net Income Before Tax (Bottom Line)</span>
-              <span className={`text-xl font-black font-mono ${plNetProfit === null ? "text-slate-500" : plNetProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+              <span className={`text-xl font-black font-mono ${plNetProfit === null ? "text-slate-500" : compareAmountToZero(plNetProfit) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
                 {formatPostedAmount(plNetProfit)}
               </span>
             </div>
@@ -520,51 +530,51 @@ const FinancialStatements = ({ token }) => {
                 <div className="space-y-1.5 pl-3 text-slate-700">
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Cash on Hand (Account 1110)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.cash || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.cash)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Bank Accounts (Account 1120)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.bank || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.bank)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Accounts Receivable (Account 1130)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.accountsReceivable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.accountsReceivable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>COD Receivable from Carrier (Account 1170)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.codReceivable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.codReceivable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>COD Receivable from Distributor (Account 1190)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.distributorCodReceivable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.distributorCodReceivable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Wallets &amp; Payment Gateway Clearing (Account 1180)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.gatewayClearing || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.gatewayClearing)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Inventory at Valuation (Account 1140)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.inventory || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.inventory)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Input VAT Receivable (Account 1150)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.inputVat || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.inputVat)}</span>
                   </div>
-                  {Number(bsCurrentAssets.vatTaxPrepayments || 0) > 0 && (
+                  {compareAmountToZero(bsCurrentAssets.vatTaxPrepayments) > 0 && (
                     <div className="flex justify-between py-1 border-b border-slate-50">
                       <span>VAT Tax Prepayments / Credits (Account 1165)</span>
-                      <span className="font-mono">Rs {Number(bsCurrentAssets.vatTaxPrepayments).toLocaleString()}</span>
+                      <span className="font-mono">Rs {displayAmount(bsCurrentAssets.vatTaxPrepayments)}</span>
                     </div>
                   )}
-                  {Number(bsCurrentAssets.supplierAdvances || 0) > 0 && (
+                  {compareAmountToZero(bsCurrentAssets.supplierAdvances) > 0 && (
                     <div className="flex justify-between py-1 border-b border-slate-50">
                       <span>Supplier Advances (Account 1160)</span>
-                      <span className="font-mono">Rs {Number(bsCurrentAssets.supplierAdvances).toLocaleString()}</span>
+                      <span className="font-mono">Rs {displayAmount(bsCurrentAssets.supplierAdvances)}</span>
                     </div>
                   )}
                   <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                     <span>Total Current Assets</span>
-                    <span className="font-mono">Rs {Number(bsCurrentAssets.totalCurrentAssets || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentAssets.totalCurrentAssets)}</span>
                   </div>
                 </div>
               </div>
@@ -574,22 +584,22 @@ const FinancialStatements = ({ token }) => {
                 <div className="space-y-1.5 pl-3 text-slate-700">
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Gross Fixed Assets Cost (Accounts 1510-1530)</span>
-                    <span className="font-mono">Rs {Number(bsFixedAssets.grossAssets || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsFixedAssets.grossAssets)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50 text-amber-700">
                     <span>Less: Accumulated Depreciation (Account 1590)</span>
-                    <span className="font-mono">(Rs {Number(bsFixedAssets.accumulatedDepreciation || 0).toLocaleString()})</span>
+                    <span className="font-mono">(Rs {displayAmount(bsFixedAssets.accumulatedDepreciation)})</span>
                   </div>
                   <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                     <span>Net Fixed Assets Book Value</span>
-                    <span className="font-mono">Rs {Number(bsFixedAssets.netFixedAssets || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsFixedAssets.netFixedAssets)}</span>
                   </div>
                 </div>
               </div>
 
               <div className="pt-4 border-t-2 border-slate-900 flex justify-between items-center font-black text-slate-900 text-sm">
                 <span>TOTAL ASSETS</span>
-                <span className="font-mono text-emerald-700 text-base">Rs {Number(bsTotalAssets).toLocaleString()}</span>
+                <span className="font-mono text-emerald-700 text-base">Rs {displayAmount(bsTotalAssets)}</span>
               </div>
             </div>
 
@@ -605,52 +615,52 @@ const FinancialStatements = ({ token }) => {
                 <div className="space-y-1.5 pl-3 text-slate-700">
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>General Accounts Payable (Account 2110)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.accountsPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.accountsPayable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Manufacturer Payable (Account 2160)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.manufacturerPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.manufacturerPayable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Distributor Payable (Account 2190)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.distributorPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.distributorPayable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Marketing Partner Payable (Account 2170)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.marketingPartnerPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.marketingPartnerPayable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Carrier Payable (Account 2180)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.carrierPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.carrierPayable)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Output 13% VAT Payable (Account 2120)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.outputVat || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.outputVat)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Corporate Tax Payable (Account 2130)</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.taxPayable || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.taxPayable)}</span>
                   </div>
-                  {Number(bsCurrentLiab.customerRefundsPayable || 0) > 0 && (
+                  {compareAmountToZero(bsCurrentLiab.customerRefundsPayable) > 0 && (
                     <div className="flex justify-between py-1 border-b border-slate-50">
                       <span>Customer RMA Payable (Account 2140)</span>
-                      <span className="font-mono">Rs {Number(bsCurrentLiab.customerRefundsPayable).toLocaleString()}</span>
+                      <span className="font-mono">Rs {displayAmount(bsCurrentLiab.customerRefundsPayable)}</span>
                     </div>
                   )}
                   <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                     <span>Total Current Liabilities</span>
-                    <span className="font-mono">Rs {Number(bsCurrentLiab.totalCurrentLiabilities || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsCurrentLiab.totalCurrentLiabilities)}</span>
                   </div>
                 </div>
               </div>
 
-              {Number(bsLongTermLiab.bankLoans || 0) > 0 && (
+              {compareAmountToZero(bsLongTermLiab.bankLoans) > 0 && (
                 <div>
                   <p className="font-bold text-slate-800 uppercase text-[11px] mb-2">Long-Term Debt</p>
                   <div className="space-y-1.5 pl-3 text-slate-700">
                     <div className="flex justify-between py-1 border-b border-slate-50">
                       <span>Bank Loans &amp; Term Debt (Account 2510)</span>
-                      <span className="font-mono">Rs {Number(bsLongTermLiab.bankLoans).toLocaleString()}</span>
+                      <span className="font-mono">Rs {displayAmount(bsLongTermLiab.bankLoans)}</span>
                     </div>
                   </div>
                 </div>
@@ -661,21 +671,21 @@ const FinancialStatements = ({ token }) => {
                 <div className="space-y-1.5 pl-3 text-slate-700">
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Share Capital (Account 3100)</span>
-                    <span className="font-mono">Rs {Number(bsEquity.shareCapital || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsEquity.shareCapital)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Retained Earnings (Account 3300)</span>
-                    <span className="font-mono">Rs {Number(bsEquity.retainedEarnings || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsEquity.retainedEarnings)}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50 font-semibold">
                     <span>Current Fiscal-Year Income</span>
-                    <span className={`font-mono ${Number(bsEquity.currentFiscalYearNetProfit || 0) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
-                      Rs {Number(bsEquity.currentFiscalYearNetProfit || 0).toLocaleString()}
+                    <span className={`font-mono ${compareAmountToZero(bsEquity.currentFiscalYearNetProfit) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                      Rs {displayAmount(bsEquity.currentFiscalYearNetProfit)}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                     <span>Total Equity Base</span>
-                    <span className="font-mono">Rs {Number(bsEquity.totalEquity || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {displayAmount(bsEquity.totalEquity)}</span>
                   </div>
                 </div>
               </div>
@@ -683,7 +693,7 @@ const FinancialStatements = ({ token }) => {
               <div className="pt-4 border-t-2 border-slate-900 flex justify-between items-center font-black text-slate-900 text-sm">
                 <span>TOTAL LIABILITIES &amp; EQUITY</span>
                 <span className="font-mono text-emerald-700 text-base">
-                  Rs {Number(bsTotalLiabEquity).toLocaleString()}
+                  Rs {displayAmount(bsTotalLiabEquity)}
                 </span>
               </div>
             </div>
@@ -716,7 +726,7 @@ const FinancialStatements = ({ token }) => {
           >
             {moCf.isReconciled
               ? "Cash flows use posted movements in cash, bank, and wallet/gateway clearing accounts (1110, 1120, 1180) and reconcile to their General Ledger balance. Account 1180 combines Treasury wallets and payment gateway clearing."
-              : `Cash flow uses posted cash, bank, and wallet/gateway clearing journals but does not reconcile to the General Ledger balance. Difference: Rs ${Number(moCf.reconciliationDifference || 0).toLocaleString()}. Check opening balances and journal postings. Account 1180 combines Treasury wallets and payment gateway clearing.`}
+              : `Cash flow uses posted cash, bank, and wallet/gateway clearing journals but does not reconcile to the General Ledger balance. Difference: Rs ${cashFlowAmount(moCf.reconciliationDifference)}. Check opening balances and journal postings. Account 1180 combines Treasury wallets and payment gateway clearing.`}
           </div>
 
           <div className="space-y-6 text-xs text-slate-700">
@@ -729,27 +739,27 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Cash Inflows from Customer Sales &amp; Collections</span>
                   <span className="font-mono text-emerald-700 font-bold">
-                    +Rs {Number(moCf.details?.cashReceivedFromCustomers || 0).toLocaleString()}
+                    +Rs {cashFlowAmount(moCf.details?.cashReceivedFromCustomers)}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                   <span>Cash Paid to Suppliers / Manufacturers</span>
-                  <span className="font-mono">(Rs {Number(moCf.details?.supplierPayments || 0).toLocaleString()})</span>
+                  <span className="font-mono">(Rs {cashFlowAmount(moCf.details?.supplierPayments)})</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                   <span>Other Operating Cash Outflows</span>
-                  <span className="font-mono">(Rs {Number(moCf.details?.otherOperatingOutflows || 0).toLocaleString()})</span>
+                  <span className="font-mono">(Rs {cashFlowAmount(moCf.details?.otherOperatingOutflows)})</span>
                 </div>
-                {Number(moCf.details?.otherOperatingInflows || 0) > 0 && (
+                {isCashFlowPositive(moCf.details?.otherOperatingInflows) && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-emerald-700">
                     <span>Other Operating Cash Inflows</span>
-                    <span className="font-mono">+Rs {Number(moCf.details.otherOperatingInflows).toLocaleString()}</span>
+                    <span className="font-mono">+Rs {cashFlowAmount(moCf.details.otherOperatingInflows)}</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-2 border-t border-slate-200">
                   <span>Net Cash Provided by / (Used in) Operating Activities</span>
-                  <span className={`font-mono ${Number(moCf.operatingActivities || 0) >= 0 ? "text-emerald-700 font-bold" : "text-rose-600 font-bold"}`}>
-                    Rs {Number(moCf.operatingActivities || 0).toLocaleString()}
+                  <span className={`font-mono ${isCashFlowNonNegative(moCf.operatingActivities) ? "text-emerald-700 font-bold" : "text-rose-600 font-bold"}`}>
+                    Rs {cashFlowAmount(moCf.operatingActivities)}
                   </span>
                 </div>
               </div>
@@ -764,12 +774,12 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Fixed Asset Additions &amp; Capital Purchases</span>
                   <span className="font-mono">
-                    Inflows: Rs {Number(moCf.details?.investingInflows || 0).toLocaleString()} · Outflows: (Rs {Number(moCf.details?.investingOutflows || 0).toLocaleString()})
+                    Inflows: Rs {cashFlowAmount(moCf.details?.investingInflows)} · Outflows: (Rs {cashFlowAmount(moCf.details?.investingOutflows)})
                   </span>
                 </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                   <span>Net Cash Used in Investing Activities</span>
-                  <span className="font-mono">Rs {Number(moCf.investingActivities || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {cashFlowAmount(moCf.investingActivities)}</span>
                 </div>
               </div>
             </div>
@@ -783,16 +793,16 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Capital Contributed &amp; Debt Borrowings</span>
                   <span className="font-mono text-emerald-700">
-                    +Rs {Number(moCf.details?.financingInflows || 0).toLocaleString()}
+                    +Rs {cashFlowAmount(moCf.details?.financingInflows)}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
                   <span>Loan Repayments &amp; Partner Distributions</span>
-                  <span className="font-mono">(Rs {Number(moCf.details?.financingOutflows || 0).toLocaleString()})</span>
+                  <span className="font-mono">(Rs {cashFlowAmount(moCf.details?.financingOutflows)})</span>
                 </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                   <span>Net Cash from Financing Activities</span>
-                  <span className="font-mono">Rs {Number(moCf.financingActivities || 0).toLocaleString()}</span>
+                  <span className="font-mono">Rs {cashFlowAmount(moCf.financingActivities)}</span>
                 </div>
               </div>
             </div>
@@ -801,14 +811,14 @@ const FinancialStatements = ({ token }) => {
             <div className="pt-4 border-t-2 border-slate-900 space-y-3">
               <div className="flex justify-between items-center font-black text-slate-900 text-sm">
                 <span>NET CHANGE IN LIQUID CASH</span>
-                <span className={`font-mono text-base ${(moCf.netCashFlow || 0) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
-                  Rs {Number(moCf.netCashFlow || 0).toLocaleString()}
+                <span className={`font-mono text-base ${isCashFlowNonNegative(moCf.netCashFlow) ? "text-emerald-700" : "text-rose-600"}`}>
+                  Rs {cashFlowAmount(moCf.netCashFlow)}
                 </span>
               </div>
               <div className="flex justify-between py-0.5 text-slate-600">
                 <span>Cash Reconciliation Difference</span>
                 <span className={`font-mono ${moCf.isReconciled ? "text-emerald-700" : "text-rose-700 font-bold"}`}>
-                  Rs {Number(moCf.reconciliationDifference || 0).toLocaleString()}
+                  Rs {cashFlowAmount(moCf.reconciliationDifference)}
                 </span>
               </div>
 
@@ -816,11 +826,11 @@ const FinancialStatements = ({ token }) => {
                 <div className="space-y-1.5 pt-2 border-t border-slate-100 text-slate-600 font-medium">
                   <div className="flex justify-between py-0.5">
                     <span>Beginning Cash, Bank &amp; Wallet/Gateway Clearing Balance</span>
-                    <span className="font-mono">Rs {Number(moCf.beginningCash || 0).toLocaleString()}</span>
+                    <span className="font-mono">Rs {cashFlowAmount(moCf.beginningCash)}</span>
                   </div>
                   <div className="flex justify-between py-0.5 font-bold text-slate-900 text-xs">
                     <span>Ending Cash, Bank &amp; Wallet/Gateway Clearing Balance</span>
-                    <span className="font-mono text-emerald-700 font-extrabold">Rs {Number(moCf.endingCash || 0).toLocaleString()}</span>
+                    <span className="font-mono text-emerald-700 font-extrabold">Rs {cashFlowAmount(moCf.endingCash)}</span>
                   </div>
                 </div>
               )}

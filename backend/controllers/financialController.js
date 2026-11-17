@@ -3,20 +3,24 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import {
   postFixedAssetPurchaseAccounting,
-  postFixedAssetDisposalAccounting,
   postShareIssuanceAccounting,
   postSupplierPaymentAccounting,
   postCustomerPaymentAccounting,
   postTreasuryMovementAccounting,
   postDirectExpenseAccounting,
-  postProfitDistributionAccounting,
 } from "../services/accountingPostingEngine.js";
+import {
+  allocatePaymentToDocuments,
+  createAccountingDocument,
+} from "../services/accountingSubledgerService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { runFixedAssetDepreciationBatch } from "../services/fixedAssetDepreciationService.js";
 import {
   calculateFinancialDashboardProductCosts,
   calculateInventoryValuationAtCost,
   calculateManufacturerLogisticsExpenseDetails,
 } from "../services/financialDashboardCosting.js";
+import { loadPlatformInventoryValuationSources } from "../services/inventoryValuationSourceService.js";
 import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import {
@@ -29,26 +33,60 @@ import {
   initiateAdminDistributorSettlement,
 } from "../services/distributorFinanceService.js";
 import {
+  assertIndependentPayoutReviewer,
   confirmFinancialPayout,
   failFinancialPayout,
   initiateFinancialPayout,
 } from "../services/financialPayoutService.js";
+import { finalizeMarketingCpaPayablePayout } from "../services/marketingCpaSettlementService.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
-import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { allocateManufacturerPaymentToDocuments } from "../services/manufacturerSettlementService.js";
-import { recordLoanDisbursement, recordLoanRepayment } from "../services/loanAccountingService.js";
-import { recordShareBuyback } from "../services/shareBuybackService.js";
+import { recordLoanDisbursement } from "../services/loanAccountingService.js";
 import { recordPeerShareTransfer } from "../services/peerShareTransferService.js";
+import { buildProfitDistributionEstimate } from "../services/profitDistributionEstimateService.js";
 import {
   normalizeStockReturnExpenseReference,
   validateTreasuryPayoutAccount,
 } from "../services/treasuryAccountingService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
+  accountingDecimal,
+  addDecimals,
+  compareDecimals,
+  multiplyDecimals,
+  parseNprAmountString,
+  quantizeNprAmount,
+  subtractDecimals,
+  serializeAccountingDecimal,
+  serializeAccountingValue,
+} from "../services/accountingDecimal.js";
+import { pricingSnapshotAmounts } from "../services/checkoutPricingService.js";
+import {
+  applyReceivableCollection,
+  classifyReceivableCollectionReplay,
+  parseReceivableCollectionAmounts,
+  readCollectionHistory,
+} from "../services/receivableCollectionService.js";
+import {
+  buildExpenseLinkedPayableReport,
+  isExpenseLinkedPayable,
+} from "../services/expensePayableReportingService.js";
+import {
+  calculateManufacturerDirectReceivableTotal,
+  buildNonExpensePartyReport,
+  summarizePayablesAndReceivables,
+} from "../services/nonExpensePartyReportingService.js";
+import {
+  buildAllManufacturersSummary,
+  buildSingleManufacturerSummary,
+  serializeManufacturerSummaryTransactions,
+} from "../services/manufacturerSummaryReportingService.js";
+import {
   getConfiguredNepaliDateRange,
   getConfiguredNepaliFiscalPeriod,
   getConfiguredNepaliMonthRange,
+  getKathmanduDateRange,
   resolveCalendarDateInput,
   resolveCalendarDateRangeInput,
 } from "../services/nepaliFiscalCalendar.js";
@@ -87,7 +125,7 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     select: { id: true },
   });
 
-  if (!payableAccount) return { recognized: 0, paid: 0, outstanding: 0 };
+  if (!payableAccount) return { recognized: "0", paid: "0", outstanding: "0" };
 
   const lines = await prisma.journalLine.findMany({
     where: { accountId: payableAccount.id },
@@ -101,8 +139,8 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     },
   });
 
-  let recognized = 0;
-  let paid = 0;
+  let recognized = accountingDecimal("0");
+  let paid = accountingDecimal("0");
   const normalizedName = String(manufacturerName || "").trim().toLowerCase();
   const isManufacturerLine = (line) =>
     line.supplierId === manufacturerId ||
@@ -110,91 +148,39 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     String(line.supplierName || "").trim().toLowerCase() === normalizedName;
 
   for (const line of lines) {
-    const debit = Number(line.debit || 0);
-    const credit = Number(line.credit || 0);
     const sourceType = line.journalEntry?.sourceType;
 
     if (["MANUFACTURER_PRODUCTION", "MANUFACTURER_LOGISTICS", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
-      recognized += credit - debit;
+      recognized = addDecimals(
+        recognized,
+        subtractDecimals(line.credit || "0", line.debit || "0"),
+      );
     }
 
     if (sourceType === "SUPPLIER_PAYMENT" && (
       isManufacturerLine(line) ||
       line.journalEntry?.sourceId === `MFG-COGS-${manufacturerId}`
     )) {
-      paid += debit - credit;
+      paid = addDecimals(
+        paid,
+        subtractDecimals(line.debit || "0", line.credit || "0"),
+      );
     }
   }
 
-  const outstanding = Math.max(0, Number((recognized - paid).toFixed(2)));
+  const outstanding = compareDecimals(recognized, paid) > 0
+    ? subtractDecimals(recognized, paid)
+    : accountingDecimal("0");
   return {
-    recognized: Number(recognized.toFixed(2)),
-    paid: Number(paid.toFixed(2)),
-    outstanding,
+    recognized: serializeAccountingDecimal(recognized),
+    paid: serializeAccountingDecimal(paid),
+    outstanding: serializeAccountingDecimal(outstanding),
   };
 };
 
 const getPlatformInventoryValuation = async (products) => {
-  const balances = await prisma.inventoryBalance.findMany({
-    where: {
-      location: {
-        inventoryOwner: "PLATFORM",
-        kind: { not: "LOST" },
-      },
-    },
-    select: {
-      locationId: true,
-      inventorySkuId: true,
-      quantityOnHand: true,
-      inventorySku: {
-        select: {
-          productId: true,
-          product: { select: { id: true, costPrice: true } },
-        },
-      },
-    },
-  });
-  const locationIds = [...new Set(balances.map(({ locationId }) => locationId))];
-  const ledgerEntries = locationIds.length
-    ? await prisma.$queryRaw(Prisma.sql`
-        SELECT
-          movements.locationId,
-          movements.inventorySkuId,
-          movements.productionCostLayerId,
-          SUM(movements.quantityDelta) AS quantity,
-          layer.unitCogs
-        FROM (
-          SELECT
-            sourceLocationId AS locationId,
-            inventorySkuId,
-            productionCostLayerId,
-            -quantity AS quantityDelta
-          FROM InventoryLedgerEntry
-          WHERE inventoryOwner = 'PLATFORM'
-            AND productionCostLayerId IS NOT NULL
-            AND sourceLocationId IN (${Prisma.join(locationIds)})
-          UNION ALL
-          SELECT
-            destinationLocationId AS locationId,
-            inventorySkuId,
-            productionCostLayerId,
-            quantity AS quantityDelta
-          FROM InventoryLedgerEntry
-          WHERE inventoryOwner = 'PLATFORM'
-            AND productionCostLayerId IS NOT NULL
-            AND destinationLocationId IN (${Prisma.join(locationIds)})
-        ) movements
-        INNER JOIN ManufacturerInventoryCostLayer layer
-          ON layer.id = movements.productionCostLayerId
-        GROUP BY
-          movements.locationId,
-          movements.inventorySkuId,
-          movements.productionCostLayerId,
-          layer.unitCogs
-      `)
-    : [];
-
-  return calculateInventoryValuationAtCost({ balances, ledgerEntries, products });
+  const { balances, layerBalances } = await loadPlatformInventoryValuationSources(prisma);
+  return calculateInventoryValuationAtCost({ balances, ledgerEntries: layerBalances, products });
 };
 
 const getCorporateTaxContext = (query = {}) => {
@@ -228,47 +214,67 @@ const parseOrderItems = (items) => {
   return [];
 };
 
+const getKathmanduDateOnly = (value) => {
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    const error = new Error("Custom report dates must be valid dates.");
+    error.statusCode = 400;
+    error.code = "INVALID_AD_DATE";
+    throw error;
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kathmandu",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type) => parts.find((entry) => entry.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+};
+
+const shiftDateOnly = (dateOnly, days) => {
+  const date = new Date(`${dateOnly}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
 const getDateWindow = (query) => {
   const rawRange = String(query?.range || "month").toLowerCase();
-  const now = new Date();
-  let start = new Date(now);
-  let end = new Date(now);
-
-  const setEndOfDay = (date) => {
-    date.setHours(23, 59, 59, 999);
-    return date;
-  };
+  const today = getKathmanduDateOnly(new Date());
+  const [year, month] = today.split("-").map(Number);
+  const firstOfCurrentMonth = `${year}-${String(month).padStart(2, "0")}-01`;
+  let startDate = firstOfCurrentMonth;
+  const firstOfNextMonth = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  let endDate = shiftDateOnly(firstOfNextMonth, -1);
 
   if (rawRange === "day") {
-    start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    end = setEndOfDay(new Date(now));
+    startDate = today;
+    endDate = today;
   } else if (rawRange === "week") {
-    start = new Date(now);
-    start.setDate(now.getDate() - 6);
-    start.setHours(0, 0, 0, 0);
-    end = setEndOfDay(new Date(now));
+    startDate = shiftDateOnly(today, -6);
+    endDate = today;
   } else if (rawRange === "quarter") {
-    start = new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0);
-    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    const quarterStart = new Date(Date.UTC(year, month - 3, 1));
+    startDate = quarterStart.toISOString().slice(0, 10);
+    const nextMonth = new Date(Date.UTC(year, month, 1));
+    endDate = shiftDateOnly(nextMonth.toISOString().slice(0, 10), -1);
   } else if (rawRange === "year") {
-    start = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
-    end = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+    startDate = `${year}-01-01`;
+    endDate = `${year}-12-31`;
   } else if (rawRange === "custom") {
-    const customStart = query?.startDate ? new Date(query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
-    const customEnd = query?.endDate ? new Date(query.endDate) : new Date(now);
-    start = new Date(customStart);
-    start.setHours(0, 0, 0, 0);
-    end = new Date(customEnd);
-    end.setHours(23, 59, 59, 999);
-  } else {
-    start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    startDate = query?.startDate ? getKathmanduDateOnly(query.startDate) : firstOfCurrentMonth;
+    endDate = query?.endDate ? getKathmanduDateOnly(query.endDate) : today;
   }
+
+  const { startDate: start, endDateExclusive } = getKathmanduDateRange(startDate, endDate);
+  const end = new Date(endDateExclusive.getTime() - 1);
 
   return {
     start,
     end,
+    endExclusive: endDateExclusive,
     startIso: start.toISOString(),
     endIso: end.toISOString(),
   };
@@ -279,9 +285,9 @@ export const getManufacturerFinancialSummary = async (req, res) => {
     const manufactureIdFromToken = req.manufacturerId;
     const manufacturerId = manufactureIdFromToken || req.query?.manufacturerId || req.body?.manufacturerId;
 
-    const { start, end } = getDateWindow(req.query);
+    const { start, end, endExclusive } = getDateWindow(req.query);
     const startTs = BigInt(start.getTime());
-    const endTs = BigInt(end.getTime());
+    const endExclusiveTs = BigInt(endExclusive.getTime());
 
     if (manufacturerId) {
       // 1. Single Manufacturer Scope (Manufacturer portal or Admin scoped filter)
@@ -289,7 +295,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         prisma.order.findMany({
           where: {
             manufacturerId,
-            date: { gte: startTs, lte: endTs },
+            date: { gte: startTs, lt: endExclusiveTs },
           },
           orderBy: { date: "desc" },
         }),
@@ -317,7 +323,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
               { partyName: manufacturerId },
             ],
             category: { in: ["SUPPLIER_PAYMENT", "SALES", "EXPENSE", "COD_REMITTANCE"] },
-            date: { gte: start, lte: end },
+            date: { gte: start, lt: endExclusive },
           },
           include: {
             fromAccount: { select: { accountName: true, accountType: true } },
@@ -327,158 +333,40 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         }),
       ]);
 
-      const inventoryMap = {};
-      inventoryRows.forEach((entry) => {
-        inventoryMap[entry.productId] = Number(entry.agreedCostPrice || entry.proposedCostPrice || 0);
+      const payableAccount = await prisma.account.findUnique({
+        where: { accountCode: "2160" },
+        select: { id: true },
       });
-
-      const productCostMap = {};
-      allProducts.forEach((product) => {
-        productCostMap[product.id] = Number(product.costPrice || 0);
+      const postedPayableLines = payableAccount
+        ? await prisma.journalLine.findMany({
+          where: { accountId: payableAccount.id },
+          select: {
+            debit: true,
+            credit: true,
+            supplierId: true,
+            supplierName: true,
+            accountingParty: { select: { partyType: true, sourceEntityId: true } },
+            journalEntry: { select: { sourceType: true, sourceId: true } },
+          },
+        })
+        : [];
+      const manufacturerReport = buildSingleManufacturerSummary({
+        manufacturerId,
+        manufacturer,
+        orders,
+        inventoryRows,
+        products: allProducts,
+        transactions: mfgTransactions,
+        postedPayableLines,
+        isAdminView: req.auth?.role === "ADMIN",
       });
-
-      let totalSales = 0;
-      let totalCogs = 0;
-      let totalPayable = 0;
-      let totalReceivable = 0;
-      let totalDelivered = 0;
-      let totalReturned = 0;
-      let itemsSold = 0;
-      let itemsDelivered = 0;
-      let itemsReturned = 0;
-
-      const orderBreakdown = orders.map((order) => {
-        const items = parseOrderItems(order.items);
-        const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
-        const orderSales = Number(order.amount || 0);
-
-        let orderCost = 0;
-        items.forEach((item) => {
-          const qty = Number(item.quantity || 1);
-          const productId = item.productId || item._id || item.id;
-          const customCost = inventoryMap[productId];
-          const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
-          orderCost += qty * unitCost;
-        });
-        orderCost = Number(orderCost.toFixed(2));
-
-        const statusText = String(order.status || "").trim().toLowerCase();
-        const isDelivered = statusText.includes("deliver") || order.fulfillmentStatus === "DELIVERED";
-        const isReturned = statusText.includes("return") || statusText.includes("cancel");
-        const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
-
-        const manufacturerReceivable = orderCost;
-        const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
-        const payable = req.auth?.role === "ADMIN" ? manufacturerReceivable : manufacturerPayable;
-        const receivable = req.auth?.role === "ADMIN" ? manufacturerPayable : manufacturerReceivable;
-
-        totalSales += isDirect ? orderSales : 0;
-        totalCogs += orderCost;
-        totalPayable += payable;
-        totalReceivable += receivable;
-        itemsSold += orderQuantity;
-
-        if (isDelivered) {
-          itemsDelivered += orderQuantity;
-          totalDelivered += 1;
-        }
-        if (isReturned) {
-          itemsReturned += orderQuantity;
-          totalReturned += 1;
-        }
-
-        return {
-          id: order.id,
-          manufacturerId,
-          manufacturerName: manufacturer?.name || "Manufacturer",
-          orderType: order.orderType,
-          directOrderType: order.directOrderType || null,
-          isDirect,
-          status: order.status,
-          fulfillmentStatus: order.fulfillmentStatus,
-          date: order.date ? Number(order.date) : null,
-          ...(isDirect ? { amount: orderSales } : {}),
-          quantity: orderQuantity,
-          cogs: orderCost,
-          payable,
-          receivable,
-          netPosition: receivable - payable,
-        };
-      });
-
-      let totalPaidToMfg = 0;
-      let totalCollectedFromMfg = 0;
-      const formattedTransactions = mfgTransactions.map((tx) => {
-        const amt = Number(tx.amount || 0);
-        if (tx.type === "OUTFLOW") totalPaidToMfg += amt;
-        if (tx.type === "INFLOW") totalCollectedFromMfg += amt;
-        return {
-          id: tx.id,
-          date: tx.date || tx.createdAt,
-          amount: amt,
-          type: tx.type,
-          category: tx.category,
-          partyName: tx.partyName,
-          accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
-          accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
-          description: tx.description,
-          createdAt: tx.createdAt,
-        };
-      });
-
-      const isAdminView = req.auth?.role === "ADMIN";
-      const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer?.name);
-      const paidAgainstPayable = isAdminView ? postedPayable.paid : totalCollectedFromMfg;
-      const paidAgainstReceivable = isAdminView ? totalCollectedFromMfg : totalPaidToMfg;
-      totalPayable = postedPayable.recognized;
-      totalPaidToMfg = postedPayable.paid;
-      const remainingPayable = postedPayable.outstanding;
-      const remainingReceivable = Math.max(0, Number((totalReceivable - paidAgainstReceivable).toFixed(2)));
-      const netPayable = Math.max(0, Number((remainingPayable - remainingReceivable).toFixed(2)));
-      const netReceivable = Math.max(0, Number((remainingReceivable - remainingPayable).toFixed(2)));
-
-      const singleSummary = {
-        totalOrders: orders.length,
-        totalSales: Number(totalSales.toFixed(2)),
-        totalCogs: Number(totalCogs.toFixed(2)),
-        payable: Number(totalPayable.toFixed(2)),
-        paidAmount: Number(totalPaidToMfg.toFixed(2)),
-        remainingPayable,
-        receivable: Number(totalReceivable.toFixed(2)),
-        collectedAmount: Number(totalCollectedFromMfg.toFixed(2)),
-        remainingReceivable,
-        netPayable,
-        netReceivable,
-        netSettlementDue: netPayable > 0 ? netPayable : -netReceivable,
-        itemsSold,
-        itemsDelivered,
-        itemsReturned,
-        deliveredOrders: totalDelivered,
-        returnedOrders: totalReturned,
-      };
 
       return res.json({
         success: true,
         range: req.query?.range || "month",
         startDate: start.toISOString(),
         endDate: end.toISOString(),
-        data: {
-          manufacturer: manufacturer || { id: manufacturerId },
-          summary: singleSummary,
-          manufacturers: [
-            {
-              id: manufacturer?.id || manufacturerId,
-              name: manufacturer?.name || "Manufacturer",
-              email: manufacturer?.email || "",
-              phone: manufacturer?.phone || "",
-              city: manufacturer?.city || "",
-              ...singleSummary,
-              orders: orderBreakdown,
-            }
-          ],
-          orders: orderBreakdown,
-          transactions: formattedTransactions,
-        },
+        data: manufacturerReport,
       });
     }
 
@@ -486,7 +374,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
     const [orders, manufacturers, inventoryRows, allProducts, supplierPayments, apRecords] = await Promise.all([
       prisma.order.findMany({
         where: {
-          date: { gte: startTs, lte: endTs },
+          date: { gte: startTs, lt: endExclusiveTs },
         },
         orderBy: { date: "desc" },
       }),
@@ -537,216 +425,15 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       })
       : [];
 
-    const postedPayableMap = {};
-    for (const line of payableLines) {
-      const sourceType = line.journalEntry?.sourceType;
-      const sourceId = String(line.journalEntry?.sourceId || "");
-      const fallbackId = sourceType === "SUPPLIER_PAYMENT" && sourceId.startsWith("MFG-COGS-")
-        ? sourceId.slice("MFG-COGS-".length)
-        : null;
-      const manufacturer = manufacturers.find((entry) =>
-        entry.id === line.supplierId ||
-        entry.id === line.accountingParty?.sourceEntityId ||
-        entry.id === fallbackId ||
-        String(entry.name || "").trim().toLowerCase() === String(line.supplierName || "").trim().toLowerCase()
-      );
-      if (!manufacturer) continue;
-      const posted = postedPayableMap[manufacturer.id] || { recognized: 0, paid: 0 };
-      const debit = Number(line.debit || 0);
-      const credit = Number(line.credit || 0);
-      if (["MANUFACTURER_PRODUCTION", "MANUFACTURER_LOGISTICS", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType)) {
-        posted.recognized += credit - debit;
-      } else if (sourceType === "SUPPLIER_PAYMENT") {
-        posted.paid += debit - credit;
-      }
-      postedPayableMap[manufacturer.id] = posted;
-    }
-
-    // Compute payments made to each manufacturer
-    const mfgPaidMap = {};
-    supplierPayments.forEach((tx) => {
-      const amt = Number(tx.amount || 0);
-      if (tx.referenceId && mfgPaidMap[tx.referenceId] !== undefined) {
-        mfgPaidMap[tx.referenceId] += amt;
-      } else if (tx.referenceId) {
-        mfgPaidMap[tx.referenceId] = amt;
-      }
-      manufacturers.forEach((m) => {
-        if (
-          tx.referenceId === m.id ||
-          tx.partyName?.toLowerCase() === m.name?.toLowerCase() ||
-          tx.description?.toLowerCase().includes(m.name?.toLowerCase())
-        ) {
-          mfgPaidMap[m.id] = (mfgPaidMap[m.id] || 0) + (tx.referenceId === m.id ? 0 : amt);
-        }
-      });
+    const report = buildAllManufacturersSummary({
+      orders,
+      manufacturers,
+      inventoryRows,
+      products: allProducts,
+      supplierPayments,
+      apRecords,
+      postedPayableLines: payableLines,
     });
-
-    apRecords.forEach((ap) => {
-      if (ap.referenceId) {
-        mfgPaidMap[ap.referenceId] = Math.max(mfgPaidMap[ap.referenceId] || 0, Number(ap.paidAmount || 0));
-      }
-    });
-
-    const mfgDetailsMap = {};
-    manufacturers.forEach((m) => {
-      mfgDetailsMap[m.id] = m;
-    });
-
-    const inventoryMap = {};
-    inventoryRows.forEach((entry) => {
-      inventoryMap[`${entry.manufacturerId}_${entry.productId}`] = Number(entry.agreedCostPrice || entry.proposedCostPrice || 0);
-    });
-
-    const productCostMap = {};
-    allProducts.forEach((product) => {
-      productCostMap[product.id] = Number(product.costPrice || 0);
-    });
-
-    // Manufacturer grouped metrics dictionary
-    const mfgGroups = {};
-    manufacturers.forEach((m) => {
-      mfgGroups[m.id] = {
-        id: m.id,
-        name: m.name,
-        email: m.email,
-        phone: m.phone,
-        city: m.city,
-        totalOrders: 0,
-        totalSales: 0,
-        totalCogs: 0,
-        payable: 0,
-        paidAmount: Number((mfgPaidMap[m.id] || 0).toFixed(2)),
-        remainingPayable: 0,
-        receivable: 0,
-        itemsSold: 0,
-        itemsDelivered: 0,
-        itemsReturned: 0,
-        deliveredOrders: 0,
-        returnedOrders: 0,
-        orders: [],
-      };
-    });
-
-    let totalSales = 0;
-    let totalCogs = 0;
-    let totalPayable = 0;
-    let totalReceivable = 0;
-    let totalDelivered = 0;
-    let totalReturned = 0;
-    let itemsSold = 0;
-    let itemsDelivered = 0;
-    let itemsReturned = 0;
-
-    const orderBreakdown = orders.map((order) => {
-      const items = parseOrderItems(order.items);
-      const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
-      const orderSales = Number(order.amount || 0);
-      const orderMfgId = order.manufacturerId || items[0]?.manufacturerId;
-      let orderCost = 0;
-      items.forEach((item) => {
-        const qty = Number(item.quantity || 1);
-        const productId = item.productId || item._id || item.id;
-        const itemMfgId = item.manufacturerId || orderMfgId;
-        const customCost = itemMfgId ? inventoryMap[`${itemMfgId}_${productId}`] : undefined;
-        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
-        orderCost += qty * unitCost;
-      });
-      orderCost = Number(orderCost.toFixed(2));
-
-      const statusText = String(order.status || "").trim().toLowerCase();
-      const isDelivered = statusText.includes("deliver") || order.fulfillmentStatus === "DELIVERED";
-      const isReturned = statusText.includes("return") || statusText.includes("cancel");
-      const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
-
-      if (!orderMfgId || !mfgGroups[orderMfgId]) return null;
-
-      const manufacturerReceivable = orderCost;
-      const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
-      const payable = manufacturerReceivable;
-      const receivable = manufacturerPayable;
-
-      totalSales += isDirect ? orderSales : 0;
-      totalCogs += orderCost;
-      totalPayable += payable;
-      totalReceivable += receivable;
-      itemsSold += orderQuantity;
-
-      if (isDelivered) {
-        itemsDelivered += orderQuantity;
-        totalDelivered += 1;
-      }
-      if (isReturned) {
-        itemsReturned += orderQuantity;
-        totalReturned += 1;
-      }
-
-      const orderItem = {
-        id: order.id,
-        manufacturerId: orderMfgId || null,
-        manufacturerName: (orderMfgId && mfgDetailsMap[orderMfgId]?.name) || "Unassigned",
-        orderType: order.orderType,
-        directOrderType: order.directOrderType || null,
-        isDirect,
-        status: order.status,
-        fulfillmentStatus: order.fulfillmentStatus,
-        date: order.date ? Number(order.date) : null,
-        ...(isDirect ? { amount: orderSales } : {}),
-        quantity: orderQuantity,
-        cogs: orderCost,
-        payable,
-        receivable,
-        netPosition: receivable - payable,
-      };
-
-      // Add to manufacturer group if assigned
-      {
-        const grp = mfgGroups[orderMfgId];
-        grp.totalOrders += 1;
-        grp.totalSales += isDirect ? orderSales : 0;
-        grp.totalCogs += orderCost;
-        grp.payable += payable;
-        grp.receivable += receivable;
-        grp.itemsSold += orderQuantity;
-        if (isDelivered) {
-          grp.itemsDelivered += orderQuantity;
-          grp.deliveredOrders += 1;
-        }
-        if (isReturned) {
-          grp.itemsReturned += orderQuantity;
-          grp.returnedOrders += 1;
-        }
-        grp.orders.push(orderItem);
-      }
-
-      return orderItem;
-    }).filter(Boolean);
-
-    totalPayable = 0;
-    let totalPaidMfg = 0;
-    const manufacturersList = Object.values(mfgGroups).map((mfg) => {
-      const posted = postedPayableMap[mfg.id];
-      if (posted) {
-        mfg.payable = Number(posted.recognized.toFixed(2));
-        mfg.paidAmount = Number(posted.paid.toFixed(2));
-      }
-      const remainingPayable = Math.max(0, Number((mfg.payable - (mfg.paidAmount || 0)).toFixed(2)));
-      totalPayable += mfg.payable;
-      totalPaidMfg += Number(mfg.paidAmount || 0);
-      return {
-        ...mfg,
-        totalSales: Number(mfg.totalSales.toFixed(2)),
-        totalCogs: Number(mfg.totalCogs.toFixed(2)),
-        payable: Number(mfg.payable.toFixed(2)),
-        paidAmount: Number((mfg.paidAmount || 0).toFixed(2)),
-        remainingPayable,
-        receivable: Number(mfg.receivable.toFixed(2)),
-        netPayable: Math.max(0, Number((remainingPayable - mfg.receivable).toFixed(2))),
-        netReceivable: Math.max(0, Number((mfg.receivable - remainingPayable).toFixed(2))),
-      };
-    });
-
-    const remainingSummaryPayable = Math.max(0, Number((totalPayable - totalPaidMfg).toFixed(2)));
 
     return res.json({
       success: true,
@@ -754,42 +441,17 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       startDate: start.toISOString(),
       endDate: end.toISOString(),
       data: {
-        manufacturer: { id: "ALL", name: "All Manufacturers" },
-        summary: {
-          totalOrders: orderBreakdown.length,
-          totalSales: Number(totalSales.toFixed(2)),
-          totalCogs: Number(totalCogs.toFixed(2)),
-          payable: Number(totalPayable.toFixed(2)),
-          paidAmount: Number(totalPaidMfg.toFixed(2)),
-          remainingPayable: remainingSummaryPayable,
-          receivable: Number(totalReceivable.toFixed(2)),
-          netPayable: Math.max(0, Number((remainingSummaryPayable - totalReceivable).toFixed(2))),
-          netReceivable: Math.max(0, Number((totalReceivable - remainingSummaryPayable).toFixed(2))),
-          itemsSold,
-          itemsDelivered,
-          itemsReturned,
-          deliveredOrders: totalDelivered,
-          returnedOrders: totalReturned,
-        },
-        manufacturers: manufacturersList,
-        orders: orderBreakdown,
-        transactions: (supplierPayments || []).map((tx) => ({
-          id: tx.id,
-          date: tx.date || tx.createdAt,
-          amount: Number(tx.amount || 0),
-          type: tx.type,
-          category: tx.category,
-          partyName: tx.partyName,
-          accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
-          accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
-          description: tx.description,
-          createdAt: tx.createdAt,
-        })),
+        ...report,
+        transactions: serializeManufacturerSummaryTransactions(supplierPayments),
       },
     });
   } catch (error) {
     console.error("getManufacturerFinancialSummary error:", error);
-    return res.status(500).json({ success: false, message: error.message || "Unable to load manufacturer financial summary." });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to load manufacturer financial summary.",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
@@ -926,8 +588,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       ])
       : [[], []];
 
-    // Revenue calculations (Gross MRP, VAT Breakdown)
-    const vatRate = 0.13; // 13% Nepal VAT
+    // Keep operational order totals separate from the posted-ledger revenue and VAT basis.
     let grossPeriodRevenueIncVat = 0;
     const productCosts = calculateFinancialDashboardProductCosts({
       orders,
@@ -960,12 +621,8 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     });
 
     // Customer Returns adjustments in period
-    const totalCustomerRefunds = customerReturns.reduce((acc, r) => acc + Number(r.totalRefundAmount || 0), 0);
-    const netRevenueIncVat = Math.max(0, grossPeriodRevenueIncVat - totalCustomerRefunds);
-    
-    // Net Taxable Revenue (Net of 13% embedded VAT)
-    const taxableRevenue = Number((netRevenueIncVat / (1 + vatRate)).toFixed(2));
-    const outputVatCollected = Number((netRevenueIncVat - taxableRevenue).toFixed(2));
+    const taxableRevenue = Number(postedAccounting.incomeStatement.netRevenue || 0);
+    const outputVatCollected = Number(postedAccounting.vat.outputVat || 0);
 
     const recognizedProductCOGS = periodDirectCOGS;
 
@@ -1699,6 +1356,7 @@ export const recordOperatingExpense = async (req, res) => {
       category = "OPERATING_EXPENSE", // SALARIES, RENT, UTILITIES, MARKETING, SOFTWARE, MISC
       amount,
       payeeName,
+      accountingPartyId,
       invoiceNumber,
       paymentMethod = "FULL_CASH", // FULL_CASH, CREDIT_PAYABLE, PARTIAL
       paidFromAccountId,
@@ -1707,12 +1365,14 @@ export const recordOperatingExpense = async (req, res) => {
       notes,
     } = req.body;
 
-    const totalCost = Number(amount);
-    if (!String(title || "").trim() || !Number.isFinite(totalCost) || totalCost <= 0) {
-      return res.status(400).json({ success: false, message: "Expense title and a positive amount are required." });
+    let totalCost;
+    try {
+      totalCost = parseNprAmountString(amount, "Expense amount", { allowZero: false });
+    } catch (error) {
+      return res.status(400).json({ success: false, message: error.message });
     }
-    if (Math.abs(totalCost * 100 - Math.round(totalCost * 100)) > 0.000001) {
-      return res.status(400).json({ success: false, message: "Expense amount cannot have more than two decimal places." });
+    if (!String(title || "").trim()) {
+      return res.status(400).json({ success: false, message: "Expense title and a positive amount are required." });
     }
     if (!["FULL_CASH", "CREDIT_PAYABLE", "PARTIAL"].includes(paymentMethod)) {
       return res.status(400).json({ success: false, message: "Select a valid expense payment method." });
@@ -1726,49 +1386,115 @@ export const recordOperatingExpense = async (req, res) => {
     const expenseRefId = `EXP-${requestHash.slice(0, 32)}`;
     const journalIdempotencyKey = `EXPENSE_RECORD:${requestHash}`;
     const finalTitle = String(title).trim();
-    const finalPayee = String(payeeName || "").trim() || "Vendor / Service Provider";
-    const upfront = Number(upfrontPaidAmount || 0);
+    const expenseDate = new Date();
+    let upfront = new Prisma.Decimal(0);
 
-    let paidAmt = 0;
-    let payableAmt = 0;
+    let paidAmt = new Prisma.Decimal(0);
+    let payableAmt = new Prisma.Decimal(0);
 
     if (paymentMethod === "FULL_CASH") {
       paidAmt = totalCost;
     } else if (paymentMethod === "PARTIAL") {
-      if (!Number.isFinite(upfront) || upfront < 0 || upfront > totalCost) {
+      try {
+        upfront = parseNprAmountString(
+          upfrontPaidAmount === undefined || upfrontPaidAmount === null || upfrontPaidAmount === ""
+            ? "0"
+            : upfrontPaidAmount,
+          "Partial payment",
+        );
+      } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
+      }
+      if (upfront.greaterThan(totalCost)) {
         return res.status(400).json({ success: false, message: "Partial payment must be between zero and the total expense." });
       }
-      if (Math.abs(upfront * 100 - Math.round(upfront * 100)) > 0.000001) {
-        return res.status(400).json({ success: false, message: "Partial payment cannot have more than two decimal places." });
-      }
       paidAmt = upfront;
-      payableAmt = Number((totalCost - paidAmt).toFixed(2));
+      payableAmt = totalCost.minus(paidAmt);
     } else {
       payableAmt = totalCost;
     }
 
+    const normalizedAccountingPartyId = String(accountingPartyId || "").trim() || null;
+    const vendorParty = normalizedAccountingPartyId
+      ? await prisma.accountingParty.findUnique({ where: { id: normalizedAccountingPartyId } })
+      : null;
+    if (
+      normalizedAccountingPartyId
+      && (!vendorParty || vendorParty.partyType !== "VENDOR" || vendorParty.status !== "ACTIVE")
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "INVALID_EXPENSE_VENDOR",
+        message: "Select an active registered supplier.",
+      });
+    }
+    if (payableAmt.isPositive() && !vendorParty) {
+      return res.status(400).json({
+        success: false,
+        code: "SUPPLIER_IDENTITY_REQUIRED",
+        message: "A registered supplier is required for an expense recorded as payable.",
+      });
+    }
+    const finalPayee = vendorParty?.displayName || String(payeeName || "").trim() || "Vendor / Service Provider";
+
     const payloadHash = createHash("sha256").update(JSON.stringify({
       title: finalTitle,
       category,
-      amount: totalCost,
+      amount: totalCost.toFixed(2),
       paymentMethod,
-      paidAmount: paidAmt,
-      payableAmount: payableAmt,
-      paidFromAccountId: paidAmt > 0 ? paidFromAccountId : null,
+      paidAmount: paidAmt.toFixed(2),
+      payableAmount: payableAmt.toFixed(2),
+      paidFromAccountId: paidAmt.isPositive() ? paidFromAccountId : null,
       payeeName: finalPayee,
+      accountingPartyId: vendorParty?.id || null,
       invoiceNumber: invoiceNumber || "",
       dueDate: dueDate || null,
       notes: notes || "",
     })).digest("hex");
 
-    if (paidAmt > 0 && !paidFromAccountId) {
+    if (paidAmt.isPositive() && !paidFromAccountId) {
       return res.status(400).json({ success: false, message: "Please select a Treasury / Bank account to disburse the cash payment." });
     }
+    const expensePaymentStatus = payableAmt.isPositive()
+      ? paidAmt.isPositive() ? "PARTIALLY_PAID" : "PAYABLE"
+      : "PAID";
 
     const outcome = await prisma.$transaction(async (tx) => {
+      const existingExpense = await tx.operatingExpense.findUnique({
+        where: { idempotencyKey: rawIdempotencyKey },
+      });
       const existingEntry = await tx.journalEntry.findUnique({
         where: { idempotencyKey: journalIdempotencyKey },
       });
+      if (existingExpense) {
+        if (
+          existingExpense.id !== expenseRefId
+          || existingExpense.requestPayloadHash !== payloadHash
+          || !existingEntry
+          || existingEntry.status !== "POSTED"
+          || existingEntry.sourceType !== "EXPENSE_PAYMENT"
+          || existingEntry.sourceId !== expenseRefId
+          || existingEntry.referenceNumber !== payloadHash
+          || !new Prisma.Decimal(String(existingExpense.amount)).equals(totalCost)
+          || !new Prisma.Decimal(String(existingExpense.paidAmount || 0)).equals(paidAmt)
+          || !new Prisma.Decimal(String(existingExpense.payableAmount || 0)).equals(payableAmt)
+        ) {
+          const error = new Error("This expense idempotency key conflicts with an existing source or posting.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        return {
+          alreadyProcessed: true,
+          expense: existingExpense,
+          payable: await tx.accountPayable.findFirst({
+            where: { referenceType: "EXPENSE", referenceId: expenseRefId },
+          }),
+          accountName: existingExpense.financialAccountId
+            ? (await tx.financialAccount.findUnique({ where: { id: existingExpense.financialAccountId } }))?.accountName || null
+            : null,
+        };
+      }
       if (existingEntry) {
         if (existingEntry.status !== "POSTED" || existingEntry.sourceId !== expenseRefId) {
           const error = new Error("An incomplete expense posting exists for this request. Finance review is required.");
@@ -1782,18 +1508,102 @@ export const recordOperatingExpense = async (req, res) => {
           error.code = "IDEMPOTENCY_KEY_REUSED";
           throw error;
         }
+        if (existingEntry.sourceType !== "EXPENSE_PAYMENT") {
+          const error = new Error("The existing expense journal has an unexpected source type.");
+          error.statusCode = 409;
+          error.code = "EXPENSE_POSTING_CONFLICT";
+          throw error;
+        }
+        const [existingPayable, existingCash, existingBill] = await Promise.all([
+          payableAmt.isPositive()
+            ? tx.accountPayable.findFirst({ where: { referenceType: "EXPENSE", referenceId: expenseRefId } })
+            : null,
+          paidAmt.isPositive()
+            ? tx.cashTransaction.findUnique({ where: { idempotencyKey: `EXPENSE_CASH:${requestHash}` } })
+            : null,
+          vendorParty
+            ? tx.accountingDocument.findUnique({ where: { idempotencyKey: `OPERATING_EXPENSE_BILL:${expenseRefId}` } })
+            : null,
+        ]);
+        if (
+          !new Prisma.Decimal(String(existingEntry.totalDebit)).equals(totalCost)
+          || !new Prisma.Decimal(String(existingEntry.totalCredit)).equals(totalCost)
+          || (payableAmt.isPositive() && (
+            !existingPayable
+            || !new Prisma.Decimal(String(existingPayable.totalAmount)).equals(payableAmt)
+          ))
+          || (paidAmt.isPositive() && (
+            !existingCash
+            || !new Prisma.Decimal(String(existingCash.amount)).equals(paidAmt)
+            || existingCash.fromAccountId !== paidFromAccountId
+          ))
+          || (vendorParty && (
+            !existingBill
+            || !new Prisma.Decimal(String(existingBill.originalAmount)).equals(totalCost)
+          ))
+        ) {
+          const error = new Error("Existing expense posting records do not reconcile; Finance review is required.");
+          error.statusCode = 409;
+          error.code = "EXPENSE_POSTING_CONFLICT";
+          throw error;
+        }
+        const recoveredExpense = await tx.operatingExpense.create({
+          data: {
+            id: expenseRefId,
+            accountingPartyId: vendorParty?.id || null,
+            title: finalTitle,
+            category: String(category || "OPERATING_EXPENSE").trim().toUpperCase(),
+            amount: totalCost,
+            isVatBill: false,
+            vatAmount: "0",
+            purchaseVatStatus: "NOT_CLAIMED",
+            date: existingEntry.transactionDate || expenseDate,
+            paymentMethod: paidAmt.isPositive() ? "CASH" : "CREDIT",
+            paymentStatus: expensePaymentStatus,
+            paidAmount: paidAmt,
+            payableAmount: payableAmt,
+            financialAccountId: paidAmt.isPositive() ? paidFromAccountId : null,
+            payableId: existingPayable?.id || null,
+            vendorName: finalPayee,
+            invoiceNumber: invoiceNumber || null,
+            idempotencyKey: rawIdempotencyKey,
+            requestPayloadHash: payloadHash,
+            notes: notes || null,
+            createdBy: req.auth?.accountId || req.auth?.userId || req.auth?.id || "ADMIN",
+          },
+        });
         return {
           alreadyProcessed: true,
-          payable: await tx.accountPayable.findFirst({
-            where: { referenceType: "EXPENSE", referenceId: expenseRefId },
-          }),
-          accountName: null,
+          expense: recoveredExpense,
+          payable: existingPayable,
+          accountName: existingCash?.fromAccountId
+            ? (await tx.financialAccount.findUnique({ where: { id: existingCash.fromAccountId } }))?.accountName || null
+            : null,
         };
+      }
+
+      let currentVendorParty = null;
+      if (vendorParty) {
+        currentVendorParty = await tx.accountingParty.findUnique({
+          where: { id: vendorParty.id },
+          select: { id: true, partyType: true, status: true, displayName: true },
+        });
+        if (
+          !currentVendorParty
+          || currentVendorParty.partyType !== "VENDOR"
+          || currentVendorParty.status !== "ACTIVE"
+          || currentVendorParty.displayName !== finalPayee
+        ) {
+          const error = new Error("The selected supplier changed or is no longer active. Refresh and retry.");
+          error.statusCode = 409;
+          error.code = "EXPENSE_VENDOR_CHANGED";
+          throw error;
+        }
       }
 
       let payingAccount = null;
       let cashAccountCode = null;
-      if (paidAmt > 0) {
+      if (paidAmt.isPositive()) {
         payingAccount = await tx.financialAccount.findUnique({ where: { id: paidFromAccountId } });
         const mappedAccount = await validateTreasuryPayoutAccount(payingAccount, tx);
         cashAccountCode = mappedAccount.accountCode;
@@ -1825,6 +1635,7 @@ export const recordOperatingExpense = async (req, res) => {
           data: {
             idempotencyKey: `EXPENSE_CASH:${requestHash}`,
             amount: paidAmt,
+            date: expenseDate,
             type: "OUTFLOW",
             fromAccountId: paidFromAccountId,
             category: "EXPENSE",
@@ -1837,11 +1648,12 @@ export const recordOperatingExpense = async (req, res) => {
       }
 
       let payableRecord = null;
-      if (payableAmt > 0) {
+      if (payableAmt.isPositive()) {
         payableRecord = await tx.accountPayable.create({
           data: {
             title: `${finalTitle} (${finalPayee})`,
             payeeName: finalPayee,
+            accountingPartyId: currentVendorParty?.id || null,
             category: "OPERATING_EXPENSE",
             referenceType: "EXPENSE",
             referenceId: expenseRefId,
@@ -1852,12 +1664,62 @@ export const recordOperatingExpense = async (req, res) => {
             invoiceNumber: invoiceNumber || "",
             priority: "MEDIUM",
             status: "UNPAID",
-            notes: notes || `Operating expense owed to ${finalPayee}. Total expense Rs ${totalCost.toLocaleString()}, upfront paid Rs ${paidAmt.toLocaleString()}, remaining payable Rs ${payableAmt.toLocaleString()}.`,
+            notes: notes || `Operating expense owed to ${finalPayee}. Total expense Rs ${totalCost.toFixed(2)}, upfront paid Rs ${paidAmt.toFixed(2)}, remaining payable Rs ${payableAmt.toFixed(2)}.`,
           },
         });
       }
 
-      await postDirectExpenseAccounting({
+      const billDocument = currentVendorParty
+        ? await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `EXP-BILL-${expenseRefId}`,
+          partyId: currentVendorParty.id,
+          side: "PAYABLE",
+          sourceType: "OPERATING_EXPENSE",
+          sourceId: expenseRefId,
+          issueDate: expenseDate,
+          dueDate: dueDate ? new Date(dueDate) : null,
+          amount: totalCost,
+          idempotencyKey: `OPERATING_EXPENSE_BILL:${expenseRefId}`,
+          notes: invoiceNumber
+            ? `Supplier invoice reference: ${invoiceNumber}`
+            : "Supplier bill recorded through the legacy operating-expense endpoint.",
+        }, { client: tx })
+        : null;
+
+      const expense = await tx.operatingExpense.create({
+        data: {
+          id: expenseRefId,
+          accountingPartyId: currentVendorParty?.id || null,
+          title: finalTitle,
+          category: String(category || "OPERATING_EXPENSE").trim().toUpperCase(),
+          amount: totalCost,
+          isVatBill: false,
+          vatAmount: "0",
+          purchaseVatStatus: "NOT_CLAIMED",
+          date: expenseDate,
+          paymentMethod: paidAmt.isPositive()
+            ? ({
+              CASH: "CASH",
+              BANK: "BANK_TRANSFER",
+              WALLET: "QR_PAYMENT",
+            }[String(payingAccount?.accountType || "").toUpperCase()] || "CASH")
+            : "CREDIT",
+          paymentStatus: expensePaymentStatus,
+          paidAmount: paidAmt,
+          payableAmount: payableAmt,
+          financialAccountId: paidAmt.isPositive() ? paidFromAccountId : null,
+          payableId: payableRecord?.id || null,
+          vendorName: finalPayee,
+          invoiceNumber: invoiceNumber || null,
+          idempotencyKey: rawIdempotencyKey,
+          requestPayloadHash: payloadHash,
+          notes: notes || null,
+          createdBy: req.auth?.accountId || req.auth?.userId || req.auth?.id || "ADMIN",
+        },
+      });
+
+      const journalEntry = await postDirectExpenseAccounting({
         expenseId: expenseRefId,
         category,
         title: finalTitle,
@@ -1868,10 +1730,58 @@ export const recordOperatingExpense = async (req, res) => {
         idempotencyKey: journalIdempotencyKey,
         referenceNumber: payloadHash,
         payeeName: finalPayee,
+        accountingPartyId: currentVendorParty?.id || null,
+        transactionDate: expenseDate,
         client: tx,
         throwOnError: true,
       });
-      return { alreadyProcessed: false, payable: payableRecord, accountName: payingAccount?.accountName || null };
+      if (!journalEntry?.id) throw new Error("Expense journal was not created.");
+      if (billDocument && paidAmt.isPositive()) {
+        const allocation = await allocatePaymentToDocuments({
+          partyId: currentVendorParty.id,
+          side: "PAYABLE",
+          amount: paidAmt,
+          journalEntryId: journalEntry.id,
+          allocationType: "CASH",
+          targetDocumentIds: [billDocument.id],
+          idempotencyKey: `OPERATING_EXPENSE_PAYMENT:${expenseRefId}`,
+        }, { client: tx });
+        if (!allocation.unallocatedAmount.isZero()) {
+          throw new Error("The paid expense could not be fully allocated to its supplier bill.");
+        }
+      }
+      await recordSystemAudit(
+        {
+          actorId: req.auth?.accountId || req.auth?.userId || req.auth?.id || null,
+          actorRole: "ADMIN",
+          portalSource: "ADMIN",
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent"),
+          correlationId: req.id,
+        },
+        {
+          action: "OPERATING_EXPENSE_CREATED",
+          entityType: "OperatingExpense",
+          entityId: expenseRefId,
+          afterState: {
+            amount: totalCost.toFixed(2),
+            paidAmount: paidAmt.toFixed(2),
+            payableAmount: payableAmt.toFixed(2),
+            accountingPartyId: currentVendorParty?.id || null,
+            accountingDocumentId: billDocument?.id || null,
+            payableId: payableRecord?.id || null,
+            journalEntryId: journalEntry.id,
+          },
+        },
+        { client: tx },
+      );
+      return {
+        alreadyProcessed: false,
+        expense,
+        payable: payableRecord,
+        accountName: payingAccount?.accountName || null,
+        accountingDocumentId: billDocument?.id || null,
+      };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     res.json({
@@ -1879,12 +1789,15 @@ export const recordOperatingExpense = async (req, res) => {
       alreadyProcessed: outcome.alreadyProcessed,
       message: outcome.alreadyProcessed
         ? "This operating expense was already recorded."
-        : paidAmt > 0 && payableAmt > 0
-        ? `Expense recorded: Rs ${paidAmt.toLocaleString()} paid from ${outcome.accountName || "treasury"} and Rs ${payableAmt.toLocaleString()} registered under Accounts Payable to ${finalPayee}.`
-        : paidAmt > 0
-        ? `Expense fully paid (Rs ${paidAmt.toLocaleString()}) from ${outcome.accountName || "treasury"} to ${finalPayee}.`
-        : `Expense registered under Accounts Payable (Rs ${payableAmt.toLocaleString()}) to ${finalPayee}.`,
+        : paidAmt.isPositive() && payableAmt.isPositive()
+        ? `Expense recorded: Rs ${paidAmt.toFixed(2)} paid from ${outcome.accountName || "treasury"} and Rs ${payableAmt.toFixed(2)} registered under Accounts Payable to ${finalPayee}.`
+        : paidAmt.isPositive()
+        ? `Expense fully paid (Rs ${paidAmt.toFixed(2)}) from ${outcome.accountName || "treasury"} to ${finalPayee}.`
+        : `Expense registered under Accounts Payable (Rs ${payableAmt.toFixed(2)}) to ${finalPayee}.`,
       payable: outcome.payable,
+      expense: outcome.expense
+        ? serializeAccountingValue((({ idempotencyKey, requestPayloadHash, ...safeExpense }) => safeExpense)(outcome.expense))
+        : null,
     });
   } catch (error) {
     console.error("Record Operating Expense Error:", error);
@@ -1927,122 +1840,28 @@ export const recordAssetDamageOrDisposal = async (req, res) => {
     if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
       return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
     }
-    if (status === "SOLD") {
-      return res.status(409).json({
-        success: false,
-        code: "ASSET_SALE_TAX_FLOW_REQUIRED",
-        message: "Asset sales are unavailable until the tax-aware sale and VAT treatment is approved and implemented.",
-      });
-    }
-    if (!["DAMAGED", "WRITTEN_OFF"].includes(status)) {
-      return res.status(400).json({ success: false, message: "Select a valid asset damage or write-off status." });
-    }
-    const recoveredAmount = Number(disposalAmount ?? 0);
-    if (!Number.isFinite(recoveredAmount) || recoveredAmount < 0) {
-      return res.status(400).json({ success: false, message: "Recovery amount must be a non-negative number." });
-    }
-    if (recoveredAmount > 0) {
-      return res.status(409).json({
-        success: false,
-        code: "ASSET_SALE_TAX_FLOW_REQUIRED",
-        message: "Recording disposal proceeds is unavailable until the tax-aware sale and VAT treatment is approved and implemented.",
-      });
-    }
+    const approvalReason = String(req.body?.reason || "").trim();
+    const result = await requestAccountingActionApproval({
+      actionType: "FIXED_ASSET_DISPOSAL",
+      requestKey: rawIdempotencyKey,
+      payload: { assetId, status, damageNotes, disposalAmount, reason: approvalReason },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || req.adminId,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.get?.("user-agent") || null,
+        correlationId: req.correlationId || null,
+      },
+    });
 
-    const payloadHash = createHash("sha256").update(JSON.stringify({
-      assetId,
-      status,
-      damageNotes: String(damageNotes || "").trim(),
-      recoveredAmount,
-    })).digest("hex");
-    const requestHash = createHash("sha256").update(rawIdempotencyKey).digest("hex");
-    const idempotencyKey = `ASSET_DISPOSAL:${requestHash}`;
-    const outcome = await prisma.$transaction(async (tx) => {
-      const existingEntry = await tx.journalEntry.findUnique({
-        where: { idempotencyKey },
-      });
-      if (existingEntry) {
-        if (existingEntry.status !== "POSTED") {
-          const error = new Error("A non-posted disposal journal exists for this request. Finance review is required.");
-          error.statusCode = 409;
-          error.code = "ASSET_DISPOSAL_JOURNAL_CONFLICT";
-          throw error;
-        }
-        if (existingEntry.sourceId !== assetId || existingEntry.referenceNumber !== payloadHash) {
-          const error = new Error("This Idempotency-Key was already used for a different asset disposal.");
-          error.statusCode = 409;
-          error.code = "IDEMPOTENCY_KEY_REUSED";
-          throw error;
-        }
-        const existingAsset = await tx.fixedAsset.findUnique({ where: { id: assetId } });
-        return {
-          asset: existingAsset,
-          scrapLoss: Number(existingAsset?.scrapLossAmount || 0),
-          alreadyProcessed: true,
-        };
-      }
-
-      const asset = await tx.fixedAsset.findUnique({ where: { id: assetId } });
-      if (!asset) {
-        const error = new Error("Asset not found.");
-        error.statusCode = 404;
-        throw error;
-      }
-      if (asset.status !== "ACTIVE") {
-        const error = new Error("Only an active fixed asset can be damaged or disposed.");
-        error.statusCode = 409;
-        error.code = "FIXED_ASSET_NOT_ACTIVE";
-        throw error;
-      }
-
-      const disposalDate = new Date();
-      const scrapLoss = Math.max(0, Number((Number(asset.currentBookValue) - recoveredAmount).toFixed(2)));
-      const updateResult = await tx.fixedAsset.updateMany({
-        where: {
-          id: asset.id,
-          status: "ACTIVE",
-          currentBookValue: asset.currentBookValue,
-          accumulatedDepreciation: asset.accumulatedDepreciation,
-        },
-        data: {
-          status,
-          damageNotes: String(damageNotes || "").trim() || "Damaged/Disposed",
-          disposalDate,
-          disposalAmount: recoveredAmount,
-          scrapLossAmount: scrapLoss,
-          currentBookValue: 0,
-        },
-      });
-      if (updateResult.count !== 1) {
-        const error = new Error("Asset values changed during disposal. Refresh and retry.");
-        error.statusCode = 409;
-        error.code = "FIXED_ASSET_BALANCE_CONFLICT";
-        throw error;
-      }
-
-      await postFixedAssetDisposalAccounting(asset, {
-        status,
-        damageNotes: String(damageNotes || "").trim(),
-        recoveredAmount,
-        disposalDate,
-        idempotencyKey,
-        payloadHash,
-      }, { client: tx });
-      return {
-        asset: await tx.fixedAsset.findUnique({ where: { id: asset.id } }),
-        scrapLoss,
-        alreadyProcessed: false,
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-
-    res.json({
+    return res.status(result.isReplay ? 200 : 202).json({
       success: true,
-      message: outcome.alreadyProcessed
-        ? "This asset disposal was already recorded."
-        : `Asset marked as ${status} and disposal accounting posted.`,
-      asset: outcome.asset,
-      scrapLoss: outcome.scrapLoss,
-      alreadyProcessed: outcome.alreadyProcessed,
+      message: result.isReplay
+        ? "This fixed asset disposal request already exists."
+        : "Fixed asset disposal submitted for independent Admin approval. The asset remains active until approval.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     console.error("Asset Damage/Disposal Error:", error);
@@ -2537,20 +2356,33 @@ export const transferOrSellShare = async (req, res) => {
     }
 
     if (transferType === "COMPANY_BUYBACK") {
-      const outcome = await recordShareBuyback({
-        sellerPartnerId,
-        sharesToTransfer,
-        sharePrice: sharePrice || 100,
-        fromTreasuryAccountId,
-        notes,
-        idempotencyKey: req.get?.("Idempotency-Key") || req.body?.idempotencyKey,
+      const result = await requestAccountingActionApproval({
+        actionType: "SHARE_BUYBACK",
+        requestKey: req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "",
+        payload: {
+          sellerPartnerId,
+          sharesToTransfer,
+          sharePrice: sharePrice || 100,
+          fromTreasuryAccountId,
+          reason: notes,
+        },
+        actor: {
+          accountId: req.auth?.accountId || req.auth?.userId || null,
+          role: req.auth?.role,
+        },
+        auditContext: {
+          ipAddress: req.ip || null,
+          userAgent: req.get?.("user-agent") || null,
+          correlationId: req.correlationId || null,
+        },
       });
-      return res.json({
+      return res.status(result.isReplay ? 200 : 202).json({
         success: true,
-        alreadyProcessed: outcome.alreadyProcessed,
-        message: outcome.alreadyProcessed
-          ? "This share buyback was already recorded."
-          : "Share buyback and Treasury payout were recorded successfully.",
+        alreadyPending: true,
+        message: result.isReplay
+          ? "This share buyback approval request already exists."
+          : "Company share buyback submitted for independent Admin approval.",
+        approvalRequest: result.approvalRequest,
       });
     }
 
@@ -2678,8 +2510,6 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       periodEnd,
       fiscalYear,
       retainedEarningsPercentage = 20,
-      executePayout = false,
-      fromAccountId,
       calendar,
     } = req.body;
 
@@ -2722,8 +2552,8 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       _sum: { debit: true, credit: true },
     });
     let realCOGS = Number((cogsJournalResult._sum.debit || 0) - (cogsJournalResult._sum.credit || 0));
+    let cogsBasis = "POSTED_GL";
 
-    // Fallback: If no GL entries found for 5100 in period, calculate accurately using calculateFinancialDashboardProductCosts
     if (realCOGS <= 0 && orders.length > 0) {
       const [costLayers, mfrInventories, productsList] = await Promise.all([
         prisma.manufacturerInventoryCostLayer.findMany({ include: { productionRequest: true } }),
@@ -2737,6 +2567,7 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
         products: productsList,
       });
       realCOGS = Number(productCosting.directCOGS || 0);
+      cogsBasis = "OPERATIONAL_ESTIMATE";
     }
 
     // 2. Query Real Net Revenue from GL (4100 Gross Sales - 4110 Discounts + 4200 Shipping)
@@ -2751,8 +2582,10 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       _sum: { credit: true, debit: true },
     });
     let grossRevenue = Number((revenueResult._sum.credit || 0) - (revenueResult._sum.debit || 0));
+    let revenueBasis = "POSTED_GL";
     if (grossRevenue <= 0) {
       grossRevenue = orders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
+      revenueBasis = "OPERATIONAL_ESTIMATE";
     }
 
     // 3. Query Operating Expenses from GL (6000-6999)
@@ -2767,123 +2600,34 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       _sum: { debit: true, credit: true },
     });
     let totalExpenses = Number((opexResult._sum.debit || 0) - (opexResult._sum.credit || 0));
+    let expenseBasis = "POSTED_GL";
     if (totalExpenses <= 0) {
       totalExpenses = operatingExpensesList.reduce((acc, e) => acc + Number(e.amount || 0), 0);
+      expenseBasis = "OPERATIONAL_ESTIMATE";
     }
 
-    const netProfit = Math.max(0, grossRevenue - realCOGS - totalExpenses);
     const retainPct = Number(retainedEarningsPercentage || 20);
-    const retainedAmount = Number(((netProfit * retainPct) / 100).toFixed(2));
-    const distributableAmount = Number((netProfit - retainedAmount).toFixed(2));
-
-    // Solvency validation if immediate payout requested
-    if (executePayout && fromAccountId && distributableAmount > 0) {
-      const solvency = await checkAccountSolvency(fromAccountId, distributableAmount, "Profit Distribution Payout");
-      if (!solvency.allowed) {
-        return res.json({ success: false, message: solvency.error });
-      }
-    }
-
-    const breakdown = partners.map((p) => {
-      const share = Number(((distributableAmount * Number(p.ownershipPercentage)) / 100).toFixed(2));
-      return {
-        partnerId: p.id,
-        name: p.partnerName,
-        percentage: p.ownershipPercentage,
-        amount: share,
-        paymentStatus: executePayout && fromAccountId ? "PAID" : "PAYABLE_DEFERRED",
-        paidDate: executePayout && fromAccountId ? new Date() : null,
-      };
-    });
-
-    const record = await prisma.profitDistribution.create({
-      data: {
-        periodStart: pStart,
-        periodEnd: pEnd,
-        fiscalYear: fiscalYear || "2082/2083",
-        grossRevenue: Number(grossRevenue.toFixed(2)),
-        netProfit: Number(netProfit.toFixed(2)),
-        retainedEarningsPercentage: retainPct,
-        retainedAmount,
-        distributableAmount,
-        partnerBreakdown: breakdown,
-        status: executePayout && fromAccountId ? "PAID" : "APPROVED_PAYABLE",
+    const estimate = buildProfitDistributionEstimate({
+      periodStart: pStart,
+      periodEnd: pEnd,
+      fiscalYear,
+      retainedEarningsPercentage: retainPct,
+      grossRevenue,
+      cogs: realCOGS,
+      operatingExpenses: totalExpenses,
+      calculationBasis: {
+        revenue: revenueBasis,
+        cogs: cogsBasis,
+        operatingExpenses: expenseBasis,
       },
+      partners,
     });
-
-    if (executePayout && fromAccountId && distributableAmount > 0) {
-      await prisma.financialAccount.update({
-        where: { id: fromAccountId },
-        data: { currentBalance: { decrement: distributableAmount } },
-      });
-
-      for (const item of breakdown) {
-        await prisma.partnerEquity.update({
-          where: { id: item.partnerId },
-          data: {
-            totalDistributionsReceived: { increment: item.amount },
-          },
-        });
-        await prisma.cashTransaction.create({
-          data: {
-            amount: item.amount,
-            type: "OUTFLOW",
-            fromAccountId,
-            category: "DRAWINGS",
-            referenceId: record.id,
-            description: `Profit Distribution Dividend to ${item.name} (${item.percentage}%)`,
-          },
-        });
-        // Post double-entry journal: DR 3500 (Partner Drawings) / CR 1120 (Bank)
-        await postProfitDistributionAccounting({
-          distributionId: record.id,
-          partnerId: item.partnerId,
-          partnerName: item.name,
-          amount: item.amount,
-          fiscalYear: fiscalYear || "2082/2083",
-          isImmediatePayout: true,
-          cashAccountCode: "1120",
-        });
-      }
-    } else if (distributableAmount > 0) {
-      for (const item of breakdown) {
-        if (item.amount > 0) {
-          await prisma.accountPayable.create({
-            data: {
-              title: `Partner Profit Share: ${fiscalYear || "FY"} - ${item.name} (${item.percentage}%)`,
-              payeeName: item.name,
-              category: "PARTNER_DISTRIBUTION",
-              referenceType: "PROFIT_DISTRIBUTION",
-              referenceId: `${record.id}#${item.partnerId}`,
-              totalAmount: item.amount,
-              paidAmount: 0,
-              remainingBalance: item.amount,
-              dueDate: null,
-              status: "UNPAID",
-              priority: "HIGH",
-              notes: `Declared profit dividend share for partner ${item.name} for period ${pStart.toISOString().slice(0, 10)} to ${pEnd.toISOString().slice(0, 10)}.`,
-            },
-          });
-          // Post double-entry journal: DR 3500 (Partner Drawings) / CR 2150 (Payable)
-          await postProfitDistributionAccounting({
-            distributionId: record.id,
-            partnerId: item.partnerId,
-            partnerName: item.name,
-            amount: item.amount,
-            fiscalYear: fiscalYear || "2082/2083",
-            isImmediatePayout: false,
-          });
-        }
-      }
-    }
 
     res.json({
       success: true,
-      message:
-        executePayout && fromAccountId
-          ? "Profit distribution calculated and paid out from liquid treasury"
-          : "Profit distribution declared and recorded under Accounts Payable (Liabilities)",
-      record,
+      estimateOnly: true,
+      message: "Estimate only. No distribution, payable, payout, or journal was created.",
+      estimate,
     });
   } catch (error) {
     console.error("Profit Distribution Error:", error);
@@ -3064,20 +2808,36 @@ export const recordInvestorFinancing = async (req, res) => {
 
 export const recordLiabilityRepayment = async (req, res) => {
   try {
-    const result = await recordLoanRepayment({
-      liabilityId: req.body.liabilityId,
-      repaymentAmount: req.body.repaymentAmount,
-      principalPortion: req.body.principalPortion,
-      interestPortion: req.body.interestPortion,
-      fromAccountId: req.body.fromAccountId,
-      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
-      notes: req.body.notes,
+    const result = await requestAccountingActionApproval({
+      actionType: "LOAN_REPAYMENT",
+      requestKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || "",
+      payload: {
+        liabilityId: req.body.liabilityId,
+        repaymentAmount: req.body.repaymentAmount,
+        principalPortion: req.body.principalPortion,
+        interestPortion: req.body.interestPortion,
+        fromAccountId: req.body.fromAccountId,
+        transactionDate: req.body.transactionDate,
+        reason: req.body.notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.get?.("user-agent") || null,
+        correlationId: req.correlationId || null,
+      },
     });
 
-    res.json({
+    res.status(result.isReplay ? 200 : 202).json({
       success: true,
-      message: result.isReplay ? "This loan repayment was already recorded." : "Loan repayment and accounting journal posted successfully.",
-      liability: result.liability,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This loan repayment approval request already exists."
+        : "Loan repayment submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     console.error("Record Repayment Error:", error);
@@ -3096,6 +2856,7 @@ export const getPayablesAndReceivables = async (req, res) => {
   try {
     const [
       storedPayables,
+      marketingCpaPayableDocuments,
       storedReceivables,
       accounts,
       manufacturers,
@@ -3107,8 +2868,18 @@ export const getPayablesAndReceivables = async (req, res) => {
       recentSettlementTransactions,
       settlementReversions,
       distributorSettlementRequests,
+      customerReceivableDocuments,
     ] = await Promise.all([
       prisma.accountPayable.findMany({
+        orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
+      }),
+      prisma.accountingDocument.findMany({
+        where: {
+          documentType: "BILL",
+          side: "PAYABLE",
+          sourceType: "MARKETING_CPA",
+        },
+        include: { party: true },
         orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
       }),
       prisma.accountReceivable.findMany({
@@ -3153,7 +2924,7 @@ export const getPayablesAndReceivables = async (req, res) => {
         select: { id: true, amount: true, referenceId: true, partyName: true, description: true, fromAccountId: true, date: true },
       }),
       prisma.cashTransaction.findMany({
-        where: { category: { in: ["SUPPLIER_PAYMENT", "COD_REMITTANCE", "SALES", "EXPENSE"] } },
+        where: { category: { in: ["SUPPLIER_PAYMENT", "MARKETING_CPA_PAYOUT", "COD_REMITTANCE", "SALES", "EXPENSE", "REFUND", "RECEIVABLE_COLLECTION"] } },
         include: {
           fromAccount: { select: { id: true, accountName: true, accountType: true } },
           toAccount: { select: { id: true, accountName: true, accountType: true } },
@@ -3170,91 +2941,154 @@ export const getPayablesAndReceivables = async (req, res) => {
         include: { distributor: { select: { id: true, name: true } } },
         orderBy: { requestedAt: "desc" },
       }),
+      prisma.accountingDocument.findMany({
+        where: {
+          documentType: { in: ["INVOICE", "DEBIT_NOTE"] },
+          side: "RECEIVABLE",
+          currency: "NPR",
+          status: { in: ["OPEN", "PARTIALLY_PAID", "PAID"] },
+          party: { is: { partyType: "CUSTOMER" } },
+        },
+        include: {
+          party: true,
+          allocations: {
+            where: { allocationType: "CASH" },
+            include: {
+              cashTransaction: {
+                include: { toAccount: { select: { accountName: true } } },
+              },
+            },
+            orderBy: { allocatedAt: "asc" },
+          },
+        },
+        orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
+      }),
     ]);
-
-    // Build Product Cost lookup
-    const productCostMap = {};
-    products.forEach((p) => {
-      productCostMap[p.id] = Number(p.costPrice || 0);
+    const expensePayableCandidates = storedPayables.filter(isExpenseLinkedPayable);
+    const expensePayableIds = expensePayableCandidates.map((payable) => payable.id);
+    const expenseSourceIds = [...new Set(expensePayableCandidates
+      .filter((payable) => ["EXPENSE", "OPERATING_EXPENSE"].includes(String(payable.referenceType || "").toUpperCase()) && payable.referenceId)
+      .map((payable) => payable.referenceId))];
+    const expenseSourceConditions = [];
+    if (expensePayableIds.length) expenseSourceConditions.push({ payableId: { in: expensePayableIds } });
+    if (expenseSourceIds.length) expenseSourceConditions.push({ id: { in: expenseSourceIds } });
+    const expenseSources = expenseSourceConditions.length
+      ? await prisma.operatingExpense.findMany({
+        where: { OR: expenseSourceConditions },
+        select: {
+          id: true,
+          payableId: true,
+          amount: true,
+          paidAmount: true,
+          payableAmount: true,
+        },
+      })
+      : [];
+    const reportAsOfDate = new Date();
+    const expensePayableReport = buildExpenseLinkedPayableReport({
+      payables: expensePayableCandidates,
+      expenses: expenseSources,
+      asOfDate: reportAsOfDate,
     });
+    const expensePayablesById = new Map(expensePayableReport.payables.map((payable) => [payable.id, payable]));
+    const reportedStoredPayables = storedPayables.map((payable) => expensePayablesById.get(payable.id) || payable);
+    const customerReceiptIds = [...new Set(customerReceivableDocuments.flatMap((document) =>
+      document.allocations.map((allocation) => allocation.cashTransaction?.id).filter(Boolean)
+    ))];
+    const customerReceiptReversions = customerReceiptIds.length
+      ? await prisma.settlementReversion.findMany({
+          where: {
+            reversionType: "CUSTOMER_RECEIPT",
+            originalRecordId: { in: customerReceiptIds },
+          },
+        })
+      : [];
+    const allSettlementReversions = [...new Map(
+      [...settlementReversions, ...customerReceiptReversions].map((reversion) => [reversion.id, reversion]),
+    ).values()];
 
-    const inventoryMap = {};
-    manufacturerInventories.forEach((inv) => {
-      const price = inv.agreedCostPrice !== null && inv.agreedCostPrice !== undefined ? inv.agreedCostPrice : inv.proposedCostPrice;
-      if (price !== null && price !== undefined) {
-        inventoryMap[`${inv.manufacturerId}_${inv.productId}`] = Number(price);
+    const marketingCpaPayouts = marketingCpaPayableDocuments.length
+      ? await prisma.financialPayout.findMany({
+          where: {
+            targetType: "MARKETING_CPA_PAYABLE",
+            targetId: { in: marketingCpaPayableDocuments.map((document) => document.id) },
+            status: { in: ["SETTLED", "REVERSED"] },
+          },
+          orderBy: { settledAt: "desc" },
+          select: {
+            id: true,
+            targetId: true,
+            amount: true,
+            status: true,
+            settledAt: true,
+            initiatedAt: true,
+            externalPaymentReference: true,
+            bankEvidenceReference: true,
+            notes: true,
+            financialAccount: { select: { accountName: true } },
+          },
+        })
+      : [];
+    const latestMarketingCpaPayoutByDocument = new Map();
+    const marketingCpaPayoutHistoryByDocument = new Map();
+    for (const payout of marketingCpaPayouts) {
+      if (!latestMarketingCpaPayoutByDocument.has(payout.targetId)) {
+        latestMarketingCpaPayoutByDocument.set(payout.targetId, payout);
       }
-    });
-
-    // Map manufacturer payments already recorded
-    const mfgPaidMap = {};
-    supplierCashOutflows.forEach((tx) => {
-      const amt = Number(tx.amount || 0);
-      if (tx.referenceId && mfgPaidMap[tx.referenceId] !== undefined) {
-        mfgPaidMap[tx.referenceId] += amt;
-      } else if (tx.referenceId) {
-        mfgPaidMap[tx.referenceId] = amt;
+      if (payout.status === "SETTLED") {
+        const history = marketingCpaPayoutHistoryByDocument.get(payout.targetId) || [];
+        history.unshift({
+          id: payout.id,
+          date: payout.settledAt || payout.initiatedAt,
+          amount: Number(payout.amount),
+          settlementAmount: Number(payout.amount),
+          adjustmentType: "NONE",
+          adjustmentAmount: "0.00",
+          accountName: payout.financialAccount?.accountName || "Treasury Account",
+          externalPaymentReference: payout.externalPaymentReference,
+          bankEvidenceReference: payout.bankEvidenceReference,
+          notes: payout.notes || "Marketing CPA payout",
+        });
+        marketingCpaPayoutHistoryByDocument.set(payout.targetId, history);
       }
-      manufacturers.forEach((m) => {
-        if (
-          tx.referenceId === m.id ||
-          tx.partyName?.toLowerCase() === m.name?.toLowerCase() ||
-          tx.description?.toLowerCase().includes(m.name?.toLowerCase())
-        ) {
-          mfgPaidMap[m.id] = (mfgPaidMap[m.id] || 0) + (tx.referenceId === m.id ? 0 : amt);
-        }
-      });
-    });
-
-    // Also account for settlements recorded in stored AccountPayable records
-    storedPayables.forEach((p) => {
-      if (p.referenceType === "MANUFACTURER_COGS" && p.referenceId) {
-        mfgPaidMap[p.referenceId] = Math.max(mfgPaidMap[p.referenceId] || 0, Number(p.paidAmount || 0));
-      }
-    });
-
-    // Calculate COGS and Direct Sales per Manufacturer from Orders
-    const mfgCogsMap = {};
-    const mfgDirectReceivableMap = {};
-
-    manufacturers.forEach((m) => {
-      mfgCogsMap[m.id] = 0;
-      mfgDirectReceivableMap[m.id] = 0;
-    });
-
-    orders.forEach((order) => {
-      const items = parseOrderItems(order.items);
-      const orderSales = Number(order.amount || 0);
-      const orderMfgId =
-        order.manufacturerId ||
-        items[0]?.manufacturerId ||
-        order.deliveryOrder?.manufacturerId;
-
-      if (!orderMfgId) return;
-
-      const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
-
-      let orderCost = 0;
-      items.forEach((item) => {
-        const qty = Number(item.quantity || 1);
-        const productId = item.productId || item._id || item.id;
-        const itemMfgId = item.manufacturerId || orderMfgId;
-        const customCost = itemMfgId ? inventoryMap[`${itemMfgId}_${productId}`] : undefined;
-        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
-        orderCost += qty * unitCost;
-      });
-      orderCost = Number(orderCost.toFixed(2));
-
-      const manufacturerReceivable = orderCost;
-      mfgCogsMap[orderMfgId] = (mfgCogsMap[orderMfgId] || 0) + manufacturerReceivable;
-      if (isDirect) {
-        const manufacturerPayable = Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2)));
-        mfgDirectReceivableMap[orderMfgId] = (mfgDirectReceivableMap[orderMfgId] || 0) + manufacturerPayable;
-      }
-    });
+    }
 
     // Merge stored payables and direct-sale COGS payables.
-    const payables = [...storedPayables];
+    const payables = [
+      ...reportedStoredPayables,
+      ...marketingCpaPayableDocuments.map((document) => {
+        const latestPayout = latestMarketingCpaPayoutByDocument.get(document.id) || null;
+        return {
+          id: document.id,
+          title: `Marketing CPA - ${document.documentNumber}`,
+          payeeName: document.party.displayName,
+          category: "MARKETING_CPA",
+          referenceType: "MARKETING_CPA_PAYABLE",
+          referenceId: document.id,
+          totalAmount: Number(document.originalAmount),
+          paidAmount: Number(document.allocatedAmount),
+          remainingBalance: Number(document.remainingAmount),
+          dueDate: document.dueDate,
+          invoiceNumber: document.documentNumber,
+          status: document.status === "PAID"
+            ? "SETTLED"
+            : document.status === "CANCELLED"
+              ? "CANCELLED"
+              : document.status === "PARTIALLY_PAID"
+                ? "PARTIALLY_PAID"
+                : "UNPAID",
+          priority: "HIGH",
+          notes: document.notes || "",
+          settlementHistory: marketingCpaPayoutHistoryByDocument.get(document.id) || [],
+          createdAt: document.createdAt,
+          updatedAt: document.updatedAt,
+          isAccountingDocument: true,
+          latestPayoutId: latestPayout?.id || null,
+          latestPayoutAmount: Number(latestPayout?.amount || 0),
+          latestPayoutStatus: latestPayout?.status || null,
+        };
+      }),
+    ];
 
     const subledgerSettlementRequests = distributorSettlementRequests.filter(
       (request) => request.metadata?.settlementBasis === "ACCOUNTING_SUBLEDGER",
@@ -3279,98 +3113,56 @@ export const getPayablesAndReceivables = async (req, res) => {
           },
         })
       : [];
-    const earningDocumentBalances = new Map(
-      reservedEarningDocuments.map((document) => [document.id, {
-        remainingAmount: Number(document.remainingAmount || 0),
-        distributorId: document.party?.sourceEntityId,
-      }]),
-    );
-    for (const request of subledgerSettlementRequests) {
-      if (payables.some((payable) =>
-        payable.referenceType === "DISTRIBUTOR_SETTLEMENT" && payable.referenceId === request.id
-      )) continue;
-      const requestRemaining = Math.max(0, Number(request.amount || 0) - Number(request.paidAmount || 0));
-      const earningDocumentIds = Array.isArray(request.metadata?.earningDocumentIds)
-        ? request.metadata.earningDocumentIds
-        : [];
-      const availableDocuments = earningDocumentIds.reduce(
-        (sum, documentId) => {
-          const document = earningDocumentBalances.get(documentId);
-          return sum + (document?.distributorId === request.distributorId ? document.remainingAmount : 0);
-        },
-        0,
-      );
-      const remainingBalance = Math.min(requestRemaining, availableDocuments);
-      if (remainingBalance <= 0) continue;
-
-      const vatMode = request.metadata?.statementSnapshot?.vatMode || "WITH_VAT";
-      payables.push({
-        id: request.id,
-        title: `Distributor Settlement - ${request.distributor?.name || request.distributorId}`,
-        payeeName: request.distributor?.name || `Distributor ${request.distributorId}`,
-        category: "DISTRIBUTOR_SETTLEMENT",
-        referenceType: "DISTRIBUTOR_SETTLEMENT",
-        referenceId: request.id,
-        totalAmount: Number(request.amount),
-        paidAmount: Number(request.paidAmount || 0),
-        remainingBalance,
-        dueDate: null,
-        invoiceNumber: `DIST-SET-${request.id.slice(0, 8).toUpperCase()}`,
-        status: Number(request.paidAmount || 0) > 0 ? "PARTIALLY_PAID" : "UNPAID",
-        priority: "HIGH",
-        notes: `Distributor requested settlement ${vatMode === "WITHOUT_VAT" ? "without VAT" : "with VAT"}.`,
-        settlementHistory: [],
-        createdAt: request.requestedAt,
-        updatedAt: request.updatedAt,
-        settlementVatMode: vatMode,
-      });
-    }
-
-    manufacturers.forEach((m) => {
-      const totalCogs = Number((mfgCogsMap[m.id] || 0).toFixed(2));
-      const totalPaid = Number((mfgPaidMap[m.id] || 0).toFixed(2));
-      const remainingPayable = Math.max(0, Number((totalCogs - totalPaid).toFixed(2)));
-
-      const existingIndex = payables.findIndex(
-        (p) => p.referenceType === "MANUFACTURER_COGS" && p.referenceId === m.id
-      );
-
-      if (existingIndex >= 0) {
-        payables[existingIndex] = {
-          ...payables[existingIndex],
-          title: `Manufacturer Payable - ${m.name}`,
-          totalAmount: totalCogs,
-          paidAmount: totalPaid,
-          remainingBalance: remainingPayable,
-          notes: "Manufacturer orders are payable at approved COGS.",
-          status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
-        };
-
-      } else if (totalCogs > 0 || totalPaid > 0) {
-        payables.push({
-          id: `AP-MFG-${m.id}`,
-          title: `Manufacturer Payable - ${m.name}`,
-          payeeName: m.name,
-          category: "SUPPLIER_INVOICE",
-          referenceType: "MANUFACTURER_COGS",
-          referenceId: m.id,
-          totalAmount: totalCogs,
-          paidAmount: totalPaid,
-          remainingBalance: remainingPayable,
-          dueDate: null,
-          invoiceNumber: `COGS-${m.id.slice(0, 6).toUpperCase()}`,
-          status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
-          priority: "HIGH",
-          notes: "Manufacturer orders are payable at approved COGS.",
-          settlementHistory: [],
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      }
-    });
-
     // Merge Stored Receivables, NCM COD Remittances, and Direct Sales Receivables
-    const receivables = [...storedReceivables];
+    let receivables = [
+      ...storedReceivables,
+      ...customerReceivableDocuments.map((document) => ({
+        id: document.id,
+        title: `Customer Invoice - ${document.documentNumber}`,
+        payerName: document.party.displayName,
+        category: "CUSTOMER_RECEIVABLE",
+        referenceType: document.sourceType,
+        referenceId: document.sourceId,
+        totalAmount: serializeAccountingDecimal(document.originalAmount),
+        receivedAmount: serializeAccountingDecimal(document.allocatedAmount),
+        remainingBalance: serializeAccountingDecimal(document.remainingAmount),
+        dueDate: document.dueDate,
+        invoiceNumber: document.documentNumber,
+        status: document.status === "PAID"
+          ? "SETTLED"
+          : document.status === "PARTIALLY_PAID"
+            ? "PARTIALLY_RECEIVED"
+            : "UNPAID",
+        priority: "HIGH",
+        notes: document.notes || "",
+        currency: document.currency,
+        isAccountingDocument: true,
+        allocations: document.allocations.map((allocation) => ({
+          id: allocation.id,
+          invoiceId: document.id,
+          amount: serializeAccountingDecimal(allocation.amount),
+          allocationType: allocation.allocationType,
+        })),
+        collectionHistory: document.allocations.map((allocation) => ({
+          id: allocation.cashTransaction?.id || allocation.id,
+          receiptId: allocation.cashTransaction?.id || null,
+          category: allocation.cashTransaction?.category || null,
+          idempotencyKey: allocation.cashTransaction?.idempotencyKey || allocation.idempotencyKey,
+          date: allocation.cashTransaction?.date || allocation.allocatedAt,
+          amount: serializeAccountingDecimal(allocation.amount),
+          cashReceivedAmount: serializeAccountingDecimal(allocation.cashTransaction?.amount || allocation.amount),
+          settlementAmount: serializeAccountingDecimal(allocation.amount),
+          toAccountId: allocation.cashTransaction?.toAccountId || null,
+          accountName: allocation.cashTransaction?.toAccount?.accountName || "Treasury Account",
+          tenderMethod: allocation.cashTransaction?.tenderMethod || null,
+          evidenceReference: allocation.cashTransaction?.externalPaymentReference || null,
+          receivedByAccountId: allocation.cashTransaction?.receivedByAccountId || null,
+          notes: allocation.notes || "",
+        })),
+        createdAt: document.createdAt,
+        updatedAt: document.updatedAt,
+      })),
+    ];
 
     // 1. Nepal Can Move (NCM) COD Settlements
     ncmSettlements.forEach((s) => {
@@ -3404,101 +3196,64 @@ export const getPayablesAndReceivables = async (req, res) => {
       }
     });
 
-    // 2. Direct Manufacturer Sales Receivables
-    manufacturers.forEach((m) => {
-      const directDue = Number((mfgDirectReceivableMap[m.id] || 0).toFixed(2));
-      const existingIndex = receivables.findIndex(
-        (r) => r.referenceType === "MANUFACTURER_DIRECT" && r.referenceId === m.id
-      );
-      if (existingIndex >= 0) {
-        const existing = receivables[existingIndex];
-        const receivedAmount = Number(existing.receivedAmount || 0);
-        const remainingBalance = Math.max(0, Number((directDue - receivedAmount).toFixed(2)));
-        receivables[existingIndex] = {
-          ...existing,
-          title: `Direct Sales Margin - ${m.name}`,
-          totalAmount: directDue,
-          receivedAmount,
-          remainingBalance,
-          notes: "Direct manufacturer sales less approved COGS, payable to the platform.",
-          status: remainingBalance === 0 && directDue > 0 ? "SETTLED" : receivedAmount > 0 ? "PARTIALLY_PAID" : "UNPAID",
-        };
-      } else if (directDue > 0) {
-          receivables.push({
-            id: `AR-MFG-DIRECT-${m.id}`,
-            title: `Direct Sales Margin - ${m.name}`,
-            payerName: m.name,
-            category: "CUSTOMER_RECEIVABLE",
-            referenceType: "MANUFACTURER_DIRECT",
-            referenceId: m.id,
-            totalAmount: directDue,
-            receivedAmount: 0,
-            remainingBalance: directDue,
-            dueDate: null,
-            invoiceNumber: `DIR-${m.id.slice(0, 6).toUpperCase()}`,
-            status: "UNPAID",
-            notes: "Direct manufacturer sales less approved COGS, payable to the platform.",
-            collectionHistory: [],
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
-      }
+    const partyReport = buildNonExpensePartyReport({
+      payables,
+      receivables,
+      manufacturers,
+      orders,
+      products,
+      manufacturerInventories,
+      supplierCashOutflows,
+      distributorSettlementRequests: subledgerSettlementRequests,
+      distributorEarningDocuments: reservedEarningDocuments,
+      asOfDate: reportAsOfDate,
     });
+    const reportedPayables = partyReport.payables;
+    const reportedReceivables = partyReport.receivables;
 
-    const totalPayablesOutstanding = payables
-      .filter((p) => p.status !== "SETTLED" && p.status !== "CANCELLED")
-      .reduce((acc, p) => acc + Number(p.remainingBalance || 0), 0);
-
-    const totalPayablesSettled = payables
-      .reduce((acc, p) => acc + Number(p.paidAmount || 0), 0);
-
-    const totalReceivablesOutstanding = receivables
-      .filter((r) => r.status !== "SETTLED" && r.status !== "CANCELLED")
-      .reduce((acc, r) => acc + Number(r.remainingBalance || 0), 0);
-
-    const totalReceivablesCollected = receivables
-      .reduce((acc, r) => acc + Number(r.receivedAmount || 0), 0);
-
-    const totalLiquidCash = accounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
+    const financialMetrics = summarizePayablesAndReceivables({
+      payables: reportedPayables,
+      receivables: reportedReceivables,
+      accounts,
+    });
 
     res.json({
       success: true,
       data: {
-        payables,
-        receivables,
+        payables: reportedPayables,
+        receivables: reportedReceivables,
         accounts,
         recentTransactions: (recentSettlementTransactions || []).map((tx) => ({
           id: tx.id,
           date: tx.date || tx.createdAt,
-          amount: Number(tx.amount || 0),
+          amount: String(tx.amount || "0"),
           type: tx.type,
           category: tx.category,
           partyName: tx.partyName,
+          externalPaymentReference: tx.externalPaymentReference,
           accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
           accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
           description: tx.description,
           createdAt: tx.createdAt,
         })),
-        settlementReversions: (settlementReversions || []).map((rev) => ({
+        settlementReversions: allSettlementReversions.map((rev) => ({
           id: rev.id,
           reversionType: rev.reversionType,
           originalRecordId: rev.originalRecordId,
-          originalAmount: Number(rev.originalAmount),
+          originalAmount: String(rev.originalAmount || "0"),
           partyName: rev.partyName,
           accountName: rev.accountName,
           revertReason: rev.revertReason,
           revertedByEmail: rev.revertedByEmail,
           revertedAt: rev.revertedAt,
           restoredStatus: rev.restoredStatus,
+          correctionMode: rev.correctionMode,
+          evidenceReference: rev.evidenceReference,
+          reversalJournalEntryId: rev.reversalJournalEntryId,
         })),
         metrics: {
-          totalPayablesOutstanding: Number(totalPayablesOutstanding.toFixed(2)),
-          totalPayablesSettled: Number(totalPayablesSettled.toFixed(2)),
-          totalReceivablesOutstanding: Number(totalReceivablesOutstanding.toFixed(2)),
-          totalReceivablesCollected: Number(totalReceivablesCollected.toFixed(2)),
-          totalLiquidCash: Number(totalLiquidCash.toFixed(2)),
-          netPayablePressure: Number((totalPayablesOutstanding - totalLiquidCash).toFixed(2)),
-          canCoverAllPayablesNow: totalLiquidCash >= totalPayablesOutstanding,
+          ...financialMetrics,
+          expenseLinkedPayables: expensePayableReport.summary,
         },
       },
     });
@@ -3536,21 +3291,45 @@ export const getFinancialPayouts = async (req, res) => {
 export const createPayable = async (req, res) => {
   try {
     const { title, payeeName, category, referenceType, referenceId, totalAmount, dueDate, invoiceNumber, priority, notes } = req.body;
-    
+
     if (!title || !payeeName || !totalAmount) {
-      return res.json({ success: false, message: "Title, Payee Name, and Amount are required" });
+      return res.status(400).json({ success: false, message: "Title, Payee Name, and Amount are required." });
     }
 
-    const amount = Number(totalAmount);
-    if (amount <= 0) {
-      return res.json({ success: false, message: "Amount must be greater than zero" });
+    const normalizedCategory = String(category || "OTHER").trim().toUpperCase();
+    const expenseCategories = new Set([
+      "OPERATING_EXPENSE",
+      "OPERATIONAL_EXPENSE",
+      "SUPPLIER_INVOICE",
+      "SALARY_PAYABLE",
+      "SALARIES",
+      "RENT",
+      "UTILITIES",
+      "ELECTRICITY",
+      "MARKETING",
+      "MAINTENANCE",
+      "PRINTING",
+      "MISCELLANEOUS",
+    ]);
+    if (expenseCategories.has(normalizedCategory) || String(referenceType || "").trim().toUpperCase() === "EXPENSE") {
+      return res.status(409).json({
+        success: false,
+        code: "EXPENSE_SOURCE_REQUIRED",
+        message: "Operating expenses and supplier bills must be recorded through the expense workflow so the source, payable, and journal stay linked.",
+      });
+    }
+    let amount;
+    try {
+      amount = parseNprAmountString(totalAmount, "Payable amount", { allowZero: false });
+    } catch (error) {
+      return res.status(400).json({ success: false, code: error.code || "INVALID_PAYABLE_AMOUNT", message: error.message });
     }
 
     const payable = await prisma.accountPayable.create({
       data: {
         title: title.trim(),
         payeeName: payeeName.trim(),
-        category: category || "OPERATING_EXPENSE",
+        category: normalizedCategory,
         referenceType: referenceType || "MANUAL",
         referenceId: referenceId || "",
         totalAmount: amount,
@@ -3618,6 +3397,18 @@ export const payManufacturer = async (req, res) => {
     }
     const payoutAction = String(req.body.action || "INITIATE").trim().toUpperCase();
     const adminAccountId = req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null;
+    let reviewerAccountId = adminAccountId;
+    const requestIdempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"];
+    if (payoutAction === "INITIATE" &&
+        (typeof requestIdempotencyKey !== "string" ||
+         !requestIdempotencyKey.trim() ||
+         requestIdempotencyKey.trim().length > 191)) {
+      return res.status(400).json({
+        success: false,
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+        message: "A valid caller-supplied payout idempotency key is required.",
+      });
+    }
     if (payoutAction === "FAIL") {
       const failed = await failFinancialPayout({
         payoutId: req.body.payoutId,
@@ -3645,6 +3436,18 @@ export const payManufacturer = async (req, res) => {
       if (!String(req.body.bankEvidenceReference || "").trim()) {
         return res.status(400).json({ success: false, message: "Bank transfer evidence reference is required before settlement.", code: "PAYOUT_EVIDENCE_REQUIRED" });
       }
+      try {
+        reviewerAccountId = assertIndependentPayoutReviewer({
+          initiatedByAccountId: payoutRecord.initiatedByAccountId,
+          reviewerAccountId: adminAccountId,
+        });
+      } catch (error) {
+        return res.status(error.statusCode || 403).json({
+          success: false,
+          code: error.code,
+          message: error.message,
+        });
+      }
     }
     const manufacturerId = payoutRecord?.targetId || req.body.manufacturerId;
     const amount = payoutRecord?.amount?.toString() || req.body.amount;
@@ -3653,11 +3456,32 @@ export const payManufacturer = async (req, res) => {
     const externalPaymentReference = payoutRecord
       ? requireExternalPaymentReference(payoutRecord.externalPaymentReference)
       : requireExternalPaymentReference(req.body.externalPaymentReference);
-    let payAmount = Number(amount || 0);
+    let payAmount;
     const adjustmentType = String(payoutRecord?.adjustmentType || req.body.adjustmentType || "NONE").toUpperCase();
-    const adjustmentAmount = Number(payoutRecord?.adjustmentAmount ?? req.body.adjustmentAmount ?? 0);
+    let adjustmentAmount;
+    try {
+      const requestAmount = payoutRecord
+        ? serializeAccountingDecimal(payoutRecord.amount)
+        : amount === undefined || amount === null || amount === "" ? "0" : amount;
+      const requestAdjustment = payoutRecord
+        ? serializeAccountingDecimal(payoutRecord.adjustmentAmount || "0")
+        : req.body.adjustmentAmount === undefined || req.body.adjustmentAmount === null || req.body.adjustmentAmount === ""
+          ? "0"
+          : req.body.adjustmentAmount;
+      payAmount = parseNprAmountString(requestAmount, "Payout amount");
+      adjustmentAmount = parseNprAmountString(requestAdjustment, "Adjustment amount");
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        code: error.code || "INVALID_PAYOUT_AMOUNT",
+        message: error.message,
+      });
+    }
 
-    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
+    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) ||
+        adjustmentAmount.isNegative() ||
+        (adjustmentType === "NONE" && adjustmentAmount.isPositive()) ||
+        (adjustmentType !== "NONE" && !adjustmentAmount.isPositive())) {
       return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
     }
 
@@ -3719,94 +3543,123 @@ export const payManufacturer = async (req, res) => {
       });
     }
 
-    // Build cost lookups
-    const productCostMap = {};
-    allProducts.forEach((p) => { productCostMap[p.id] = Number(p.costPrice || 0); });
-    const inventoryMap = {};
-    inventoryRows.forEach((inv) => {
-      const price = inv.agreedCostPrice !== null && inv.agreedCostPrice !== undefined ? inv.agreedCostPrice : inv.proposedCostPrice;
-      if (price !== null && price !== undefined) inventoryMap[inv.productId] = Number(price);
-    });
-
-    let totalCogs = 0;
-    let totalDirectReceivable = 0;
-
-    orders.forEach((order) => {
-      const items = parseOrderItems(order.items);
-      const orderSales = Number(order.amount || 0);
-      const orderMfgId = order.manufacturerId || items[0]?.manufacturerId;
-      if (orderMfgId !== manufacturerId) return;
-
-      let orderCost = 0;
-      items.forEach((item) => {
-        const qty = Number(item.quantity || 1);
-        const pId = item.productId || item._id || item.id;
-        const customCost = inventoryMap[pId];
-        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[pId] || 0);
-        orderCost += qty * unitCost;
-      });
-      orderCost = Number(orderCost.toFixed(2));
-
-      const isDirect = String(order.orderType || "").toUpperCase() === "DIRECT_MANUFACTURER" || ["PHONE_ORDER", "HUB_VISIT"].includes(String(order.directOrderType || "").toUpperCase());
-
-      if (isDirect) {
-        const receivable = Math.max(0, Number((orderSales - orderCost).toFixed(2)));
-        totalDirectReceivable += receivable;
-      } else {
-        totalCogs += orderCost;
+    const productCostMap = new Map(
+      allProducts.map((product) => [product.id, accountingDecimal(String(product.costPrice ?? 0))]),
+    );
+    const inventoryMap = new Map();
+    inventoryRows.forEach((inventory) => {
+      const price = inventory.agreedCostPrice ?? inventory.proposedCostPrice;
+      if (price !== null && price !== undefined) {
+        inventoryMap.set(inventory.productId, accountingDecimal(String(price)));
       }
     });
 
-    let prevPaid = 0;
-    let prevCollected = 0;
-    pastTransactions.forEach((tx) => {
-      if (tx.type === "OUTFLOW") prevPaid += Number(tx.amount || 0);
-      if (tx.type === "INFLOW") prevCollected += Number(tx.amount || 0);
+    let totalCogs = accountingDecimal("0");
+    let totalDirectReceivable = accountingDecimal("0");
+    orders.forEach((order) => {
+      const items = parseOrderItems(order.items);
+      const orderSales = accountingDecimal(
+        pricingSnapshotAmounts(order).finalPayableTotal,
+        "Accepted order amount",
+      );
+      const orderManufacturerId = order.manufacturerId || items[0]?.manufacturerId;
+      if (orderManufacturerId !== manufacturerId) return;
+
+      let orderCost = accountingDecimal("0");
+      items.forEach((item) => {
+        const quantity = accountingDecimal(String(item.quantity || 1));
+        const productId = item.productId || item._id || item.id;
+        const customCost = inventoryMap.get(productId);
+        const productCost = productCostMap.get(productId);
+        const unitCost = customCost && compareDecimals(customCost, "0") > 0
+          ? customCost
+          : productCost || accountingDecimal("0");
+        orderCost = addDecimals(orderCost, multiplyDecimals(quantity, unitCost));
+      });
+      orderCost = quantizeNprAmount(orderCost);
+
+      const isDirect = String(order.orderType || "").toUpperCase() === "DIRECT_MANUFACTURER" ||
+        ["PHONE_ORDER", "HUB_VISIT"].includes(String(order.directOrderType || "").toUpperCase());
+      if (isDirect) {
+        const margin = subtractDecimals(orderSales, orderCost);
+        const receivable = compareDecimals(margin, "0") > 0
+          ? quantizeNprAmount(margin)
+          : accountingDecimal("0");
+        totalDirectReceivable = addDecimals(totalDirectReceivable, receivable);
+      } else {
+        totalCogs = addDecimals(totalCogs, orderCost);
+      }
     });
 
-    let remainingPayable = Math.max(0, Number((totalCogs - prevPaid).toFixed(2)));
-    const remainingReceivable = Math.max(0, Number((totalDirectReceivable - prevCollected).toFixed(2)));
+    let prevPaid = accountingDecimal("0");
+    let prevCollected = accountingDecimal("0");
+    pastTransactions.forEach((transaction) => {
+      if (transaction.type === "OUTFLOW") prevPaid = addDecimals(prevPaid, transaction.amount || "0");
+      if (transaction.type === "INFLOW") prevCollected = addDecimals(prevCollected, transaction.amount || "0");
+    });
 
-    // If amount is not passed or <= 0, default to the full Net Payable
+    const estimatedPayable = subtractDecimals(totalCogs, prevPaid);
+    const remainingPayable = compareDecimals(estimatedPayable, "0") > 0
+      ? estimatedPayable
+      : accountingDecimal("0");
+    const estimatedReceivable = subtractDecimals(totalDirectReceivable, prevCollected);
+    const remainingReceivable = compareDecimals(estimatedReceivable, "0") > 0
+      ? estimatedReceivable
+      : accountingDecimal("0");
+
     const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer.name);
-    remainingPayable = postedPayable.outstanding;
-    if (payAmount <= 0) {
-      payAmount = Math.max(0, postedPayable.outstanding + (adjustmentType === "FINE" ? adjustmentAmount : 0) - (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0));
+    const postedOutstanding = accountingDecimal(postedPayable.outstanding);
+    if (payAmount.isZero()) {
+      payAmount = adjustmentType === "FINE"
+        ? addDecimals(postedOutstanding, adjustmentAmount)
+        : adjustmentType === "DISCOUNT"
+          ? subtractDecimals(postedOutstanding, adjustmentAmount)
+          : postedOutstanding;
+      if (compareDecimals(payAmount, "0") < 0) payAmount = accountingDecimal("0");
     }
 
-    const settlementAmount = payAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
-    if (settlementAmount <= 0) {
+    const settlementAmount = adjustmentType === "DISCOUNT"
+      ? addDecimals(payAmount, adjustmentAmount)
+      : adjustmentType === "FINE"
+        ? subtractDecimals(payAmount, adjustmentAmount)
+        : payAmount;
+    if (compareDecimals(settlementAmount, "0") <= 0) {
       return res.status(400).json({ success: false, message: "The cash payment and adjustment must settle a positive amount of the manufacturer payable." });
     }
 
-    if (settlementAmount > postedPayable.outstanding) {
+    if (compareDecimals(settlementAmount, postedOutstanding) > 0) {
       return res.status(400).json({
         success: false,
-        message: `Net settlement exceeds posted manufacturer payable. Posted outstanding: Rs ${postedPayable.outstanding.toLocaleString()}; net settlement: Rs ${settlementAmount.toLocaleString()}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
+        message: `Net settlement exceeds posted manufacturer payable. Posted outstanding: Rs ${postedOutstanding.toFixed(2)}; net settlement: Rs ${settlementAmount.toFixed(2)}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
         postedPayable,
       });
     }
 
-    if (settlementAmount <= 0 && remainingPayable === 0) {
+    if (compareDecimals(settlementAmount, "0") <= 0 && compareDecimals(remainingPayable, "0") === 0) {
       return res.status(400).json({
         success: false,
-        message: `No outstanding net payable for ${manufacturer.name}. (Approved COGS: Rs ${totalCogs.toLocaleString()}, Paid: Rs ${prevPaid.toLocaleString()}, Direct Margin Offset: Rs ${remainingReceivable.toLocaleString()})`,
+        message: `No outstanding net payable for ${manufacturer.name}. (Approved COGS: Rs ${totalCogs.toFixed(2)}, Paid: Rs ${prevPaid.toFixed(2)}, Direct Margin Offset: Rs ${remainingReceivable.toFixed(2)})`,
       });
     }
 
-    // STRICT CAPITAL SOLVENCY CHECK
-    const balanceAvailableForPayout = Number(fromAccount.currentBalance || 0)
-      - Number(fromAccount.reservedBalance || 0)
-      + (payoutRecord ? Number(payoutRecord.amount) : 0);
-    if (balanceAvailableForPayout < payAmount) {
+    let balanceAvailableForPayout = subtractDecimals(
+      fromAccount.currentBalance || "0",
+      fromAccount.reservedBalance || "0",
+    );
+    if (payoutRecord) {
+      balanceAvailableForPayout = addDecimals(balanceAvailableForPayout, payoutRecord.amount);
+    }
+    if (compareDecimals(balanceAvailableForPayout, payAmount) < 0) {
+      const availableBalance = compareDecimals(balanceAvailableForPayout, "0") > 0
+        ? balanceAvailableForPayout
+        : accountingDecimal("0");
       return res.status(400).json({
         success: false,
-        message: `Insufficient unreserved liquid cash in ${fromAccount.accountName}. Available balance: Rs ${Math.max(0, balanceAvailableForPayout).toLocaleString()}, required: Rs ${payAmount.toLocaleString()}.`,
+        message: `Insufficient unreserved liquid cash in ${fromAccount.accountName}. Available balance: Rs ${availableBalance.toFixed(2)}, required: Rs ${payAmount.toFixed(2)}.`,
       });
     }
 
-    // Ensure unique idempotency key for this payout transaction
-    const idempotencyKey = payoutRecord?.idempotencyKey || req.body.idempotencyKey || req.headers?.["idempotency-key"] || `MFGPAY-${manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const idempotencyKey = payoutRecord?.idempotencyKey || requestIdempotencyKey.trim();
 
     // Check if duplicate transaction with this idempotency key already exists
     const existingTx = await prisma.cashTransaction.findUnique({
@@ -3816,7 +3669,7 @@ export const payManufacturer = async (req, res) => {
       return res.status(409).json({
         success: false,
         alreadyProcessed: true,
-        message: `This manufacturer payout transaction (Rs ${existingTx.amount.toLocaleString()}) has already been processed and recorded.`,
+        message: `This manufacturer payout transaction (Rs ${serializeAccountingDecimal(existingTx.amount)}) has already been processed and recorded.`,
       });
     }
 
@@ -3825,7 +3678,7 @@ export const payManufacturer = async (req, res) => {
       where: {
         referenceId: manufacturerId,
         fromAccountId,
-        amount: payAmount,
+        amount: payAmount.toFixed(2),
         type: "OUTFLOW",
         category: "SUPPLIER_PAYMENT",
         createdAt: { gte: new Date(Date.now() - 4000) },
@@ -3835,7 +3688,7 @@ export const payManufacturer = async (req, res) => {
       return res.status(409).json({
         success: false,
         alreadyProcessed: true,
-        message: `Duplicate transaction rejected: an identical payout of Rs ${payAmount.toLocaleString()} to ${manufacturer.name} was just processed moments ago.`,
+        message: `Duplicate transaction rejected: an identical payout of Rs ${payAmount.toFixed(2)} to ${manufacturer.name} was just processed moments ago.`,
       });
     }
 
@@ -3843,10 +3696,10 @@ export const payManufacturer = async (req, res) => {
       const start = await initiateFinancialPayout({
         targetType: "MANUFACTURER_PAYABLE",
         targetId: manufacturerId,
-        amount: payAmount,
-        settlementAmount,
+        amount: payAmount.toFixed(2),
+        settlementAmount: settlementAmount.toFixed(2),
         adjustmentType,
-        adjustmentAmount,
+        adjustmentAmount: adjustmentAmount.toFixed(2),
         financialAccountId: fromAccountId,
         externalPaymentReference,
         idempotencyKey,
@@ -3861,8 +3714,13 @@ export const payManufacturer = async (req, res) => {
             },
             _sum: { settlementAmount: true },
           });
-          const pendingAmount = Number(pendingPayouts._sum.settlementAmount || 0);
-          return { availableAmount: Math.max(0, postedPayable.outstanding - pendingAmount) };
+          const pendingAmount = accountingDecimal(String(pendingPayouts._sum.settlementAmount || 0));
+          const availableAmount = subtractDecimals(postedOutstanding, pendingAmount);
+          return {
+            availableAmount: compareDecimals(availableAmount, "0") > 0
+              ? availableAmount
+              : accountingDecimal("0"),
+          };
         },
       });
       return res.status(start.isReplay ? 200 : 201).json({
@@ -3871,7 +3729,7 @@ export const payManufacturer = async (req, res) => {
       });
     }
 
-    const offsetApplied = 0;
+    const offsetApplied = accountingDecimal("0");
 
     // Find or create AccountPayable record
     let payable = await prisma.accountPayable.findFirst({
@@ -3891,13 +3749,13 @@ export const payManufacturer = async (req, res) => {
       id: Date.now().toString(),
       idempotencyKey,
       date: new Date().toISOString(),
-      amount: payAmount,
-      settlementAmount,
+      amount: payAmount.toFixed(2),
+      settlementAmount: settlementAmount.toFixed(2),
       adjustmentType,
-      adjustmentAmount,
-      offsetAmount: offsetApplied,
-      grossPayable: remainingPayable,
-      grossReceivable: remainingReceivable,
+      adjustmentAmount: adjustmentAmount.toFixed(2),
+      offsetAmount: offsetApplied.toFixed(2),
+      grossPayable: serializeAccountingDecimal(remainingPayable),
+      grossReceivable: serializeAccountingDecimal(remainingReceivable),
       fromAccountId,
       accountName: fromAccount.accountName,
       externalPaymentReference,
@@ -3905,20 +3763,23 @@ export const payManufacturer = async (req, res) => {
     };
     history.push(settlementEntry);
 
-    const newTotalPaid = postedPayable.paid + settlementAmount;
-    const finalRemainingPayable = Math.max(0, postedPayable.recognized - newTotalPaid);
-    const newStatus = finalRemainingPayable === 0 ? "SETTLED" : "PARTIALLY_PAID";
+    const newTotalPaid = addDecimals(postedPayable.paid, settlementAmount);
+    const remainingAfterPayment = subtractDecimals(postedPayable.recognized, newTotalPaid);
+    const finalRemainingPayable = compareDecimals(remainingAfterPayment, "0") > 0
+      ? remainingAfterPayment
+      : accountingDecimal("0");
+    const newStatus = compareDecimals(finalRemainingPayable, "0") === 0 ? "SETTLED" : "PARTIALLY_PAID";
 
-    const description = `Net Settlement to ${manufacturer.name}: Approved COGS Rs ${remainingPayable.toLocaleString()} less Direct Margin Rs ${remainingReceivable.toLocaleString()} = Net Paid Rs ${payAmount.toLocaleString()}${notes ? ` (${notes})` : ""}`;
+    const description = `Net Settlement to ${manufacturer.name}: Approved COGS Rs ${remainingPayable.toFixed(2)} less Direct Margin Rs ${remainingReceivable.toFixed(2)} = Net Paid Rs ${payAmount.toFixed(2)}${notes ? ` (${notes})` : ""}`;
 
     const { updatedAccount, documentAllocation } = await prisma.$transaction(async (tx) => {
       const debitedAccount = await tx.financialAccount.updateMany({
         where: {
           id: fromAccountId,
           status: "ACTIVE",
-          currentBalance: { gte: payAmount },
+          currentBalance: { gte: payAmount.toFixed(2) },
         },
-        data: { currentBalance: { decrement: payAmount } },
+        data: { currentBalance: { decrement: payAmount.toFixed(2) } },
       });
       if (debitedAccount.count !== 1) {
         throw Object.assign(new Error("Source Treasury account changed before payout."), { statusCode: 409 });
@@ -3926,7 +3787,7 @@ export const payManufacturer = async (req, res) => {
       await tx.cashTransaction.create({
         data: {
           idempotencyKey,
-          amount: payAmount,
+          amount: payAmount.toFixed(2),
           type: "OUTFLOW",
           fromAccountId,
           category: "SUPPLIER_PAYMENT",
@@ -3941,8 +3802,8 @@ export const payManufacturer = async (req, res) => {
             where: { id: payable.id },
             data: {
               totalAmount: postedPayable.recognized,
-              paidAmount: newTotalPaid,
-              remainingBalance: finalRemainingPayable,
+              paidAmount: serializeAccountingDecimal(newTotalPaid),
+              remainingBalance: serializeAccountingDecimal(finalRemainingPayable),
               status: newStatus,
               settlementHistory: history,
             },
@@ -3956,8 +3817,8 @@ export const payManufacturer = async (req, res) => {
               referenceType: "MANUFACTURER_COGS",
               referenceId: manufacturer.id,
               totalAmount: postedPayable.recognized,
-              paidAmount: newTotalPaid,
-              remainingBalance: finalRemainingPayable,
+              paidAmount: serializeAccountingDecimal(newTotalPaid),
+              remainingBalance: serializeAccountingDecimal(finalRemainingPayable),
               status: newStatus,
               priority: "HIGH",
               notes: notes || `Production cost COGS settlement`,
@@ -3969,10 +3830,10 @@ export const payManufacturer = async (req, res) => {
       const paymentJournal = await postSupplierPaymentAccounting({
         payableId: payable?.id || `MFG-COGS-${manufacturer.id}`,
         payeeName: manufacturer.name,
-        amount: payAmount,
-        settlementAmount,
-        discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
-        fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
+        amount: payAmount.toFixed(2),
+        settlementAmount: settlementAmount.toFixed(2),
+        discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount.toFixed(2) : "0.00",
+        fineAmount: adjustmentType === "FINE" ? adjustmentAmount.toFixed(2) : "0.00",
         fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2160",
         cashAccountId: accountingAccount.id,
@@ -3984,7 +3845,7 @@ export const payManufacturer = async (req, res) => {
       if (!paymentJournal) throw new Error("Accounting journal could not be posted for the manufacturer payout.");
       const documentAllocation = await allocateManufacturerPaymentToDocuments({
         manufacturerId: manufacturer.id,
-        amount: settlementAmount,
+        amount: settlementAmount.toFixed(2),
         journalEntryId: paymentJournal.id,
         idempotencyKey: `MFG-PAYOUT-ALLOCATION:${idempotencyKey}`,
         notes: `Manufacturer COGS payout ${idempotencyKey}`,
@@ -4004,7 +3865,7 @@ export const payManufacturer = async (req, res) => {
           data: {
             status: "SETTLED",
             bankEvidenceReference: String(req.body.bankEvidenceReference).trim(),
-            confirmedByAccountId: adminAccountId,
+            confirmedByAccountId: reviewerAccountId,
             settledAt,
           },
         });
@@ -4012,7 +3873,7 @@ export const payManufacturer = async (req, res) => {
           throw Object.assign(new Error("Manufacturer payout changed before confirmation; settlement was rolled back."), { statusCode: 409, code: "PAYOUT_STATE_CONFLICT" });
         }
         await recordSystemAudit(
-          { actorId: adminAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+          { actorId: reviewerAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
           {
             action: "FINANCIAL_PAYOUT_SETTLED",
             entityType: "FinancialPayout",
@@ -4034,12 +3895,12 @@ export const payManufacturer = async (req, res) => {
     res.json({
       success: true,
       message: documentAllocation.unallocatedAmount.greaterThan(0)
-        ? `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name}. Part of the settlement applies to legacy payable balances not represented by delivery bills.`
-        : `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name} from ${fromAccount.accountName}. (Gross COGS: Rs ${remainingPayable.toLocaleString()}, Direct Offset: Rs ${offsetApplied.toLocaleString()}). Remaining balance in ${fromAccount.accountName}: Rs ${updatedAccount.currentBalance.toLocaleString()}`,
-      newAccountBalance: updatedAccount.currentBalance,
-      netDisbursed: payAmount,
-      offsetApplied,
-      documentAllocation,
+      ? `Successfully paid Net Rs ${payAmount.toFixed(2)} to ${manufacturer.name}. Part of the settlement applies to legacy payable balances not represented by delivery bills.`
+      : `Successfully paid Net Rs ${payAmount.toFixed(2)} to ${manufacturer.name} from ${fromAccount.accountName}. (Gross COGS: Rs ${remainingPayable.toFixed(2)}, Direct Offset: Rs ${offsetApplied.toFixed(2)}). Remaining balance in ${fromAccount.accountName}: Rs ${serializeAccountingDecimal(updatedAccount.currentBalance)}`,
+      newAccountBalance: serializeAccountingDecimal(updatedAccount.currentBalance),
+      netDisbursed: payAmount.toFixed(2),
+      offsetApplied: offsetApplied.toFixed(2),
+      documentAllocation: serializeAccountingValue(documentAllocation),
       reconciliationRequired: documentAllocation.unallocatedAmount.greaterThan(0),
       ...(payoutRecord ? { payoutStatus: "SETTLED" } : {}),
     });
@@ -4135,14 +3996,47 @@ const finalizeAccountPayablePayout = async (tx, payout, actorId) => {
     payeeName: payable.payeeName,
     amount: paymentAmount,
     settlementAmount,
-    discountAmount: payout.adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
-    fineAmount: payout.adjustmentType === "FINE" ? adjustmentAmount : 0,
+    discountAmount: payout.adjustmentType === "DISCOUNT" ? adjustmentAmount : "0.00",
+    fineAmount: payout.adjustmentType === "FINE" ? adjustmentAmount : "0.00",
     fromAccountType: account.accountType === "CASH" ? "CASH" : "BANK",
     cashAccountId: accountingAccount.id,
+    accountingPartyId: payable.accountingPartyId,
     idempotencyKey: `SUPPLIER_PAYMENT:${payout.idempotencyKey}`,
     client: tx,
   });
   if (!journal?.id) throw new Error("Accounts-payable settlement journal could not be posted.");
+  if (payable.accountingPartyId) {
+    const billDocument = await tx.accountingDocument.findFirst({
+      where: {
+        partyId: payable.accountingPartyId,
+        side: "PAYABLE",
+        documentType: "BILL",
+        sourceType: "OPERATING_EXPENSE",
+        sourceId: payable.referenceId,
+      },
+    });
+    if (!billDocument) {
+      throw Object.assign(
+        new Error("The supplier bill document linked to this expense payable is missing."),
+        { statusCode: 409, code: "EXPENSE_BILL_DOCUMENT_MISSING" },
+      );
+    }
+    const allocation = await allocatePaymentToDocuments({
+      partyId: payable.accountingPartyId,
+      side: "PAYABLE",
+      amount: settlementAmount,
+      journalEntryId: journal.id,
+      allocationType: "CASH",
+      targetDocumentIds: [billDocument.id],
+      idempotencyKey: `ACCOUNT_PAYABLE_PAYOUT:${payout.id}`,
+    }, { client: tx });
+    if (!allocation.unallocatedAmount.isZero()) {
+      throw Object.assign(
+        new Error("The payable settlement could not be fully allocated to its supplier bill."),
+        { statusCode: 409, code: "EXPENSE_BILL_ALLOCATION_FAILED" },
+      );
+    }
+  }
   if (payable.category === "PARTNER_DISTRIBUTION" && payable.referenceId) {
     const partnerId = payable.referenceId.split("#")[1];
     if (partnerId) {
@@ -4201,6 +4095,26 @@ export const settlePayable = async (req, res) => {
             });
         return res.status(200).json(result);
       }
+      if (payout.targetType === "MARKETING_CPA_PAYABLE") {
+        const result = payoutAction === "CONFIRM"
+          ? await confirmFinancialPayout({
+              payoutId: payout.id,
+              bankEvidenceReference: req.body.bankEvidenceReference,
+              confirmedByAccountId: adminAccountId,
+              finalizePayout: (tx, currentPayout) => finalizeMarketingCpaPayablePayout({
+                client: tx,
+                payout: currentPayout,
+                actorId: adminAccountId,
+              }),
+            })
+          : await failFinancialPayout({
+              payoutId: payout.id,
+              expectedTargetType: "MARKETING_CPA_PAYABLE",
+              failureReason: req.body.failureReason,
+              failedByAccountId: adminAccountId,
+            });
+        return res.status(200).json(result);
+      }
       if (payout.targetType !== "DISTRIBUTOR_SETTLEMENT") {
         return res.status(409).json({ success: false, message: "This payout requires a different settlement operation.", code: "PAYOUT_TARGET_MISMATCH" });
       }
@@ -4221,26 +4135,52 @@ export const settlePayable = async (req, res) => {
       return res.status(400).json({ success: false, message: "Payout action must be INITIATE, CONFIRM, or FAIL." });
     }
     const { payableId, amount, fromAccountId, notes } = req.body;
+    if (!payableId || !fromAccountId) {
+      return res.status(400).json({ success: false, message: "Payable ID and source account are required." });
+    }
+    const idempotencyKey = String(req.body.idempotencyKey || req.headers?.["idempotency-key"] || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,191}$/.test(idempotencyKey)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid payout idempotency key is required.",
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+      });
+    }
     const externalPaymentReference = req.body.externalPaymentReference === undefined
       ? null
       : requireExternalPaymentReference(req.body.externalPaymentReference);
-    const settleAmount = Number(amount || 0);
     const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
-    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
 
-    if (!payableId || !Number.isFinite(settleAmount) || settleAmount <= 0 || !fromAccountId) {
-      return res.json({ success: false, message: "Payable ID, positive payment amount, and source account are required" });
+    if (String(payableId).startsWith("AP-MFG-")) {
+      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
+      const manufacturerId = payableId.replace("AP-MFG-", "");
+      req.body.manufacturerId = manufacturerId;
+      return payManufacturer(req, res);
     }
-    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
+
+    let payable = await prisma.accountPayable.findUnique({ where: { id: payableId } });
+    if (payable?.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {
+      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
+      req.body.manufacturerId = payable.referenceId;
+      return payManufacturer(req, res);
+    }
+
+    let cashAmountDecimal;
+    let adjustmentAmountDecimal;
+    try {
+      cashAmountDecimal = parseNprAmountString(amount, "Payout amount", { allowZero: false });
+      adjustmentAmountDecimal = parseNprAmountString(
+        req.body.adjustmentAmount === undefined || req.body.adjustmentAmount === null || req.body.adjustmentAmount === ""
+          ? "0"
+          : req.body.adjustmentAmount,
+        "Adjustment amount",
+      );
+    } catch (error) {
+      return res.status(400).json({ success: false, code: error.code || "INVALID_PAYOUT_AMOUNT", message: error.message });
+    }
+    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || adjustmentAmountDecimal.isNegative() || (adjustmentType === "NONE" && adjustmentAmountDecimal.isPositive()) || (adjustmentType !== "NONE" && !adjustmentAmountDecimal.isPositive())) {
       return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
     }
-    const amountText = String(amount ?? "").trim();
-    const adjustmentText = String(req.body.adjustmentAmount ?? "0").trim();
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(amountText) || !/^\d{1,18}(?:\.\d{1,2})?$/.test(adjustmentText)) {
-      return res.status(400).json({ success: false, message: "Payout amounts must be valid positive currency values with no more than two decimal places." });
-    }
-    const cashAmountDecimal = new Prisma.Decimal(amountText);
-    const adjustmentAmountDecimal = new Prisma.Decimal(adjustmentText);
     const payableReduction = adjustmentType === "DISCOUNT"
       ? cashAmountDecimal.plus(adjustmentAmountDecimal)
       : adjustmentType === "FINE"
@@ -4250,23 +4190,95 @@ export const settlePayable = async (req, res) => {
       return res.status(400).json({ success: false, message: "The cash payment and adjustment must settle a positive amount of the payable." });
     }
 
-    // Check if this is a synthesized or direct manufacturer payable
-    if (String(payableId).startsWith("AP-MFG-")) {
-      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
-      const manufacturerId = payableId.replace("AP-MFG-", "");
-      req.body.manufacturerId = manufacturerId;
-      return payManufacturer(req, res);
-    }
-
-    let payable = await prisma.accountPayable.findUnique({ where: { id: payableId } });
     if (!payable) {
+      const accountingDocument = await prisma.accountingDocument.findUnique({
+        where: { id: payableId },
+        include: { party: true },
+      });
+      if (accountingDocument) {
+        if (
+          accountingDocument.documentType !== "BILL" ||
+          accountingDocument.side !== "PAYABLE" ||
+          accountingDocument.sourceType !== "MARKETING_CPA" ||
+          accountingDocument.currency !== "NPR" ||
+          accountingDocument.party?.partyType !== "MARKETING_PARTNER"
+        ) {
+          return res.status(409).json({
+            success: false,
+            message: "This accounting document is not a supported Marketing CPA payable.",
+            code: "UNSUPPORTED_ACCOUNTING_PAYABLE",
+          });
+        }
+        if (adjustmentType !== "NONE" || !adjustmentAmountDecimal.isZero()) {
+          return res.status(400).json({
+            success: false,
+            message: "Marketing CPA payments record cash paid only; discounts, fines, and withholding adjustments are not supported.",
+            code: "CPA_ADJUSTMENT_UNSUPPORTED",
+          });
+        }
+        const externalReference = requireExternalPaymentReference(externalPaymentReference);
+        const initiated = await initiateFinancialPayout({
+          targetType: "MARKETING_CPA_PAYABLE",
+          targetId: accountingDocument.id,
+          amount: cashAmountDecimal,
+          settlementAmount: cashAmountDecimal,
+          adjustmentType: "NONE",
+          adjustmentAmount: 0,
+          financialAccountId: fromAccountId,
+          externalPaymentReference: externalReference,
+          idempotencyKey,
+          initiatedByAccountId: adminAccountId,
+          notes,
+          validateTarget: async (tx) => {
+            const freshDocument = await tx.accountingDocument.findUnique({
+              where: { id: accountingDocument.id },
+              include: { party: true },
+            });
+            if (
+              !freshDocument ||
+              freshDocument.documentType !== "BILL" ||
+              freshDocument.side !== "PAYABLE" ||
+              freshDocument.sourceType !== "MARKETING_CPA" ||
+              freshDocument.currency !== "NPR" ||
+              freshDocument.party?.partyType !== "MARKETING_PARTNER" ||
+              !["OPEN", "PARTIALLY_PAID"].includes(freshDocument.status)
+            ) {
+              throw Object.assign(new Error("Marketing CPA bill is no longer open for settlement."), {
+                statusCode: 409,
+                code: "CPA_PAYABLE_NOT_OPEN",
+              });
+            }
+            const pending = await tx.financialPayout.aggregate({
+              where: {
+                targetType: "MARKETING_CPA_PAYABLE",
+                targetId: freshDocument.id,
+                status: "INITIATED",
+              },
+              _sum: { settlementAmount: true },
+            });
+            const availableAmount = new Prisma.Decimal(String(freshDocument.remainingAmount))
+              .minus(new Prisma.Decimal(String(pending._sum.settlementAmount || 0)));
+            await validateTreasuryPayoutAccount(
+              await tx.financialAccount.findUnique({ where: { id: fromAccountId } }),
+              tx,
+            );
+            return { availableAmount: Prisma.Decimal.max(availableAmount, 0) };
+          },
+        });
+        return res.status(initiated.isReplay ? 200 : 201).json({
+          ...initiated,
+          message: initiated.isReplay
+            ? "This Marketing CPA bill payout was already initiated."
+            : "Marketing CPA cash payout initiated; funds are reserved pending evidence confirmation.",
+        });
+      }
       const distributorSettlement = await prisma.distributorSettlementRequest.findUnique({
         where: { id: payableId },
       });
       if (!distributorSettlement) {
         return res.status(404).json({ success: false, message: "Payable record not found" });
       }
-      if (adjustmentType !== "NONE" || adjustmentAmount !== 0) {
+      if (adjustmentType !== "NONE" || !adjustmentAmountDecimal.isZero()) {
         return res.status(400).json({
           success: false,
           message: "Distributor settlement requests cannot be paid with an unapproved discount or fine.",
@@ -4274,24 +4286,18 @@ export const settlePayable = async (req, res) => {
       }
       const result = await initiateAdminDistributorSettlement({
         settlementId: distributorSettlement.id,
-        amount,
+        amount: cashAmountDecimal.toFixed(2),
         financialAccountId: fromAccountId,
         externalPaymentReference: requireExternalPaymentReference(externalPaymentReference),
-        idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
+        idempotencyKey,
         adminNotes: notes,
         adminAccountId,
       });
       return res.status(result.isReplay ? 200 : 201).json(result);
     }
 
-    if (payable.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {
-      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
-      req.body.manufacturerId = payable.referenceId;
-      return payManufacturer(req, res);
-    }
-
     if (payable.referenceType === "DISTRIBUTOR_SETTLEMENT") {
-      if (adjustmentType !== "NONE" || adjustmentAmount !== 0) {
+      if (adjustmentType !== "NONE" || !adjustmentAmountDecimal.isZero()) {
         return res.status(400).json({
           success: false,
           message: "Distributor settlement requests cannot be paid with an unapproved discount or fine.",
@@ -4302,7 +4308,7 @@ export const settlePayable = async (req, res) => {
         amount,
         financialAccountId: fromAccountId,
         externalPaymentReference: requireExternalPaymentReference(externalPaymentReference),
-        idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
+        idempotencyKey,
         adminNotes: notes,
         adminAccountId,
       });
@@ -4333,7 +4339,6 @@ export const settlePayable = async (req, res) => {
       return res.json({ success: false, message: "Source account not found" });
     }
 
-    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `PAY-${payable.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const initiated = await initiateFinancialPayout({
       targetType: "ACCOUNT_PAYABLE",
       targetId: payable.id,
@@ -4381,59 +4386,41 @@ export const settlePayable = async (req, res) => {
 };
 
 export const collectReceivable = async (req, res) => {
+  let amounts;
+  let idempotencyKey;
+  let receivableId;
+  let toAccountId;
+  let adjustmentType;
+  let adjustmentAmount;
+  let notes;
+  let directManufacturerId = null;
+  let isDirectManufacturerReceivable = false;
   try {
-    const { receivableId, amount, toAccountId, notes } = req.body;
-    const collectAmount = Number(amount || 0);
-    const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
-    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
+    const body = req.body || {};
+    ({ receivableId, toAccountId, notes } = body);
+    amounts = parseReceivableCollectionAmounts({
+      amount: body.amount,
+      adjustmentAmount: body.adjustmentAmount === undefined || body.adjustmentAmount === "" ? "0" : body.adjustmentAmount,
+      adjustmentType: body.adjustmentType,
+    });
+    adjustmentType = amounts.adjustmentType;
+    adjustmentAmount = amounts.adjustmentAmount;
 
-    if (!receivableId || !Number.isFinite(collectAmount) || collectAmount <= 0 || !toAccountId) {
-      return res.json({ success: false, message: "Receivable ID, positive amount, and deposit account are required" });
+    if (!receivableId || !toAccountId) {
+      return res.status(400).json({ success: false, message: "Receivable ID, positive amount, and deposit account are required" });
     }
-    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
-      return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
-    }
-    const settlementAmount = collectAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
-    if (settlementAmount <= 0) {
-      return res.status(400).json({ success: false, message: "The collection and adjustment must settle a positive amount of the receivable." });
+    idempotencyKey = String(body.idempotencyKey || req.headers?.["idempotency-key"] || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,191}$/.test(idempotencyKey)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid collection idempotency key is required.",
+        code: "IDEMPOTENCY_KEY_REQUIRED",
+      });
     }
 
     const toAccount = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
     if (!toAccount) {
       return res.json({ success: false, message: "Deposit account not found" });
-    }
-
-    // Unique idempotency key for this collection event
-    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `REC-${receivableId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    // Check if this exact transaction was already executed
-    const existingTx = await prisma.cashTransaction.findUnique({
-      where: { idempotencyKey },
-    });
-    if (existingTx) {
-      return res.status(409).json({
-        success: false,
-        alreadyProcessed: true,
-        message: `This collection transaction (Rs ${existingTx.amount.toLocaleString()}) has already been recorded and processed into the ledger.`,
-      });
-    }
-
-    // Debounce check: prevent duplicate rapid clicks within 4 seconds for the same receivable
-    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
-      where: {
-        referenceId: receivableId,
-        toAccountId,
-        amount: collectAmount,
-        type: "INFLOW",
-        createdAt: { gte: new Date(Date.now() - 4000) },
-      },
-    });
-    if (duplicateRecentTx) {
-      return res.status(409).json({
-        success: false,
-        alreadyProcessed: true,
-        message: `Duplicate transaction rejected: an identical collection of Rs ${collectAmount.toLocaleString()} was just recorded moments ago. Please check transaction history.`,
-      });
     }
 
     // Check if this is a Nepal Can Move (NCM) COD settlement
@@ -4445,500 +4432,407 @@ export const collectReceivable = async (req, res) => {
       if (adjustmentType !== "NONE") {
         return res.status(400).json({ success: false, message: "NCM COD settlements already account for courier fees and do not support an additional discount or fine." });
       }
-      const cod = Number(ncmSettlement.codCollected || ncmSettlement.codExpected || collectAmount);
-      const fee = Number(ncmSettlement.deliveryFeeActual || ncmSettlement.deliveryFeeExpected || 0);
-      const expectedNetDeposit = Number((cod - fee).toFixed(2));
-      const result = await confirmNcmSettlementBatch({
-        settlementIds: [ncmSettlement.id],
-        financialAccountId: toAccountId,
-        expectedNetDeposit: collectAmount,
-        reference: req.body?.reference || idempotencyKey,
-        notes,
-        createdBy: req.auth?.email || "ADMIN",
+      const result = await requestAccountingActionApproval({
+        actionType: "NCM_SETTLEMENT_CONFIRM",
+        requestKey: idempotencyKey,
+        payload: {
+          settlementIds: [ncmSettlement.id],
+          financialAccountId: toAccountId,
+          expectedNetDeposit: amounts.collectedAmount.toFixed(2),
+          reference: req.body?.reference || idempotencyKey,
+          notes,
+          reason: notes,
+          createdBy: req.auth?.email || "ADMIN",
+        },
+        actor: {
+          accountId: req.auth?.accountId || req.auth?.userId || null,
+          role: req.auth?.role,
+        },
+        auditContext: {
+          ipAddress: req.ip || null,
+          userAgent: req.headers?.["user-agent"] || null,
+          correlationId: req.correlationId || null,
+        },
       });
-
-      return res.status(200).json({
+      return res.status(result.isReplay ? 200 : 202).json({
         success: true,
-        alreadyProcessed: result.alreadyProcessed,
-        transactionId: result.transactionId,
-        message: `Successfully collected NCM COD remittance of NPR ${expectedNetDeposit.toLocaleString()} into ${toAccount.accountName}.`,
+        alreadyPending: true,
+        message: result.isReplay
+          ? "This NCM remittance approval request already exists."
+          : `NCM COD remittance submitted for independent Admin approval for ${toAccount.accountName}.`,
+        collectedAmount: amounts.collectedAmount.toFixed(2),
+        approvalRequest: serializeAccountingValue(result.approvalRequest),
       });
     }
 
-    // Check if direct manufacturer sales receivable
-    if (String(receivableId).startsWith("AR-MFG-DIRECT-")) {
-      if (adjustmentType !== "NONE") {
-        return res.status(400).json({ success: false, message: "Direct manufacturer margin collections do not support adjustments in this settlement flow." });
-      }
-      const manufacturerId = receivableId.replace("AR-MFG-DIRECT-", "");
-      const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
+    isDirectManufacturerReceivable = String(receivableId).startsWith("AR-MFG-DIRECT-");
+    directManufacturerId = isDirectManufacturerReceivable
+      ? String(receivableId).replace("AR-MFG-DIRECT-", "")
+      : null;
+    if (isDirectManufacturerReceivable && adjustmentType !== "NONE") {
+      return res.status(400).json({ success: false, message: "Direct manufacturer margin collections do not support adjustments in this settlement flow." });
+    }
 
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: toAccountId },
-          data: { currentBalance: { increment: collectAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            idempotencyKey,
-            amount: collectAmount,
-            type: "INFLOW",
-            toAccountId,
-            category: "SALES",
-            partyName: manufacturer ? manufacturer.name : "Direct Manufacturer Sale",
-            referenceId: manufacturerId,
-            description: `Direct sales retail margin collected from ${manufacturer?.name || "Manufacturer"}${notes ? ` - ${notes}` : ""}`,
+    const loadDirectManufacturerSnapshot = async (client) => {
+      const sourceReceivablePromise = (async () => {
+        const byId = await client.accountReceivable.findUnique({ where: { id: receivableId } });
+        if (byId) return byId;
+        return client.accountReceivable.findFirst({
+          where: { referenceType: "MANUFACTURER_DIRECT", referenceId: directManufacturerId },
+        });
+      })();
+      const [manufacturer, orders, products, manufacturerInventories, sourceReceivable] = await Promise.all([
+        client.manufacturer.findUnique({ where: { id: directManufacturerId } }),
+        client.order.findMany({
+          where: {
+            orderType: "DIRECT_MANUFACTURER",
+            directOrderType: { in: ["PHONE_ORDER", "HUB_VISIT"] },
+            status: { notIn: ["Cancelled"] },
           },
+          include: { deliveryOrder: { select: { manufacturerId: true } } },
         }),
+        client.product.findMany({ select: { id: true, costPrice: true } }),
+        client.manufacturerInventory.findMany({
+          where: { manufacturerId: directManufacturerId },
+          select: { manufacturerId: true, productId: true, agreedCostPrice: true, proposedCostPrice: true },
+        }),
+        sourceReceivablePromise,
       ]);
+      if (!manufacturer) return null;
+      const totalAmount = calculateManufacturerDirectReceivableTotal({
+        manufacturerId: directManufacturerId,
+        orders,
+        products,
+        manufacturerInventories,
+      });
+      const receivedAmount = sourceReceivable?.receivedAmount || "0";
+      if (compareDecimals(receivedAmount, totalAmount) > 0) {
+        const error = new Error("Recorded direct-manufacturer collections exceed the current source receivable; reconcile the source before collecting again.");
+        error.statusCode = 409;
+        error.code = "RECEIVABLE_SOURCE_INCONSISTENT";
+        throw error;
+      }
+      return {
+        manufacturer,
+        sourceReceivable,
+        totalAmount,
+        receivedAmount,
+        remainingBalance: subtractDecimals(totalAmount, receivedAmount),
+      };
+    };
 
-      return res.json({
-        success: true,
-        message: `Successfully collected Rs ${collectAmount.toLocaleString()} from ${manufacturer?.name || "Manufacturer"} into ${toAccount.accountName}.`,
+    let receivable;
+    let directSnapshot = null;
+    if (isDirectManufacturerReceivable) {
+      directSnapshot = await loadDirectManufacturerSnapshot(prisma);
+      if (!directSnapshot) {
+        return res.status(404).json({ success: false, message: "Direct manufacturer receivable source not found." });
+      }
+      receivable = directSnapshot.sourceReceivable;
+    } else {
+      receivable = await prisma.accountReceivable.findUnique({ where: { id: receivableId } });
+      if (!receivable) {
+        return res.json({ success: false, message: "Receivable record not found" });
+      }
+      if (receivable.referenceType === "MANUFACTURER_DIRECT" && receivable.referenceId) {
+        isDirectManufacturerReceivable = true;
+        directManufacturerId = receivable.referenceId;
+        directSnapshot = await loadDirectManufacturerSnapshot(prisma);
+        if (!directSnapshot) {
+          return res.status(404).json({ success: false, message: "Direct manufacturer receivable source not found." });
+        }
+        receivable = directSnapshot.sourceReceivable || receivable;
+      }
+    }
+
+    const expectedReferenceId = isDirectManufacturerReceivable ? directManufacturerId : receivable.id;
+    const history = readCollectionHistory(receivable?.collectionHistory ?? []);
+    const existingTx = await prisma.cashTransaction.findUnique({ where: { idempotencyKey } });
+    if (existingTx) {
+      const replay = classifyReceivableCollectionReplay({
+        existingTransaction: existingTx,
+        collectionHistory: history,
+        receivableId,
+        expectedReferenceId,
+        amounts,
+        toAccountId,
+        notes,
+        legacyDescription: isDirectManufacturerReceivable
+          ? `Direct sales retail margin collected from ${directSnapshot.manufacturer.name}${notes ? ` - ${notes}` : ""}`
+          : null,
+      });
+      if (replay === "REPLAY") {
+        return res.status(409).json({
+          success: false,
+          alreadyProcessed: true,
+          collectedAmount: amounts.collectedAmount.toFixed(2),
+          message: `This collection transaction (Rs ${serializeAccountingDecimal(existingTx.amount)}) has already been recorded and processed into the ledger.`,
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        code: "IDEMPOTENCY_KEY_CONFLICT",
+        message: "This idempotency key is already associated with a different collection payload.",
       });
     }
 
-    const receivable = await prisma.accountReceivable.findUnique({ where: { id: receivableId } });
-    if (!receivable) {
-      return res.json({ success: false, message: "Receivable record not found" });
+    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
+      where: {
+        referenceId: expectedReferenceId,
+        toAccountId,
+        amount: amounts.collectedAmount.toFixed(2),
+        type: "INFLOW",
+        createdAt: { gte: new Date(Date.now() - 4000) },
+      },
+    });
+    if (duplicateRecentTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        collectedAmount: amounts.collectedAmount.toFixed(2),
+        message: `Duplicate transaction rejected: an identical collection of Rs ${amounts.collectedAmount.toFixed(2)} was just recorded moments ago. Please check transaction history.`,
+      });
     }
 
-    if (receivable.status === "SETTLED") {
-      const lastCollection = (() => { try { const h = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []); return h[h.length - 1] || null; } catch { return null; } })();
+    if (!isDirectManufacturerReceivable && receivable.status === "SETTLED") {
+      const storedHistory = readCollectionHistory(receivable.collectionHistory ?? []);
+      const lastCollection = storedHistory[storedHistory.length - 1] || null;
       return res.status(409).json({
         success: false,
         alreadySettled: true,
         message: `This receivable "${receivable.title}" has already been fully collected. No further collection can be made.`,
         settledAt: lastCollection?.date || receivable.updatedAt,
-        collectedAmount: receivable.receivedAmount,
+        collectedAmount: serializeAccountingDecimal(receivable.receivedAmount),
         collectedTo: lastCollection?.accountName || null,
       });
     }
 
-    if (settlementAmount > receivable.remainingBalance) {
+    const currentBalance = isDirectManufacturerReceivable
+      ? directSnapshot.remainingBalance
+      : receivable.remainingBalance;
+    if (compareDecimals(amounts.settlementAmount, currentBalance) > 0) {
       return res.json({
         success: false,
-        message: `Net settlement (Rs ${settlementAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${receivable.remainingBalance.toLocaleString()}). Check the cash amount and adjustment.`,
+        code: "RECEIVABLE_AMOUNT_EXCEEDS_BALANCE",
+        settlementAmount: amounts.settlementAmount.toFixed(2),
+        remainingBalance: serializeAccountingDecimal(currentBalance),
+        message: `Net settlement (Rs ${amounts.settlementAmount.toFixed(2)}) cannot exceed remaining balance (Rs ${serializeAccountingDecimal(currentBalance)}). Check the cash amount and adjustment.`,
       });
     }
 
-    const newRemaining = Math.max(0, Number(receivable.remainingBalance) - settlementAmount);
-    const newReceived = Number(receivable.receivedAmount) + collectAmount;
-    const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_RECEIVED";
+    const outcome = await prisma.$transaction(async (tx) => {
+      let source = receivable;
+      let sourceTotal = null;
+      let sourceBalance = null;
+      let createReceivable = null;
+      let sourceParty = receivable?.payerName;
 
-    let history = [];
-    try {
-      history = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []);
-    } catch {
-      history = [];
-    }
+      if (isDirectManufacturerReceivable) {
+        const snapshot = await loadDirectManufacturerSnapshot(tx);
+        if (!snapshot) {
+          const error = new Error("Direct manufacturer receivable source not found.");
+          error.statusCode = 404;
+          error.code = "RECEIVABLE_NOT_FOUND";
+          throw error;
+        }
+        source = snapshot.sourceReceivable;
+        sourceTotal = snapshot.totalAmount;
+        sourceBalance = snapshot.remainingBalance;
+        sourceParty = snapshot.manufacturer.name;
+        if (!source) {
+          createReceivable = {
+            id: receivableId,
+            title: `Direct Sales Margin - ${snapshot.manufacturer.name}`,
+            payerName: snapshot.manufacturer.name,
+            category: "CUSTOMER_RECEIVABLE",
+            referenceType: "MANUFACTURER_DIRECT",
+            referenceId: directManufacturerId,
+            totalAmount: snapshot.totalAmount.toFixed(2),
+            receivedAmount: "0.00",
+            remainingBalance: snapshot.totalAmount.toFixed(2),
+            status: "UNPAID",
+            notes: "Direct manufacturer sales less approved COGS, payable to the platform.",
+            collectionHistory: [],
+          };
+        }
+      } else {
+        source = await tx.accountReceivable.findUnique({ where: { id: receivable.id } });
+        if (!source) {
+          const error = new Error("Receivable record not found.");
+          error.statusCode = 404;
+          error.code = "RECEIVABLE_NOT_FOUND";
+          throw error;
+        }
+        sourceBalance = source.remainingBalance;
+        sourceParty = source.payerName;
+      }
 
-    const collectionEntry = {
-      id: Date.now().toString(),
-      idempotencyKey,
-      date: new Date().toISOString(),
-      amount: collectAmount,
-      settlementAmount,
-      adjustmentType,
-      adjustmentAmount,
-      toAccountId,
-      accountName: toAccount.accountName,
-      notes: notes || "Receivable collection",
-    };
-    history.push(collectionEntry);
+      return applyReceivableCollection({
+        client: tx,
+        receivable: source,
+        createReceivable,
+        totalAmount: sourceTotal,
+        balance: sourceBalance,
+        amounts,
+        idempotencyKey,
+        toAccountId,
+        toAccountName: toAccount.accountName,
+        notes,
+        category: isDirectManufacturerReceivable
+          ? "SALES"
+          : source.category === "CUSTOMER_RECEIVABLE" ? "SALES" : "CAPITAL_INJECTION",
+        referenceId: expectedReferenceId,
+        partyName: sourceParty || "Direct Manufacturer Sale",
+        description: isDirectManufacturerReceivable
+          ? `Direct sales retail margin collected from ${sourceParty}${notes ? ` - ${notes}` : ""}`
+          : `Collection for ${source.title} from ${sourceParty}`,
+        postAccounting: postCustomerPaymentAccounting,
+        orderId: source?.referenceId || source?.id || directManufacturerId,
+        customerName: sourceParty,
+        depositAccountType: toAccount.accountType === "CASH" ? "CASH" : "BANK",
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-    await prisma.$transaction([
-      prisma.financialAccount.update({
-        where: { id: toAccountId },
-        data: { currentBalance: { increment: collectAmount } },
-      }),
-      prisma.cashTransaction.create({
-        data: {
-          idempotencyKey,
-          amount: collectAmount,
-          type: "INFLOW",
-          toAccountId,
-          category: receivable.category === "CUSTOMER_RECEIVABLE" ? "SALES" : "CAPITAL_INJECTION",
-          referenceId: receivable.id,
-          description: `Collection for ${receivable.title} from ${receivable.payerName}`,
-        },
-      }),
-      prisma.accountReceivable.update({
-        where: { id: receivableId },
-        data: {
-          receivedAmount: newReceived,
-          remainingBalance: newRemaining,
-          status: newStatus,
-          collectionHistory: history,
-        },
-      }),
-    ]);
-
-    // Post to Double-Entry General Ledger
-    await postCustomerPaymentAccounting({
-      id: receivable.id,
-      orderId: receivable.referenceId || receivable.id,
-      customerName: receivable.payerName,
-      amount: collectAmount,
-      settlementAmount,
-      discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
-      fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
-      depositAccountType: toAccount.accountType === "CASH" ? "CASH" : "BANK",
-      referenceNumber: `REC-COLL-${Date.now()}`,
-      idempotencyKey: `CUSTOMER_PAYMENT:${idempotencyKey}`,
-    }).catch((glErr) => {
-      console.error("General Ledger AR collection posting error:", glErr);
-    });
-
-    res.json({
+    return res.json({
       success: true,
-      message: `Successfully collected Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}${adjustmentAmount > 0 ? ` with Rs ${adjustmentAmount.toLocaleString()} ${adjustmentType.toLowerCase()}` : ""}. Remaining: Rs ${newRemaining.toLocaleString()}`,
+      ...outcome,
+      message: `Successfully collected Rs ${outcome.collectedAmount} into ${toAccount.accountName}${compareDecimals(adjustmentAmount, "0") > 0 ? ` with Rs ${outcome.adjustmentAmount} ${adjustmentType.toLowerCase()}` : ""}. Remaining: Rs ${outcome.remainingBalance}`,
     });
   } catch (error) {
     console.error("Collect Receivable Error:", error);
-    if (error.code === "P2002") {
+    if (error.code === "P2034") {
       return res.status(409).json({
         success: false,
-        alreadyProcessed: true,
-        message: "Duplicate transaction rejected by database constraint: this transaction has already been recorded.",
+        code: "RECEIVABLE_CONCURRENCY_CONFLICT",
+        message: "Receivable source changed during collection; refresh and retry with the same request key.",
       });
     }
-    res.json({ success: false, message: error.message });
+    if (error.code === "P2002") {
+      const existingTx = idempotencyKey
+        ? await prisma.cashTransaction.findUnique({ where: { idempotencyKey } })
+        : null;
+      const source = directManufacturerId
+        ? await prisma.accountReceivable.findFirst({
+            where: { referenceType: "MANUFACTURER_DIRECT", referenceId: directManufacturerId },
+          })
+        : receivableId
+          ? await prisma.accountReceivable.findUnique({ where: { id: receivableId } })
+          : null;
+      if (!existingTx) {
+        return res.status(409).json({
+          success: false,
+          code: "RECEIVABLE_CONCURRENCY_CONFLICT",
+          message: "Receivable changed during collection; refresh and retry with the same request key.",
+        });
+      }
+      const replay = amounts
+        ? classifyReceivableCollectionReplay({
+            existingTransaction: existingTx,
+            collectionHistory: readCollectionHistory(source?.collectionHistory ?? []),
+            receivableId,
+            expectedReferenceId: directManufacturerId || source?.id || receivableId,
+            amounts,
+            toAccountId,
+            notes,
+          })
+        : "CONFLICT";
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: replay === "REPLAY",
+        code: replay === "CONFLICT" ? "IDEMPOTENCY_KEY_CONFLICT" : "DUPLICATE_COLLECTION",
+        message: replay === "CONFLICT"
+          ? "This idempotency key is already associated with a different collection payload."
+          : "Duplicate transaction rejected by database constraint: this transaction has already been recorded.",
+      });
+    }
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
 // ==========================================
-// REVERT SETTLEMENT (Admin Only)
-// Atomically reverses a settled payable, receivable,
-// manufacturer payout, or NCM COD remittance.
-// Creates a compensation CashTransaction,
-// restores AP/AR balances, and logs to SettlementReversion.
+// SOURCE-AWARE SETTLEMENT CORRECTION (Admin Only)
+// Requires evidence, restores source and treasury balances,
+// reverses the linked source journal, and records the correction.
 // ==========================================
 export const revertSettlement = async (req, res) => {
   try {
-    // Admin guard
     if (req.auth?.role !== "ADMIN") {
-      return res.status(403).json({ success: false, message: "Only ADMIN role can revert settlements." });
+      return res.status(403).json({ success: false, message: "Only ADMIN role can correct settlements." });
     }
 
-    const { type, recordId, cashTransactionId, revertReason } = req.body;
-    if (!type || !recordId || !revertReason?.trim()) {
-      return res.status(400).json({ success: false, message: "type, recordId, and revertReason are required." });
+    const {
+      type,
+      recordId,
+      correctionMode,
+      revertReason,
+      evidenceReference,
+      cashTransactionId,
+      payoutId,
+    } = req.body || {};
+    if (type === "RECEIVABLE" && recordId) {
+      const document = await prisma.accountingDocument.findUnique({
+        where: { id: recordId },
+        select: {
+          side: true,
+          party: { select: { partyType: true } },
+          allocations: {
+            where: { allocationType: "CASH" },
+            select: { cashTransaction: { select: { category: true } } },
+          },
+        },
+      });
+      if (
+        document?.side === "RECEIVABLE" &&
+        document.party?.partyType === "CUSTOMER" &&
+        document.allocations.some((allocation) => allocation.cashTransaction?.category === "RECEIVABLE_COLLECTION")
+      ) {
+        return res.status(409).json({
+          success: false,
+          code: "CUSTOMER_RECEIPT_CORRECTION_UNSUPPORTED",
+          message: "Source-linked customer receipts cannot be corrected until invoice-allocation reversal is available.",
+        });
+      }
     }
-
-    const adminEmail = req.auth?.email || "admin";
-    const adminId = req.auth?.sub || req.auth?.accountId || null;
-
-    const validTypes = ["PAYABLE", "RECEIVABLE", "MANUFACTURER_PAYMENT", "NCM_COD"];
-    if (!validTypes.includes(type)) {
-      return res.status(400).json({ success: false, message: `Invalid reversion type. Must be one of: ${validTypes.join(", ")}` });
-    }
-
-    // Check no double-revert
-    const existing = await prisma.settlementReversion.findFirst({
-      where: { reversionType: type, originalRecordId: recordId },
+    const result = await requestAccountingActionApproval({
+      actionType: "SETTLEMENT_CORRECTION",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        type,
+        recordId,
+        payoutId,
+        correctionMode,
+        reason: revertReason,
+        evidenceReference,
+        cashTransactionId,
+      },
+      actor: {
+        accountId: req.auth.accountId || req.auth.userId || req.auth.sub || null,
+        role: req.auth.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.get?.("user-agent") || null,
+        correlationId: req.correlationId || null,
+      },
     });
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        alreadyReverted: true,
-        message: `This settlement has already been reverted on ${new Date(existing.revertedAt).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} by ${existing.revertedByEmail || "admin"}. Reason: ${existing.revertReason}`,
-        reversionId: existing.id,
-        revertedAt: existing.revertedAt,
-      });
-    }
-
-    // ── PAYABLE REVERSION ──────────────────────────────────────
-    if (type === "PAYABLE" || type === "MANUFACTURER_PAYMENT") {
-      const payable = await prisma.accountPayable.findUnique({ where: { id: recordId } });
-      if (!payable) return res.status(404).json({ success: false, message: "Payable record not found." });
-
-      if (payable.status === "UNPAID" && Number(payable.paidAmount) === 0) {
-        return res.status(400).json({ success: false, message: "This payable has no payments to revert." });
-      }
-
-      // Find the original CashTransaction
-      const cashTx = cashTransactionId
-        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
-        : await prisma.cashTransaction.findFirst({
-            where: { referenceId: payable.referenceId || payable.id, type: "OUTFLOW" },
-            orderBy: { createdAt: "desc" },
-          });
-
-      const revertAmount = cashTx ? Number(cashTx.amount) : Number(payable.paidAmount);
-      const accountId = cashTx?.fromAccountId || null;
-
-      const priorStatus = payable.status;
-      const priorPaid = Number(payable.paidAmount);
-      const priorRemaining = Number(payable.remainingBalance);
-
-      // Restore settlement history
-      let history = [];
-      try { history = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []); } catch { history = []; }
-      const historyIndex = cashTx && history.length > 0
-        ? history.findLastIndex((entry) => cashTx.idempotencyKey && entry.idempotencyKey
-          ? entry.idempotencyKey === cashTx.idempotencyKey
-          : Math.abs(Number(entry.amount) - revertAmount) < 0.01)
-        : -1;
-      const revertedSettlementAmount = Number(historyIndex >= 0 ? history[historyIndex].settlementAmount ?? revertAmount : revertAmount);
-      const newPaid = Math.max(0, priorPaid - revertAmount);
-      const newRemaining = Math.min(Number(payable.totalAmount), priorRemaining + revertedSettlementAmount);
-      const restoredStatus = newRemaining >= Number(payable.totalAmount) ? "UNPAID" : "PARTIALLY_PAID";
-      if (historyIndex >= 0) history.splice(historyIndex, 1);
-      else if (!cashTx) history = [];
-
-      // Compensation transaction (money flows BACK into the treasury account)
-      let reversalTxId = null;
-      await prisma.$transaction(async (tx) => {
-        let reversalTx = null;
-        if (accountId) {
-          // Credit back the account
-          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { increment: revertAmount } } });
-          reversalTx = await tx.cashTransaction.create({
-            data: {
-              amount: revertAmount,
-              type: "INFLOW",
-              toAccountId: accountId,
-              category: "REFUND",
-              referenceId: payable.id,
-              partyName: payable.payeeName,
-              description: `ADMIN REVERSAL: Settlement of "${payable.title}" reverted. Reason: ${revertReason}`,
-            },
-          });
-          reversalTxId = reversalTx.id;
-        }
-
-        await tx.accountPayable.update({
-          where: { id: payable.id },
-          data: {
-            paidAmount: newPaid,
-            remainingBalance: newRemaining,
-            status: restoredStatus,
-            settlementHistory: history,
-          },
-        });
-
-        // Find the FinancialAccount name for the audit record
-        let accountName = null;
-        if (accountId) {
-          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
-          accountName = acc?.accountName || null;
-        }
-
-        await tx.settlementReversion.create({
-          data: {
-            reversionType: type,
-            originalRecordId: payable.id,
-            cashTransactionId: cashTx?.id || null,
-            reversalTransactionId: reversalTxId,
-            originalAmount: revertAmount,
-            partyName: payable.payeeName,
-            accountId,
-            accountName,
-            priorStatus,
-            restoredStatus,
-            priorPaidAmount: priorPaid,
-            priorRemainingBalance: priorRemaining,
-            revertedByAdminId: adminId,
-            revertedByEmail: adminEmail,
-            revertReason: revertReason.trim(),
-          },
-        });
-      });
-
-      return res.json({
-        success: true,
-        message: `Successfully reverted settlement of Rs ${revertAmount.toLocaleString()} for "${payable.title}". Status restored to ${restoredStatus}. Amount refunded to treasury.`,
-        restoredStatus,
-        newPaidAmount: newPaid,
-        newRemainingBalance: newRemaining,
-      });
-    }
-
-    // ── RECEIVABLE REVERSION ──────────────────────────────────────
-    if (type === "RECEIVABLE") {
-      const receivable = await prisma.accountReceivable.findUnique({ where: { id: recordId } });
-      if (!receivable) return res.status(404).json({ success: false, message: "Receivable record not found." });
-
-      if (receivable.status === "UNPAID" && Number(receivable.receivedAmount) === 0) {
-        return res.status(400).json({ success: false, message: "This receivable has no collections to revert." });
-      }
-
-      const cashTx = cashTransactionId
-        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
-        : await prisma.cashTransaction.findFirst({
-            where: { referenceId: receivable.id, type: "INFLOW" },
-            orderBy: { createdAt: "desc" },
-          });
-
-      const revertAmount = cashTx ? Number(cashTx.amount) : Number(receivable.receivedAmount);
-      const accountId = cashTx?.toAccountId || null;
-
-      const priorStatus = receivable.status;
-      const priorReceived = Number(receivable.receivedAmount);
-      const priorRemaining = Number(receivable.remainingBalance);
-
-      let history = [];
-      try { history = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []); } catch { history = []; }
-      const historyIndex = cashTx && history.length > 0
-        ? history.findLastIndex((entry) => cashTx.idempotencyKey && entry.idempotencyKey
-          ? entry.idempotencyKey === cashTx.idempotencyKey
-          : Math.abs(Number(entry.amount) - revertAmount) < 0.01)
-        : -1;
-      const revertedSettlementAmount = Number(historyIndex >= 0 ? history[historyIndex].settlementAmount ?? revertAmount : revertAmount);
-      const newReceived = Math.max(0, priorReceived - revertAmount);
-      const newRemaining = Math.min(Number(receivable.totalAmount), priorRemaining + revertedSettlementAmount);
-      const restoredStatus = newRemaining >= Number(receivable.totalAmount) ? "UNPAID" : "PARTIALLY_RECEIVED";
-      if (historyIndex >= 0) history.splice(historyIndex, 1);
-      else if (!cashTx) history = [];
-
-      let reversalTxId = null;
-      await prisma.$transaction(async (tx) => {
-        let reversalTx = null;
-        if (accountId) {
-          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { decrement: revertAmount } } });
-          reversalTx = await tx.cashTransaction.create({
-            data: {
-              amount: revertAmount,
-              type: "OUTFLOW",
-              fromAccountId: accountId,
-              category: "REFUND",
-              referenceId: receivable.id,
-              partyName: receivable.payerName,
-              description: `ADMIN REVERSAL: Collection of "${receivable.title}" reverted. Reason: ${revertReason}`,
-            },
-          });
-          reversalTxId = reversalTx.id;
-        }
-
-        await tx.accountReceivable.update({
-          where: { id: receivable.id },
-          data: {
-            receivedAmount: newReceived,
-            remainingBalance: newRemaining,
-            status: restoredStatus,
-            collectionHistory: history,
-          },
-        });
-
-        let accountName = null;
-        if (accountId) {
-          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
-          accountName = acc?.accountName || null;
-        }
-
-        await tx.settlementReversion.create({
-          data: {
-            reversionType: "RECEIVABLE",
-            originalRecordId: receivable.id,
-            cashTransactionId: cashTx?.id || null,
-            reversalTransactionId: reversalTxId,
-            originalAmount: revertAmount,
-            partyName: receivable.payerName,
-            accountId,
-            accountName,
-            priorStatus,
-            restoredStatus,
-            priorPaidAmount: priorReceived,
-            priorRemainingBalance: priorRemaining,
-            revertedByAdminId: adminId,
-            revertedByEmail: adminEmail,
-            revertReason: revertReason.trim(),
-          },
-        });
-      });
-
-      return res.json({
-        success: true,
-        message: `Successfully reverted collection of Rs ${revertAmount.toLocaleString()} for "${receivable.title}". Status restored to ${restoredStatus}.`,
-        restoredStatus,
-        newReceivedAmount: newReceived,
-        newRemainingBalance: newRemaining,
-      });
-    }
-
-    // ── NCM COD REVERSION ──────────────────────────────────────
-    if (type === "NCM_COD") {
-      const ncmSettlement = await prisma.deliveryFinancialSettlement.findFirst({
-        where: { OR: [{ id: recordId }, { deliveryOrderId: recordId }] },
-      });
-      if (!ncmSettlement) return res.status(404).json({ success: false, message: "NCM settlement record not found." });
-      if (ncmSettlement.settlementState !== "SETTLED") {
-        return res.status(400).json({ success: false, message: "This NCM settlement is not in SETTLED state — nothing to revert." });
-      }
-
-      const cashTx = cashTransactionId
-        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
-        : await prisma.cashTransaction.findFirst({
-            where: { referenceId: ncmSettlement.id, type: "INFLOW", category: "COD_REMITTANCE" },
-            orderBy: { createdAt: "desc" },
-          });
-
-      const revertAmount = cashTx ? Number(cashTx.amount) : Number(ncmSettlement.codCollected || ncmSettlement.codExpected || 0);
-      const accountId = cashTx?.toAccountId || null;
-
-      let reversalTxId = null;
-      await prisma.$transaction(async (tx) => {
-        let reversalTx = null;
-        if (accountId) {
-          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { decrement: revertAmount } } });
-          reversalTx = await tx.cashTransaction.create({
-            data: {
-              amount: revertAmount,
-              type: "OUTFLOW",
-              fromAccountId: accountId,
-              category: "REFUND",
-              referenceId: ncmSettlement.id,
-              partyName: "Nepal Can Move (NCM) — REVERSAL",
-              description: `ADMIN REVERSAL: NCM COD remittance reverted. Reason: ${revertReason}`,
-            },
-          });
-          reversalTxId = reversalTx.id;
-        }
-
-        await tx.deliveryFinancialSettlement.update({
-          where: { id: ncmSettlement.id },
-          data: { settlementState: "PENDING", settledAt: null },
-        });
-
-        let accountName = null;
-        if (accountId) {
-          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
-          accountName = acc?.accountName || null;
-        }
-
-        await tx.settlementReversion.create({
-          data: {
-            reversionType: "NCM_COD",
-            originalRecordId: ncmSettlement.id,
-            cashTransactionId: cashTx?.id || null,
-            reversalTransactionId: reversalTxId,
-            originalAmount: revertAmount,
-            partyName: "Nepal Can Move (NCM)",
-            accountId,
-            accountName,
-            priorStatus: "SETTLED",
-            restoredStatus: "PENDING",
-            priorPaidAmount: revertAmount,
-            priorRemainingBalance: 0,
-            revertedByAdminId: adminId,
-            revertedByEmail: adminEmail,
-            revertReason: revertReason.trim(),
-          },
-        });
-      });
-
-      return res.json({
-        success: true,
-        message: `Successfully reverted NCM COD remittance of Rs ${revertAmount.toLocaleString()}. Settlement state restored to PENDING.`,
-        restoredStatus: "PENDING",
-      });
-    }
-
-    return res.status(400).json({ success: false, message: "Could not process reversion for the given type." });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay
+        ? "This settlement correction request already exists."
+        : "Settlement correction submitted for independent Admin approval. No balances or journals change until approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
-    console.error("Revert Settlement Error:", error);
-    res.status(500).json({ success: false, message: error.message || "Failed to revert settlement." });
+    console.error("Settlement Correction Error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "SETTLEMENT_CORRECTION_FAILED",
+      message: error.message || "Failed to correct settlement.",
+    });
   }
 };
 
@@ -5030,6 +4924,15 @@ export const getVATAndTaxReport = async (req, res) => {
     res.json({
       success: true,
       data: {
+        reportBasis: {
+          classification: "MIXED_POSTED_AND_OPERATIONAL_ESTIMATE",
+          authoritative: false,
+          period: requestedMonth,
+          limitations: [
+            "The VAT summary uses a posted-accounting snapshot, while the corporate income-tax projection also uses operational expense and asset records.",
+            "The projection is not a tax assessment or filing; source completeness and tax treatment require qualified review.",
+          ],
+        },
         vat: {
           period: requestedMonth,
           basis: postedAccounting.basis,
@@ -5203,7 +5106,7 @@ export const getFinancialStatements = async (req, res) => {
     const retainedEarnings = Number((totalAssets - totalLiabilities - partnerCapital).toFixed(2));
     const totalEquity = Number((partnerCapital + retainedEarnings).toFixed(2));
 
-    // Cash Flow Statement (GAAP / IFRS Direct & Indirect Reconciled)
+    // Operational cash-flow estimate; it is not derived from posted journal movements.
     // 1. Operating Cash Inflows / Outflows
     const cashFromCustomers = Number(netRevenue.toFixed(2));
     const cashPaidToSuppliers = Number(cogsIncVat.toFixed(2));
@@ -5247,6 +5150,17 @@ export const getFinancialStatements = async (req, res) => {
     res.json({
       success: true,
       data: {
+        reportBasis: {
+          classification: "OPERATIONAL_ESTIMATE_NOT_POSTED_GL",
+          authoritative: false,
+          period: { startDate, endDate },
+          limitations: [
+            "Revenue and returns come from operational orders and returns; COGS uses current product costs and a fixed VAT assumption.",
+            "The balance sheet combines operational Treasury, AP/AR, inventory, asset, liability, and partner records rather than posted journal balances.",
+            "Cash flows and beginning cash are estimated from operational changes and do not reconcile to posted cash and bank movements.",
+            "The report is retained for compatibility and management estimates; use the accounting statements endpoint for posted-ledger reporting.",
+          ],
+        },
         incomeStatement: {
           period: requestedPeriod,
           grossRevenue,

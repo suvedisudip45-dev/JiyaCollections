@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prisma } from "../config/db.js";
-import { cancelAdminOrder } from "../services/orderCancellationService.js";
+import { cancelAdminOrder, cancelCustomerOrder } from "../services/orderCancellationService.js";
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -25,7 +25,11 @@ const createOrder = (overrides = {}) => ({
   ...overrides,
 });
 
-const installCancellationMock = (t, { order = createOrder(), carrierAttempt = null } = {}) => {
+const installCancellationMock = (t, {
+  order = createOrder(),
+  carrierAttempt = null,
+  financialActivity = {},
+} = {}) => {
   const events = [];
   let finalOrder = { ...order, status: "Cancelled", fulfillmentStatus: "cancelled" };
   let orderLookupCount = 0;
@@ -62,6 +66,18 @@ const installCancellationMock = (t, { order = createOrder(), carrierAttempt = nu
       },
       ncmRequestAttempt: {
         findFirst: async () => carrierAttempt,
+      },
+      journalEntry: {
+        findFirst: async () => financialActivity.journalEntry || null,
+      },
+      accountingDocument: {
+        findFirst: async () => financialActivity.accountingDocument || null,
+      },
+      cashTransaction: {
+        findFirst: async () => financialActivity.cashTransaction || null,
+      },
+      distributorCashEvent: {
+        findFirst: async () => financialActivity.distributorCashEvent || null,
       },
       giftRewardEntitlement: {
         updateMany: async () => ({ count: 0 }),
@@ -105,6 +121,22 @@ test("Admin cancellation blocks paid orders before any mutation", async (t) => {
 
   await assert.rejects(
     cancelAdminOrder({ orderId: "order-1", actorId: "admin-account-1", reason: "Paid order cancellation request." }),
+    (error) => error.code === "PAID_ORDER_REFUND_REQUIRED" && error.statusCode === 409,
+  );
+  assert.equal(events.length, 0);
+});
+
+test("Customer cancellation blocks posted financial activity before any mutation", async (t) => {
+  const events = installCancellationMock(t, {
+    financialActivity: { journalEntry: { id: "sale-journal-1" } },
+  });
+
+  await assert.rejects(
+    cancelCustomerOrder({
+      orderId: "order-1",
+      customerId: "customer-1",
+      reason: "Cancel after payment posting.",
+    }),
     (error) => error.code === "PAID_ORDER_REFUND_REQUIRED" && error.statusCode === 409,
   );
   assert.equal(events.length, 0);

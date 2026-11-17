@@ -137,7 +137,7 @@ const ManufacturerProductionRequests = ({ token }) => {
             unitCogs: request.proposedUnitCogs,
             otherCost: request.proposedDeliveryCost,
             vatTreatment: request.vatTreatment || "EXEMPT",
-            vatRate: request.vatRate ?? 13,
+            vatRate: request.vatRate ?? 0,
             vatInvoiceReference: request.vatInvoiceReference || "",
             vatInvoiceDate: "",
             vatInvoiceEvidenceUrl: "",
@@ -515,7 +515,7 @@ const ManufacturerProductionRequests = ({ token }) => {
                 </label>
                 {approvedTerms.vatTreatment !== "EXEMPT" && <>
                   <label className="text-xs font-semibold text-slate-600">VAT rate (%)
-                    <input type="number" min="0.01" max="100" step="0.01" value={approvedTerms.vatRate ?? "13"} onChange={(event) => setTerm(request.id, "vatRate", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
+                    <input type="number" min="0.01" max="100" step="0.01" required value={approvedTerms.vatRate ?? "0"} onChange={(event) => setTerm(request.id, "vatRate", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                   </label>
                   <label className="text-xs font-semibold text-slate-600">Supplier VAT invoice reference
                     <input type="text" maxLength={120} required value={approvedTerms.vatInvoiceReference ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceReference", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />

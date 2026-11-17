@@ -15,7 +15,7 @@ import {
   reviewDistributorCustomerRefund,
   submitDistributorCustomerRefund,
 } from "../services/distributorReturnRefundService.js";
-import { settleDistributorRefundPayable } from "../services/distributorCashSettlementService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
 const sendError = (res, error) => res.status(error.statusCode || error.status || 400).json({
@@ -207,16 +207,27 @@ export const adminReviewDistributorCustomerRefund = async (req, res) => {
 
 export const adminSettleDistributorRefundPayable = async (req, res) => {
   try {
-    const result = await settleDistributorRefundPayable({
-      distributorId: req.body?.distributorId,
-      accountingDocumentId: req.params.documentId,
-      financialAccountId: req.body?.financialAccountId,
-      amount: req.body?.amount,
-      idempotencyKey: req.body?.idempotencyKey || req.headers?.["idempotency-key"],
-      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
-      actorContext: actorContextFromRequest(req),
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_REFUND_PAYOUT",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.body?.distributorId,
+        accountingDocumentId: req.params.documentId,
+        financialAccountId: req.body?.financialAccountId,
+        amount: req.body?.amount,
+        reason: req.body?.reason,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: actorContextFromRequest(req),
     });
-    return res.status(result.isReplay ? 200 : 201).json(result);
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor refund payout request already exists." : "Distributor refund payout submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     return sendError(res, error);
   }

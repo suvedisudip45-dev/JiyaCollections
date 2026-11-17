@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import {
+  createOrderPricingSnapshotV3,
+  withOrderPricingSnapshot,
+} from "../services/checkoutPricingService.js";
+import {
   postDeliveredOrderAccounting,
   postConfirmedDeliveryReturnAccounting,
   postCustomerPaymentAccounting,
@@ -27,11 +31,13 @@ import {
   postManufacturerProductionAccounting,
   postManufacturerLogisticsAccounting,
   postSupplierPaymentAccounting,
+  postMarketingCpaPayablePaymentAccounting,
   postDistributorSettlementRequestAccounting,
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
 } from "../services/accountingPostingEngine.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
+import { postCollaborationFeeInvoiceAccounting } from "../services/accountingPostingEngine.js";
 import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
 import { postReturnExchangeSettlementAccounting } from "../services/returnExchangeSettlementService.js";
 
@@ -66,7 +72,13 @@ const createComprehensiveHarness = () => {
     entries: [],
     documents: [],
     salesInvoices: [],
-    vatRateVersions: [],
+    vatRateVersions: [{
+      id: "vat-current",
+      vatRate: "13.00",
+      effectiveFrom: new Date("2000-01-01T00:00:00.000Z"),
+      effectiveUntil: null,
+      status: "ACTIVE",
+    }],
     taxRegistrationVersions: [{
       id: "registration-vat",
       taxStatus: "VAT_REGISTERED",
@@ -246,6 +258,41 @@ const createComprehensiveHarness = () => {
   return { client, state, accounts, parties };
 };
 
+test("collaboration return credit posts balanced signed receivable, revenue, and VAT lines", async () => {
+  const { client, state } = createComprehensiveHarness();
+
+  await postCollaborationFeeInvoiceAccounting({
+    client,
+    invoice: {
+      id: "collaboration-credit-001",
+      partnerId: "partner-credit-001",
+      netAmount: new Prisma.Decimal(-100),
+      vatAmount: new Prisma.Decimal(-13),
+      totalAmount: new Prisma.Decimal(-113),
+      invoiceNumber: "CN-COL-TEST-202609",
+      period: "2026-09",
+    },
+    partner: { id: "partner-credit-001", name: "Test Partner" },
+  });
+
+  assert.equal(state.entries.length, 1);
+  const journal = state.entries[0];
+  assert.equal(journal.lines.reduce((sum, line) => sum + line.debit.toNumber(), 0), 113);
+  assert.equal(journal.lines.reduce((sum, line) => sum + line.credit.toNumber(), 0), 113);
+  assert.deepEqual(
+    journal.lines.map(({ account, debit, credit }) => ({
+      code: account.accountCode,
+      debit: debit.toNumber(),
+      credit: credit.toNumber(),
+    })).sort((a, b) => a.code.localeCompare(b.code)),
+    [
+      { code: "1130", debit: 0, credit: 113 },
+      { code: "2120", debit: 13, credit: 0 },
+      { code: "4300", debit: 100, credit: 0 },
+    ],
+  );
+});
+
 test("delivered online store order posts balanced sales, VAT, COGS and manufacturer payable", async () => {
   const { client, state } = createComprehensiveHarness();
 
@@ -279,13 +326,14 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(journal.totalDebit.toFixed(2), "17300.00"); // 11,300 (Bank) + 6,000 (COGS)
 
   // Verify specific lines
-  const bankLine = journal.lines.find((l) => l.account.accountCode === "1120");
+  const receivableLine = journal.lines.find((l) => l.account.accountCode === "1130");
   const revLine = journal.lines.find((l) => l.account.accountCode === "4100");
   const vatLine = journal.lines.find((l) => l.account.accountCode === "2120");
   const cogsLine = journal.lines.find((l) => l.account.accountCode === "5100");
   const mfgApLine = journal.lines.find((l) => l.account.accountCode === "2160");
 
-  assert.equal(bankLine.debit.toFixed(2), "11300.00");
+  assert.equal(receivableLine.debit.toFixed(2), "11300.00");
+  assert.equal(state.documents[0].idempotencyKey, "DIRECT_ORDER_RECEIVABLE:ord-store-001");
   assert.equal(revLine.credit.toFixed(2), "10000.00");
   assert.equal(vatLine.credit.toFixed(2), "1300.00");
   assert.equal(cogsLine.debit.toFixed(2), "6000.00");
@@ -295,7 +343,192 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(state.salesInvoices[0].vatAmount.toFixed(2), "1300.00");
 });
 
-test("PAN-only delivered sale posts gross revenue without output VAT", async () => {
+test("delivered-sale monetary boundaries use NPR half-even rounding", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [];
+
+  const evenTie = await postDeliveredOrderAccounting({
+    id: "ord-half-even-1005",
+    amount: "1.005",
+    paymentMethod: "COD",
+    items: [],
+  }, { client });
+  const oddTie = await postDeliveredOrderAccounting({
+    id: "ord-half-even-1015",
+    amount: "1.015",
+    paymentMethod: "COD",
+    items: [],
+  }, { client });
+
+  assert.equal(evenTie.lines.find((line) => line.account.accountCode === "4100").credit.toFixed(2), "1.00");
+  assert.equal(oddTie.lines.find((line) => line.account.accountCode === "4100").credit.toFixed(2), "1.02");
+  assert.equal(evenTie.totalDebit.toFixed(2), evenTie.totalCredit.toFixed(2));
+  assert.equal(oddTie.totalDebit.toFixed(2), oddTie.totalCredit.toFixed(2));
+});
+
+test("delivered-sale accounting reads the accepted Decimal checkout snapshot, not the Float mirror", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [];
+  const pricingSnapshot = createOrderPricingSnapshotV3({
+    lines: [{
+      productId: "snapshot-product",
+      catalogUnitPrice: "120.00",
+      unitPrice: "120.00",
+      quantity: "1",
+      lineTotal: "120.00",
+      discountSource: "BASE",
+      priceSteps: [{
+        source: "BASE",
+        unitPriceBefore: "120.00",
+        unitPriceAfter: "120.00",
+      }],
+    }],
+    subtotal: "120.00",
+    deliveryFee: "3.45",
+    preCommercialRoundingTotal: "123.45",
+    finalPayableTotal: "123.45",
+    source: "CHECKOUT",
+  });
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-accepted-pricing-snapshot",
+    userId: "user-accepted-pricing-snapshot",
+    amount: 999,
+    deliveryFee: 99,
+    locationPricingSnapshot: withOrderPricingSnapshot(null, pricingSnapshot),
+    paymentMethod: "QR_PAYMENT",
+    payment: false,
+    orderType: "ADMIN_DIRECT",
+    items: [],
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1130").debit.toFixed(2), "123.45");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "4100").credit.toFixed(2), "120.00");
+});
+
+test("delivered-sale COGS retains fractional quantity precision and rounds after aggregation", async () => {
+  const { client } = createComprehensiveHarness();
+  const fractionalQuantityJournal = await postDeliveredOrderAccounting({
+    id: "ord-fractional-cogs-001",
+    amount: "100.00",
+    paymentMethod: "COD",
+    items: [{
+      quantity: "1.5",
+      agreedUnitCogsVatInclusiveAtAcceptance: "0.335",
+    }],
+  }, { client });
+  const aggregatedJournal = await postDeliveredOrderAccounting({
+    id: "ord-aggregate-cogs-001",
+    amount: "100.00",
+    paymentMethod: "COD",
+    items: [1, 2, 3].map((index) => ({
+      productId: `prod-${index}`,
+      quantity: "1",
+      agreedUnitCogsVatInclusiveAtAcceptance: "0.005",
+    })),
+  }, { client });
+
+  assert.equal(fractionalQuantityJournal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "0.50");
+  assert.equal(aggregatedJournal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "0.02");
+  assert.equal(fractionalQuantityJournal.totalDebit.toFixed(2), fractionalQuantityJournal.totalCredit.toFixed(2));
+  assert.equal(aggregatedJournal.totalDebit.toFixed(2), aggregatedJournal.totalCredit.toFixed(2));
+});
+
+test("delivered-sale rejects negative COGS inputs before posting", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(
+    postDeliveredOrderAccounting({
+      id: "ord-negative-cogs-001",
+      amount: "100.00",
+      paymentMethod: "COD",
+      items: [{ quantity: "1", agreedUnitCogsVatInclusiveAtAcceptance: "-0.01" }],
+    }, { client }),
+    { code: "DELIVERED_SALE_COST_INVALID" },
+  );
+  assert.equal(state.entries.length, 0);
+});
+
+test("delivered-sale rejects under- and over-allocated production quantities", async () => {
+  const { client, state } = createComprehensiveHarness();
+  for (const [orderId, allocationQuantity] of [
+    ["ord-short-cost-allocation-001", "1"],
+    ["ord-over-cost-allocation-001", "3"],
+  ]) {
+    await assert.rejects(
+      postDeliveredOrderAccounting({
+        id: orderId,
+        userId: "user-cost-allocation-001",
+        amount: "100.00",
+        paymentMethod: "COD",
+        items: [{
+          quantity: "2",
+          productionCostAllocations: [{
+            quantity: allocationQuantity,
+            unitCogs: "10.00",
+            manufacturerPayableRecognizedAtProduction: false,
+            inputVatRecoverable: false,
+          }],
+        }],
+      }, { client }),
+      { code: "DELIVERED_SALE_QUANTITY_INVALID" },
+    );
+  }
+  assert.equal(state.entries.length, 0);
+});
+
+test("delivered-sale explicitly supports legacy Float-backed source values without Number arithmetic", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [];
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-legacy-float-source-001",
+    userId: "user-legacy-float-001",
+    manufacturerId: "mfg-001",
+    amount: 113.25,
+    deliveryFee: 0.25,
+    paymentMethod: "COD",
+    items: [{
+      quantity: 1.5,
+      agreedUnitCogsVatInclusiveAtAcceptance: 0.335,
+    }],
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "0.50");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "4100").credit.toFixed(2), "113.00");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "113.25");
+});
+
+test("delivered-sale rejects order amounts outside the database Decimal range before writes", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(
+    postDeliveredOrderAccounting({
+      id: "ord-overflow-amount-001",
+      userId: "user-overflow-001",
+      amount: "999999999999999999999.99",
+      paymentMethod: "COD",
+      items: [],
+    }, { client }),
+    { code: "DECIMAL_OUT_OF_RANGE" },
+  );
+  assert.equal(state.entries.length, 0);
+});
+
+test("delivered-sale does not treat an unlinked paid flag as proof of receipt", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(
+    postDeliveredOrderAccounting({
+      id: "ord-unverified-payment-001",
+      amount: "100.00",
+      paymentMethod: "ONLINE_BANK",
+      payment: true,
+      items: [],
+    }, { client }),
+    { code: "DELIVERED_SALE_TENDER_UNVERIFIED" },
+  );
+  assert.equal(state.entries.length, 0);
+  assert.equal(state.documents.length, 0);
+});
+
+test("unregistered delivered sale posts gross revenue without VAT or statutory invoice", async () => {
   const { client, state } = createComprehensiveHarness();
   state.taxRegistrationVersions = [];
   const journal = await postDeliveredOrderAccounting({
@@ -312,8 +545,37 @@ test("PAN-only delivered sale posts gross revenue without output VAT", async () 
   assert.equal(revenue.credit.toFixed(2), "1000.00");
   assert.equal(vat, undefined);
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
-  assert.equal(state.salesInvoices[0].documentType, "PAN_BILL");
+  assert.equal(state.salesInvoices[0].documentType, "INTERNAL_SALES_RECORD");
+  assert.equal(state.salesInvoices[0].issueChannel, "INTERNAL");
+  assert.equal(state.salesInvoices[0].status, "INTERNAL_ONLY");
+  assert.equal(state.salesInvoices[0].taxStatus, "UNREGISTERED");
   assert.equal(state.salesInvoices[0].vatAmount.toFixed(2), "0.00");
+});
+
+test("PAN-only delivered sale remains distinct and does not apply output VAT", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [{
+    id: "registration-pan",
+    taxStatus: "PAN_ONLY",
+    effectiveFrom: new Date("2000-01-01T00:00:00.000Z"),
+    effectiveUntil: null,
+    status: "ACTIVE",
+  }];
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-pan-only-001",
+    userId: "user-cust-pan",
+    amount: 1000,
+    paymentMethod: "ONLINE_BANK",
+    orderType: "ONLINE_STORE",
+    items: [],
+  }, { client });
+
+  const revenue = journal.lines.find((line) => line.account.accountCode === "4100");
+  const vat = journal.lines.find((line) => line.account.accountCode === "2120");
+  assert.equal(revenue.credit.toFixed(2), "1000.00");
+  assert.equal(vat, undefined);
+  assert.equal(state.salesInvoices[0].documentType, "PAN_BILL");
+  assert.equal(state.salesInvoices[0].taxStatus, "PAN_ONLY");
 });
 
 test("PAN-only sales return does not reverse output VAT", async () => {
@@ -342,6 +604,7 @@ test("delivered sales use the VAT rate effective on the source order date", asyn
 
   const journal = await postDeliveredOrderAccounting({
     id: "ord-vat-20",
+    userId: "user-vat-20",
     amount: 1200,
     paymentMethod: "ONLINE_BANK",
     date: BigInt(Date.parse("2027-01-02T00:00:00.000Z")),
@@ -563,6 +826,7 @@ test("delivery recognizes new production-layer COGS, verified input VAT, and pay
   const { client, state } = createComprehensiveHarness();
   const order = {
     id: "ord-production-new-verified-005",
+    userId: "user-production-new-005",
     amount: 452,
     paymentMethod: "ONLINE_BANK",
     items: [{
@@ -586,8 +850,9 @@ test("delivery recognizes new production-layer COGS, verified input VAT, and pay
 
   assert.equal(first.id, second.id);
   assert.equal(state.entries.length, 1);
-  assert.equal(state.documents.length, 1);
-  assert.equal(state.documents[0].originalAmount.toFixed(2), "226.00");
+  assert.equal(state.documents.length, 2);
+  assert.equal(state.documents.find((document) => document.side === "RECEIVABLE").originalAmount.toFixed(2), "452.00");
+  assert.equal(state.documents.find((document) => document.side === "PAYABLE").originalAmount.toFixed(2), "226.00");
   assert.equal(first.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "200.00");
   assert.equal(first.lines.find((line) => line.account.accountCode === "1150").debit.toFixed(2), "26.00");
   assert.equal(first.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "226.00");
@@ -600,6 +865,7 @@ test("delivery capitalizes verified supplier VAT acquired while PAN-only", async
   client.taxRegistrationVersion.findFirst = async () => null;
   const journal = await postDeliveredOrderAccounting({
     id: "ord-production-pan-only-006",
+    userId: "user-production-pan-006",
     amount: 226,
     paymentMethod: "ONLINE_BANK",
     items: [{
@@ -740,8 +1006,8 @@ test("financial statement excludes legacy per-order batch overhead but keeps car
   }), false);
 });
 
-test("delivered direct manufacturer COD sale recognizes approved COGS and COD receivable only", async () => {
-  const { client } = createComprehensiveHarness();
+test("unpaid direct manufacturer COD sale recognizes customer receivable with a linked invoice, not NCM COD", async () => {
+  const { client, state } = createComprehensiveHarness();
 
   const mockOrder = {
     id: "ord-direct-002",
@@ -750,6 +1016,7 @@ test("delivered direct manufacturer COD sale recognizes approved COGS and COD re
     amount: 11300,
     deliveryCharge: 0,
     paymentMethod: "COD",
+    payment: false,
     orderType: "DIRECT_MANUFACTURER",
     directOrderType: "PHONE_ORDER",
     manufacturerId: "mfg-001",
@@ -767,22 +1034,29 @@ test("delivered direct manufacturer COD sale recognizes approved COGS and COD re
   assert.ok(journal);
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 
-  const codLine = journal.lines.find((l) => l.account.accountCode === "1170");
+  const receivableLine = journal.lines.find((l) => l.account.accountCode === "1130");
   const mfgApLines = journal.lines.filter((l) => l.account.accountCode === "2160");
 
-  assert.equal(codLine.debit.toFixed(2), "11300.00");
+  assert.equal(receivableLine.debit.toFixed(2), "11300.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1170"), false);
+  const receivableDocument = state.documents.find((document) =>
+    document.sourceType === "DIRECT_ORDER_RECEIVABLE" && document.sourceId === mockOrder.id,
+  );
+  assert.ok(receivableDocument);
+  assert.equal(receivableDocument.originalAmount.toFixed(2), "11300.00");
+  assert.equal(receivableDocument.remainingAmount.toFixed(2), "11300.00");
   const totalMfgApCredit = mfgApLines.reduce((acc, l) => acc.plus(l.credit), new Prisma.Decimal(0));
   assert.equal(totalMfgApCredit.toFixed(2), "6000.00");
   assert.equal(journal.lines.some((line) => line.account.accountCode === "6410"), false);
 });
 
-test("direct distributor hub sales recognize cost-layer COGS and debit cash on hand", async () => {
+test("unpaid direct distributor hub sales recognize cost-layer COGS and customer receivable", async () => {
   const { client } = createComprehensiveHarness();
   const journal = await postDeliveredOrderAccounting({
     id: "ord-distributor-direct-001",
     userId: "user-direct-001",
     amount: 2260,
-    payment: true,
+    payment: false,
     paymentMethod: "CASH",
     orderType: "DIRECT_DISTRIBUTOR",
     directOrderType: "HUB_VISIT",
@@ -803,10 +1077,10 @@ test("direct distributor hub sales recognize cost-layer COGS and debit cash on h
     }],
   }, { client });
 
-  const cashLine = journal.lines.find((line) => line.account.accountCode === "1110");
+  const receivableLine = journal.lines.find((line) => line.account.accountCode === "1130");
   const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
   const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
-  assert.equal(cashLine.debit.toFixed(2), "2260.00");
+  assert.equal(receivableLine.debit.toFixed(2), "2260.00");
   assert.equal(journal.lines.some((line) => line.account.accountCode === "1120"), false);
   assert.equal(cogsLine.debit.toFixed(2), "1000.00");
   assert.equal(inventoryLine.credit.toFixed(2), "1000.00");
@@ -815,8 +1089,8 @@ test("direct distributor hub sales recognize cost-layer COGS and debit cash on h
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
 
-test("unpaid direct distributor phone sales post to receivables that clear on cash confirmation", async () => {
-  const { client } = createComprehensiveHarness();
+test("unpaid direct distributor phone sales post to customer receivables without inferring collection", async () => {
+  const { client, state } = createComprehensiveHarness();
   const journal = await postDeliveredOrderAccounting({
     id: "ord-distributor-phone-002",
     userId: "user-direct-002",
@@ -840,19 +1114,31 @@ test("unpaid direct distributor phone sales post to receivables that clear on ca
   assert.equal(journal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "600.00");
   assert.equal(journal.lines.find((line) => line.account.accountCode === "1140").credit.toFixed(2), "600.00");
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(
+    state.documents.find((document) => document.sourceType === "DIRECT_ORDER_RECEIVABLE")?.sourceId,
+    "ord-distributor-phone-002",
+  );
+});
 
-  const receipt = await postCustomerPaymentAccounting({
-    orderId: "ord-distributor-phone-002",
-    customerName: "Direct distributor customer",
+test("unpaid non-COD Admin direct sales post to customer receivables instead of bank", async () => {
+  const { client } = createComprehensiveHarness();
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-admin-direct-unpaid-001",
+    userId: "user-admin-direct-001",
     amount: 1130,
-    settlementAmount: 1130,
-    depositAccountCode: "1110",
-    idempotencyKey: "DISTRIBUTOR_DIRECT_PAYMENT:ord-distributor-phone-002",
-    client,
-  });
-  assert.equal(receipt.lines.find((line) => line.account.accountCode === "1110").debit.toFixed(2), "1130.00");
-  assert.equal(receipt.lines.find((line) => line.account.accountCode === "1130").credit.toFixed(2), "1130.00");
-  assert.equal(receipt.totalDebit.toFixed(2), receipt.totalCredit.toFixed(2));
+    payment: false,
+    paymentMethod: "QR_PAYMENT",
+    orderType: "ADMIN_DIRECT",
+    items: [{
+      productId: "admin-direct-product-001",
+      quantity: 1,
+      agreedUnitCogsVatInclusiveAtAcceptance: "0",
+    }],
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1130").debit.toFixed(2), "1130.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1120"), false);
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
 
 test("manual Other Income posts to income instead of Accounts Receivable", async () => {
@@ -915,9 +1201,9 @@ test("direct expense poster splits the journal between mapped Treasury and Accou
     expenseId: "expense-partial-001",
     category: "UTILITIES",
     title: "Partial electricity bill",
-    amount: 125,
-    paidAmount: 50,
-    payableAmount: 75,
+    amount: "125.55",
+    paidAmount: "50.20",
+    payableAmount: "75.35",
     paidFromAccountCode: "1110",
     idempotencyKey: "EXPENSE_RECORD:partial-001",
     referenceNumber: "partial-expense-payload",
@@ -925,9 +1211,9 @@ test("direct expense poster splits the journal between mapped Treasury and Accou
     throwOnError: true,
   });
 
-  assert.equal(entry.lines.find((line) => line.account.accountCode === "6300").debit.toFixed(2), "125.00");
-  assert.equal(entry.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "50.00");
-  assert.equal(entry.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "75.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "6300").debit.toFixed(2), "125.55");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "50.20");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "75.35");
   assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
 });
 
@@ -936,13 +1222,39 @@ test("operating expense poster rejects an unbalanced payment allocation", async 
   await assert.rejects(postExpenseAccounting({
     expenseId: "expense-invalid-split",
     category: "UTILITIES",
-    amount: 125,
-    paidAmount: 50,
-    payableAmount: 74,
+    amount: "125.00",
+    paidAmount: "50.00",
+    payableAmount: "74.00",
     client,
     throwOnError: true,
   }), /must be non-negative and equal the total expense/);
   assert.equal(state.entries.length, 0);
+});
+
+test("operating expense posting uses stable source identity and rejects changed retries", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const original = {
+    expenseId: "expense-stable-key",
+    category: "UTILITIES",
+    title: "Office electricity",
+    amount: "125.00",
+    isPayable: true,
+    payeeName: "Utility provider",
+    transactionDate: new Date("2026-10-15T00:00:00.000Z"),
+    client,
+    throwOnError: true,
+  };
+
+  const first = await postExpenseAccounting(original);
+  const replay = await postExpenseAccounting(original);
+  assert.equal(first.idempotencyKey, "EXPENSE:expense-stable-key");
+  assert.equal(replay.id, first.id);
+
+  await assert.rejects(
+    postExpenseAccounting({ ...original, amount: "126.00" }),
+    { code: "IDEMPOTENCY_KEY_REUSED", statusCode: 409 },
+  );
+  assert.equal(state.entries.length, 1);
 });
 
 test("direct Treasury receipt posts to the mapped GL account and Other Income once", async () => {
@@ -950,7 +1262,7 @@ test("direct Treasury receipt posts to the mapped GL account and Other Income on
   const params = {
     movementType: "INFLOW",
     category: "MISC_INFLOW",
-    amount: 125,
+    amount: "125.00",
     sourceId: "TREASURY-receipt-001",
     idempotencyKey: "TREASURY_MOVEMENT:receipt-001",
     referenceNumber: "receipt-payload",
@@ -1306,6 +1618,53 @@ test("manufacturer payment reduces the manufacturer payable control account", as
   assert.equal(treasuryLine.credit.toFixed(2), "1200.00");
 });
 
+test("supplier payment allocation keeps decimal-string settlement amounts exactly balanced", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+  const journal = await postSupplierPaymentAccounting({
+    payableId: "expense-payable-001",
+    payeeName: "Registered Supplier",
+    amount: "49.99",
+    settlementAmount: "50.01",
+    discountAmount: "0.02",
+    payableAccountCode: "2110",
+    cashAccountId: "acc-1120",
+    accountingPartyId: "party-vendor-001",
+    idempotencyKey: "SUPPLIER_PAYMENT:expense-payable-001",
+    client,
+  });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2110").debit.toFixed(2), "50.01");
+  assert.equal(journal.lines.find((line) => line.account.id === "acc-1120").credit.toFixed(2), "49.99");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "8100").credit.toFixed(2), "0.02");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+});
+
+test("Marketing CPA payout debits the partner control and credits mapped Treasury idempotently", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+  const payout = {
+    payoutId: "payout-cpa-001",
+    document: { id: "cpa-bill-001", documentNumber: "BILL-CPA-001", partyId: "party-marketing-1" },
+    amount: "25.75",
+    cashAccountId: "acc-1120",
+    client,
+  };
+
+  const journal = await postMarketingCpaPayablePaymentAccounting(payout);
+  const retry = await postMarketingCpaPayablePaymentAccounting(payout);
+
+  assert.equal(retry.id, journal.id);
+  assert.equal(journal.sourceType, "MARKETING_CPA_PAYMENT");
+  assert.equal(journal.sourceId, "payout-cpa-001");
+  const payableLine = journal.lines.find((line) => line.account.accountCode === "2170");
+  const treasuryLine = journal.lines.find((line) => line.account.id === "acc-1120");
+  assert.equal(payableLine.debit.toFixed(2), "25.75");
+  assert.equal(payableLine.accountingPartyId, "party-marketing-1");
+  assert.equal(treasuryLine.credit.toFixed(2), "25.75");
+  assert.equal(state.entries.length, 1);
+});
+
 test("accepted production posts inventory, verified VAT, and manufacturer payable once", async () => {
   const { client, state } = createComprehensiveHarness();
   delete client.$transaction;
@@ -1367,7 +1726,7 @@ test("PAN-only production capitalizes verified supplier VAT and rejects input VA
     supplierTaxIdNumber: "123456789",
     transactionDate: new Date("2026-10-29T12:00:00.000Z"),
     client,
-  }), /PAN-only/);
+  }), /not VAT-registered/);
 });
 
 test("production input VAT is rejected when the manufacturer has only a PAN identity", async () => {
@@ -1414,7 +1773,7 @@ test("production input VAT eligibility follows the supplier invoice date, not th
     inputVatTaxPoint: new Date("2026-10-31T12:00:00.000Z"),
     transactionDate: new Date("2026-11-02T12:00:00.000Z"),
     client,
-  }), /PAN-only/);
+  }), /not VAT-registered/);
 });
 
 test("production with no accepted good units does not post an accounting entry", async () => {
@@ -1558,6 +1917,35 @@ test("customer receipt uses its mapped clearing account and stable idempotency k
   assert.equal(state.entries.length, 1);
   assert.equal(first.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "900.00");
   assert.equal(first.lines.find((line) => line.account.accountCode === "1130").credit.toFixed(2), "900.00");
+});
+
+test("customer payment posting preserves Decimal cents and rejects an unbalanced collection", async () => {
+  const { client } = createComprehensiveHarness();
+  const payment = await postCustomerPaymentAccounting({
+    orderId: "receipt-decimal-001",
+    customerName: "Decimal Customer",
+    amount: "180.00",
+    settlementAmount: "200.00",
+    discountAmount: "20.00",
+    fineAmount: "0.00",
+    depositAccountCode: "1120",
+    idempotencyKey: "RECEIPT:decimal-001",
+    client,
+  });
+
+  assert.equal(payment.lines.find((line) => line.account.accountCode === "1120").debit.toFixed(2), "180.00");
+  assert.equal(payment.lines.find((line) => line.account.accountCode === "6700").debit.toFixed(2), "20.00");
+  assert.equal(payment.lines.find((line) => line.account.accountCode === "1130").credit.toFixed(2), "200.00");
+  assert.equal(payment.totalDebit.toFixed(2), payment.totalCredit.toFixed(2));
+
+  await assert.rejects(postCustomerPaymentAccounting({
+    orderId: "receipt-decimal-unbalanced",
+    amount: "180.00",
+    settlementAmount: "199.99",
+    discountAmount: "20.00",
+    idempotencyKey: "RECEIPT:decimal-unbalanced",
+    client,
+  }), /must balance exactly/);
 });
 
 test("NCM cash remittance posts through the caller transaction client", async () => {
@@ -1757,6 +2145,35 @@ test("direct hub returns restore legacy inventory cost and clear the original ca
   assert.equal(journal.lines.some((line) => line.account.accountCode === "2160"), false);
 });
 
+test("unpaid direct manufacturer COD returns clear customer receivables instead of NCM receivables", async () => {
+  const { client } = createComprehensiveHarness();
+  client.order.findUnique = async () => ({
+    id: "ord-direct-mfg-return-008",
+    amount: 678,
+    payment: false,
+    paymentMethod: "COD",
+    orderType: "DIRECT_MANUFACTURER",
+    directOrderType: "HUB_VISIT",
+    manufacturerId: "mfg-001",
+    items: [{
+      productId: "legacy-product-008",
+      quantity: 1,
+      productionCostAllocations: [],
+      legacyCostQuantity: 1,
+      costPrice: "300.00",
+    }],
+  });
+
+  const journal = await postConfirmedDeliveryReturnAccounting({
+    returnRecord: { id: "direct-mfg-return-008", orderId: "ord-direct-mfg-return-008" },
+    client,
+  });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1130").credit.toFixed(2), "678.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1170"), false);
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+});
+
 test("production-layer return restores inventory without reversing batch freight overhead per order", async () => {
   const { client } = createComprehensiveHarness();
   client.order.findUnique = async () => ({
@@ -1839,7 +2256,7 @@ test("return reverses delivery-recognized production payable, COGS, and input VA
 });
 
 test("marketing CPA redemption posts marketing expense and partner payable", async () => {
-  const { client } = createComprehensiveHarness();
+  const { client, state } = createComprehensiveHarness();
 
   const mockRedemption = {
     id: "red-001",
@@ -1876,6 +2293,112 @@ test("marketing CPA redemption posts marketing expense and partner payable", asy
 
   assert.equal(cpaExpLine.debit.toFixed(2), "150.00");
   assert.equal(partnerApLine.credit.toFixed(2), "150.00");
+  assert.equal(state.documents.length, 1);
+  assert.equal(state.documents[0].documentType, "BILL");
+  assert.equal(state.documents[0].side, "PAYABLE");
+  assert.equal(state.documents[0].sourceType, "MARKETING_CPA");
+  assert.equal(state.documents[0].sourceId, mockRedemption.id);
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "150.00");
+  assert.equal(state.documents[0].partyId, partnerApLine.accountingPartyId);
+
+  const replayedJournal = await postMarketingCpaRedemptionAccounting({
+    redemption: mockRedemption,
+    campaign: mockCampaign,
+    partner: mockPartner,
+    client,
+  });
+  assert.equal(replayedJournal.id, journal.id);
+  assert.equal(state.documents.length, 1);
+});
+
+test("marketing CPA posting uses the redemption snapshot instead of a later campaign rate", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const journal = await postMarketingCpaRedemptionAccounting({
+    redemption: {
+      id: "red-snapshot",
+      cardId: "card-001",
+      redeemedAt: new Date(),
+      cpaRateSnapshot: "125.75",
+    },
+    campaign: { marketingPartnerId: "partner-001", cpaRate: 999 },
+    partner: { id: "partner-001", name: "Pokhara Food Hub" },
+    client,
+  });
+
+  assert.equal(journal.totalDebit.toFixed(2), "125.75");
+  assert.equal(journal.totalCredit.toFixed(2), "125.75");
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "125.75");
+});
+
+test("marketing CPA posting requires a partner before creating accounting records", async () => {
+  const { client, state } = createComprehensiveHarness();
+
+  await assert.rejects(
+    postMarketingCpaRedemptionAccounting({
+      redemption: { id: "red-no-partner", redeemedAt: new Date() },
+      campaign: { cpaRate: 150 },
+      client,
+    }),
+    /requires a marketing partner/,
+  );
+
+  assert.equal(state.entries.length, 0);
+  assert.equal(state.documents.length, 0);
+});
+
+test("delivered sale rejects malformed source items instead of posting without item costs", async () => {
+  const { client, state } = createComprehensiveHarness();
+
+  await assert.rejects(
+    postDeliveredOrderAccounting({
+      id: "ord-invalid-items",
+      amount: 113,
+      paymentMethod: "ONLINE_BANK",
+      items: "{not-valid-json",
+    }, { client }),
+    /Delivered-sale accounting contains invalid order-item JSON/,
+  );
+  assert.equal(state.entries.length, 0);
+});
+
+test("delivered sale propagates manufacturer lookup failures", async () => {
+  const { client, state } = createComprehensiveHarness();
+  client.manufacturer.findUnique = async () => {
+    throw new Error("Manufacturer lookup unavailable.");
+  };
+
+  await assert.rejects(
+    postDeliveredOrderAccounting({
+      id: "ord-manufacturer-lookup-failure",
+      manufacturerId: "mfg-001",
+      amount: 113,
+      paymentMethod: "ONLINE_BANK",
+      items: [{
+        manufacturerId: "mfg-001",
+        quantity: 1,
+        agreedUnitCogsVatInclusiveAtAcceptance: 50,
+      }],
+    }, { client }),
+    /Manufacturer lookup unavailable/,
+  );
+  assert.equal(state.entries.length, 0);
+});
+
+test("marketing CPA poster propagates partner lookup failures", async () => {
+  const { client, state } = createComprehensiveHarness();
+  client.marketingPartner.findUnique = async () => {
+    throw new Error("Marketing partner lookup unavailable.");
+  };
+
+  await assert.rejects(
+    postMarketingCpaRedemptionAccounting({
+      redemption: { id: "red-partner-lookup-failure", cardId: "card-001", redeemedAt: new Date() },
+      campaign: { marketingPartnerId: "partner-001", cpaRate: 150 },
+      client,
+    }),
+    /Marketing partner lookup unavailable/,
+  );
+  assert.equal(state.entries.length, 0);
 });
 
 test("NCM carrier settlement clears COD receivable and books carrier expense", async () => {

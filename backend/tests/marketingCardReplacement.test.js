@@ -4,9 +4,11 @@ import test from "node:test";
 import { prisma } from "../config/db.js";
 import {
   attachRandomCardToOrder,
+  campaignMeetsMinimumOrderValue,
   ensureOrderCardAttached,
   isMarketingCardAttachable,
 } from "../services/marketingCardService.js";
+import { withOrderPricingSnapshot } from "../services/checkoutPricingService.js";
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -94,6 +96,20 @@ test("campaign cards cannot be attached when inactive or outside their campaign/
   assert.equal(isMarketingCardAttachable({ campaign: { status: "PAUSED", endsAt: future, cardExpiresAt: future } }), false);
   assert.equal(isMarketingCardAttachable({ campaign: { status: "ACTIVE", endsAt: past, cardExpiresAt: future } }), false);
   assert.equal(isMarketingCardAttachable({ campaign: { status: "ACTIVE", endsAt: future, cardExpiresAt: past } }), false);
+});
+
+test("marketing card minimum spend compares the accepted order snapshot", () => {
+  const order = {
+    amount: 5000,
+    locationPricingSnapshot: withOrderPricingSnapshot(null, {
+      version: 2,
+      currency: "NPR",
+      totals: { finalPayableTotal: "1000", deliveryFee: "0" },
+      lines: [],
+    }),
+  };
+  assert.equal(campaignMeetsMinimumOrderValue({ minOrderValue: 1001 }, order), false);
+  assert.equal(campaignMeetsMinimumOrderValue({ minOrderValue: 999 }, order), true);
 });
 
 test("attaching to an order releases an ended-campaign card and attaches an active replacement", async (t) => {

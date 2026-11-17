@@ -90,7 +90,7 @@ Exact account codes are configurable mappings and require accountant approval. T
 
 ## PAN-First Tax And Invoice Operations
 
-The seller tax profile defaults to `PAN_ONLY`; output VAT is zero unless an active VAT-registration version covers the transaction tax point. PAN status does not represent an income-tax exemption. Paper-bill records preserve the seller, buyer, sale, and tax snapshots and let Admin record the official paper number/date after issuance; the application does not print, submit, or certify an IRD invoice.
+The seller tax profile resolves to `UNREGISTERED` when no effective-dated status exists; `UNREGISTERED`, `PAN_ONLY`, and `VAT_REGISTERED` are distinct records. Output VAT is calculated only when an effective VAT-registration version and an explicitly effective VAT rate both cover the transaction tax point. A missing rate is an error, not a default-rate calculation. Unregistered sales retain internal accounting snapshots but cannot issue statutory paper bills. PAN status does not represent an income-tax exemption; internal reports are not statutory filings or audited statements.
 
 Supplier input VAT is recoverable only when the supplier invoice is verified and the buyer is VAT-registered at acquisition. Non-recoverable supplier VAT is included in inventory/COGS and the cost layer records whether input VAT was actually recognized, so subsequent VAT registration cannot retroactively create a credit.
 

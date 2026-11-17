@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildOrderListItem } from '../controllers/orderController.js';
+import {
+  createOrderPricingSnapshot,
+  withOrderPricingSnapshot,
+} from '../services/checkoutPricingService.js';
 
 test('buildOrderListItem preserves required order list fields while removing unnecessary internal values', () => {
   const order = {
@@ -66,4 +70,48 @@ test('buildOrderListItem preserves required order list fields while removing unn
   assert.equal(result.paperBill.number, 'PAN-42');
   assert.equal(result.__internal, undefined);
   assert.equal(result.delivery, result.deliveryOrder);
+});
+
+test("delivered self-delivery COD does not imply a recorded payment", () => {
+  const result = buildOrderListItem({
+    id: "ord-cod",
+    amount: 1200,
+    deliveryFee: 50,
+    status: "Delivered",
+    paymentMethod: "COD",
+    payment: false,
+    distributorDelivery: {
+      deliveryType: "SELF_DELIVERY",
+      status: "delivered",
+    },
+  });
+
+  test("order history preserves numeric legacy fields and adds exact snapshot amounts", () => {
+    const pricingSnapshot = createOrderPricingSnapshot({
+      lines: [{
+        productId: "p1",
+        unitPrice: "5.25",
+        quantity: "1",
+        lineTotal: "5.25",
+      }],
+      subtotal: "5.25",
+      deliveryFee: "0",
+      preCommercialRoundingTotal: "5.25",
+      finalPayableTotal: "5.25",
+    });
+    const result = buildOrderListItem({
+      id: "ord-decimal",
+      amount: 5.25,
+      deliveryFee: 0,
+      locationPricingSnapshot: withOrderPricingSnapshot(null, pricingSnapshot),
+    });
+
+    assert.equal(result.amount, 5.25);
+    assert.equal(result.deliveryFee, 0);
+    assert.equal(result.amountDecimal, "5.25");
+    assert.equal(result.deliveryFeeDecimal, "0");
+    assert.equal(result.pricingSnapshotVersion, 2);
+  });
+
+  assert.equal(result.payment, false);
 });

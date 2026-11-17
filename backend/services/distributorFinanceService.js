@@ -491,7 +491,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Calculate earnings and transactions
   const rateCard = await resolveActiveRateCard({ distributorId, client });
-  const vatRate = Number(rateCard.vatRate ?? 13);
+  const vatRate = Number(rateCard.vatRate ?? 0);
   const serviceEarnings = client.distributorServiceEarning
     ? await client.distributorServiceEarning.findMany({
         where: {

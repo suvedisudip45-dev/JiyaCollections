@@ -7,6 +7,11 @@ import { getPostedFinanceSnapshot } from "./accountingReportingService.js";
 const fail = (message, statusCode = 400, code = "VAT_FILING_ERROR") =>
   Object.assign(new Error(message), { statusCode, code });
 
+const runSerializable = (client, callback) =>
+  typeof client.$transaction === "function"
+    ? client.$transaction(callback, { isolationLevel: "Serializable" })
+    : callback(client);
+
 const toDecimal = (value, fieldName, { allowZero = true } = {}) => {
   const amount = new Prisma.Decimal(String(value ?? ""));
   if (!amount.isFinite() || amount.isNegative() || (!allowZero && amount.isZero())) {
@@ -238,7 +243,7 @@ export const createVatFilingDraft = async ({
 } = {}) => {
   const period = parsePeriod({ periodKey, periodStart, periodEnd });
   const cadence = parseFilingCadence(filingCadence);
-  return client.$transaction(async (tx) => {
+  return runSerializable(client, async (tx) => {
     const existing = await tx.taxFilingRecord.findFirst({
       where: { periodType: "VAT_RETURN", periodKey: period.periodKey },
       include: { payments: true },
@@ -394,7 +399,7 @@ export const createVatFilingDraft = async ({
     });
     if (afterCreate) await afterCreate(record, tx);
     return serializeFiling(record);
-  }, { isolationLevel: "Serializable" });
+  });
 };
 
 export const fileVatReturn = async ({
@@ -426,7 +431,7 @@ export const fileVatReturn = async ({
     throw fail("Filing evidence or adjustment reason is too long.", 400, "INVALID_VAT_FILING_METADATA");
   }
 
-  return client.$transaction(async (tx) => {
+  return runSerializable(client, async (tx) => {
     const record = await tx.taxFilingRecord.findUnique({
       where: { id: String(id ?? "").trim() },
       include: { payments: true, amendments: true },
@@ -582,7 +587,7 @@ export const fileVatReturn = async ({
     });
     if (afterFile) await afterFile(updated, tx);
     return serializeFiling(updated);
-  }, { isolationLevel: "Serializable" });
+  });
 };
 
 export const recordVatFilingPayment = async ({
@@ -611,7 +616,7 @@ export const recordVatFilingPayment = async ({
     throw fail("Payment reference, idempotency key, and mapped Treasury account are required.", 400, "VAT_PAYMENT_DETAILS_REQUIRED");
   }
 
-  return client.$transaction(async (tx) => {
+  return runSerializable(client, async (tx) => {
     const existing = await tx.taxFilingPayment.findUnique({ where: { idempotencyKey: key } });
     if (existing) {
       if (
@@ -759,7 +764,7 @@ export const recordVatFilingPayment = async ({
     });
     if (afterPayment) await afterPayment(updated, tx);
     return serializeFiling(updated);
-  }, { isolationLevel: "Serializable" });
+  });
 };
 
 export const amendVatReturn = async ({
@@ -794,7 +799,7 @@ export const amendVatReturn = async ({
     throw fail("Amendment date, reference, reason, idempotency key, and adjustment account are required.", 400, "VAT_AMENDMENT_DETAILS_REQUIRED");
   }
 
-  return client.$transaction(async (tx) => {
+  return runSerializable(client, async (tx) => {
     const existing = await tx.taxFilingAmendment.findUnique({ where: { idempotencyKey: key } });
     if (existing) {
       if (
@@ -962,5 +967,5 @@ export const amendVatReturn = async ({
     });
     if (afterAmendment) await afterAmendment(updated, amendment, tx);
     return serializeFiling(updated);
-  }, { isolationLevel: "Serializable" });
+  });
 };

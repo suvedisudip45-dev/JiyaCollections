@@ -49,6 +49,39 @@ Admin product reports require the ADMIN role and `product:sales_analytics_read`.
 2. `authenticate` validates the session and portal identity; `authorize` resolves the required server-side permission before the controller/service performs the operation.
 3. Business mutations that support transactional auditing enqueue `SystemAuditOutbox` rows with the business write. The background worker persists them idempotently in `SystemAuditLog`.
 4. Authorized administrators use `/api/admin/access/audit-logs` and its export endpoint. The UI supports pagination, filters, event details, and CSV export.
+5. RBAC seeding requires `ADMIN_EMAIL` to identify the designated owner account: only that active Admin receives the built-in broad `ADMIN` role. Other Admin accounts retain custom Admin role mappings, while any mapping to the built-in full role is deactivated and audited. Review role assignments and back up existing data before running the updated seed in a deployed environment.
+
+The `all:function` permission is a server-side authorization bypass and must remain excluded from ordinary Admin roles. Generic journal reversal is limited to reasoned, authenticated reversals of `MANUAL_JOURNAL` entries, with the reversal posting, original status update, and audit-outbox event in one transaction. Source-backed payment/accounting journals must be corrected by their originating business workflow so operational cash, Treasury, settlement, and subledger records are not left out of sync.
+
+Payable/receivable corrections and NCM remittance-batch corrections are source-aware workflows, not generic journal edits. They require an authenticated Admin, a correction mode, a reason, and an external evidence reference; their source balances, treasury movements, journals, linked accounting-document allocations, and audit records are updated atomically. Marketing CPA payout correction is restricted to the selected settled payout with verified returned-funds evidence; it restores the bill and Treasury, records a reversal allocation, reverses the payout journal, and marks the payout reversed. It cannot void a confirmed transfer or proceed while another CPA payout is initiated. NCM corrections also restore captured delivery settlement states, cancel the batch-only fee/suspense documents, retain reversed resolution history, and allow a corrected delivery to be settled again. Historical NCM batches without a captured prior delivery state fail closed for manual reconciliation.
+
+Collaboration-fee credit application is a finance-permission-protected receivable offset, guarded by `finance:receivable_collect`. The backend verifies the credit note and target invoice against the same marketing-partner identity, currency, dates, source invoice records, and posted 1130 journals. It atomically updates both open document balances, records paired allocations against the existing credit journal, and writes a system-audit record; it does not issue a cash refund or a second journal. A separate mapped-Treasury payout workflow is required before any partner credit can be refunded.
+
+Monthly period close uses distinct `accounting:period_close_submit` and
+`accounting:period_close_review` permissions; reopen request and review also
+have separate permissions. The backend rejects self-review, requires a reason
+for rejected/reopen actions, and commits the period status change, sequenced
+close-event snapshot, and system-audit outbox row atomically. Direct legacy
+period toggles are rejected, and fiscal-year close/reopen require the monthly
+approval trail. Checklist evidence references are user-entered identifiers,
+not independently validated source documents.
+
+The separate accounting action queue records normalized payloads/hashes,
+maker/checker identities, sequenced decisions, and transactional audit-outbox
+events. Current code gates manual journals, opening balances, reversals, COA
+and Treasury setup, VAT actions, fixed-asset write-offs, distributor refund
+payouts/netting, settlement corrections, NCM remittance/variance actions,
+supplier-return postings, manufacturer and collaboration credit applications,
+loan repayments, and share buybacks. Rejected or pending requests do not execute
+the underlying mutation; supplier-return inventory and accounting effects are
+also deferred until independent approval. This is an internal control only; it
+is not statutory or CA approval. The user reports migrations through Phase 6
+applied to a local/shared development database; this has not been independently
+verified and does not establish isolated-database UAT/recovery evidence.
+Route-by-route bypass verification, a reproducible signed close pack, and
+Finance/management review remain outstanding. Review the actual deployed role
+mappings, MFA/admin access, export restrictions, and audit retention before
+relying on the controls.
 
 ## 2. Event records and interpretation
 
@@ -102,7 +135,7 @@ These observations are based on source code, not a penetration test or productio
 - Customer disable is enforced through the retained `User.isDisabled` flag, CUSTOMER workspace validation on login/access/refresh, revoked sessions, and registration/profile-activation checks. The action is gated by `customer:account_manage` and recorded through the system-audit outbox.
 - The admin customer search requires an explicit query; customer records are not loaded into the page before search. Customer notification history is matched to stored contact addresses, excludes authentication/verification messages, and returns only selected message text rather than raw payloads.
 - Apply the audit/outbox Prisma migration and regenerate Prisma Client.
-- Run the RBAC seed so `access:audit_read` is assigned as intended; verify the actual production role mappings rather than assuming seed state.
+- Run the RBAC seed so `access:audit_read` and `access:audit_export` are assigned as intended; verify the actual production role mappings rather than assuming seed state.
 - Apply the product sales analytics migration before deployment and run the RBAC seed to grant `product:sales_analytics_read` to Admins and `distributor:product_sales_read` to distributors; verify no distributor permission grants revenue access.
 - Configure and test `OTP_SERVER_SECRET`, outbound notification credentials, HTTPS, trusted proxy behavior, and allowed frontend origins outside source control.
 - Verify the outbox worker starts, completes a test event, retries a forced transient error, and exposes pending/failed counts to monitoring.

@@ -537,9 +537,22 @@ export const updateSelfDeliveryStatus = async ({
     } else if (internalStatus === "delivered") {
       assignmentUpdateData.deliveredAt = now;
       const isUnpaidCod = String(order.paymentMethod || "COD").trim().toUpperCase() === "COD" && !order.payment;
+      let collectionVerified = false;
       if (isUnpaidCod) {
         let collection;
         const otpRequired = isDistributorDeliveryOtpEnabled(notificationConfig);
+        if (!otpRequired && collectionConfirmed !== true) {
+          return {
+            deliveryOtpError: fail(
+              "Confirm that you collected the full COD amount before completing delivery.",
+              400,
+              "COD_COLLECTION_CONFIRMATION_REQUIRED",
+            ),
+          };
+        }
+        if (!actorContext.actorId) {
+          throw fail("An authenticated collection actor is required.", 401, "COLLECTION_ACTOR_REQUIRED");
+        }
         if (otpRequired) {
           collection = await verifyDistributorDeliveryOtp({
             tx,
@@ -547,20 +560,11 @@ export const updateSelfDeliveryStatus = async ({
             order,
             code: otpCode,
             paymentMethod,
-            actorId: actorContext.actorId || distributorId,
+            actorId: actorContext.actorId,
             now,
           });
           if (collection.error) return { deliveryOtpError: collection.error };
         } else {
-          if (collectionConfirmed !== true) {
-            return {
-              deliveryOtpError: fail(
-                "Confirm that you collected the full COD amount before completing delivery.",
-                400,
-                "COD_COLLECTION_CONFIRMATION_REQUIRED",
-              ),
-            };
-          }
           const normalizedPaymentMethod = String(paymentMethod || "").trim().toUpperCase();
           if (!["CASH", "BANK_TRANSFER", "MOBILE_WALLET", "CARD"].includes(normalizedPaymentMethod)) {
             return {
@@ -572,6 +576,7 @@ export const updateSelfDeliveryStatus = async ({
             paymentMethod: normalizedPaymentMethod,
           };
         }
+        collectionVerified = otpRequired;
         await tx.distributorCashEvent.create({
           data: {
             distributorId,
@@ -617,7 +622,7 @@ export const updateSelfDeliveryStatus = async ({
         effectiveAt: now,
         client: tx,
       });
-      orderUpdateData.payment = true;
+      if (collectionVerified) orderUpdateData.payment = true;
 
       const inventoryConsumption = await consumeDistributorOrderInventory({
         tx,

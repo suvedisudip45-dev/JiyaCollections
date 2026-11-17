@@ -221,6 +221,7 @@ test("NCM delivery commits delivered state and accounting outbox event in one tr
   let committedAccountingEvent = null;
   let stagedDeliveryState = null;
   let stagedAccountingEvent = null;
+  let orderUpdateData = null;
   const tx = {
     deliveryEvent: { create: async () => ({ id: "delivery-event-1" }) },
     deliveryOrder: {
@@ -231,7 +232,10 @@ test("NCM delivery commits delivered state and accounting outbox event in one tr
     },
     order: {
       findUnique: async () => order,
-      update: async ({ data }) => ({ ...order, ...data }),
+      update: async ({ data }) => {
+        orderUpdateData = data;
+        return { ...order, ...data };
+      },
     },
     orderAssignment: {
       findUnique: async () => null,
@@ -279,6 +283,8 @@ test("NCM delivery commits delivered state and accounting outbox event in one tr
     assert.equal(committedAccountingEvent.status, "PENDING");
     assert.equal(committedAccountingEvent.idempotencyKey, "DELIVERY_SALE:order-ncm-1");
     assert.equal(committedAccountingEvent.payload.order.deliveryCharge, "22.6");
+    assert.equal(orderUpdateData.status, "Delivered");
+    assert.equal(Object.hasOwn(orderUpdateData, "payment"), false);
   } finally {
     restore();
   }
@@ -572,7 +578,7 @@ test("NCM return after delivery preserves COD and does not claim physical receip
     });
 
     assert.equal(result.deliveryState, "RETURN_REQUESTED");
-    assert.equal(orderUpdate.payment, true);
+    assert.equal(Object.hasOwn(orderUpdate, "payment"), false);
     assert.equal(orderUpdate.status, undefined);
     assert.equal(orderUpdate.fulfillmentStatus, "return_requested");
     assert.equal(deliveryUpdate.returnedAt, undefined);

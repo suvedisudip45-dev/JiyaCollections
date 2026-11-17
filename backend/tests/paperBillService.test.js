@@ -153,6 +153,12 @@ test("physical bill number must match the distributor's active document-type all
     book: { seriesPrefix: "VAT/", serialWidth: 4, documentType: "VAT_TAX_INVOICE" },
   };
   const client = {
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "VAT_REGISTERED", vatNumber: "123456789" }),
+    },
+    vatRateVersion: {
+      findFirst: async () => ({ vatRate: "13.00" }),
+    },
     paperBillBookAllocation: { findMany: async () => [allocation] },
     orderAssignment: { findFirst: async () => null },
     salesInvoice: { findFirst: async () => null },
@@ -180,6 +186,9 @@ test("physical bill number must match the distributor's active document-type all
 
 test("duplicate bill numbers and invalid report periods are rejected", async () => {
   const client = {
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "PAN_ONLY" }),
+    },
     paperBillBookAllocation: {
       findMany: async () => [{
         id: "allocation-1",
@@ -204,6 +213,42 @@ test("duplicate bill numbers and invalid report periods are rejected", async () 
   await assert.rejects(
     listPaperBillOrderReport({ from: "2026-02-30", to: "2026-03-01" }),
     { code: "INVALID_PAPER_BILL_REPORT_PERIOD" },
+  );
+});
+
+test("unregistered business cannot issue statutory paper bills", async () => {
+  const client = {
+    taxRegistrationVersion: { findFirst: async () => null },
+    paperBillBookAllocation: {
+      findMany: async () => assert.fail("bill allocations must not be queried for an unregistered business"),
+    },
+  };
+  await assert.rejects(
+    validatePaperBillChoice({
+      client,
+      distributorId: "dist-1",
+      documentType: "PAN_BILL",
+      billNumber: "PAN-5",
+    }),
+    { code: "STATUTORY_BILLING_UNAVAILABLE" },
+  );
+});
+
+test("paper bill type must match the effective registration status", async () => {
+  const client = {
+    taxRegistrationVersion: { findFirst: async () => ({ taxStatus: "PAN_ONLY" }) },
+    paperBillBookAllocation: {
+      findMany: async () => assert.fail("bill allocations must not be queried for the wrong document type"),
+    },
+  };
+  await assert.rejects(
+    validatePaperBillChoice({
+      client,
+      distributorId: "dist-1",
+      documentType: "VAT_TAX_INVOICE",
+      billNumber: "VAT-5",
+    }),
+    { code: "PAPER_BILL_TAX_STATUS_MISMATCH" },
   );
 });
 

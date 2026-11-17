@@ -47,7 +47,6 @@ const DirectOrders = () => {
   const [streetAddress, setStreetAddress] = useState("");
   const [city, setCity] = useState(distributor?.city || "Kathmandu");
   const [paymentMethod, setPaymentMethod] = useState("CASH"); // "CASH", "QR_PAYMENT", "COD", "CARD"
-  const [isPaid, setIsPaid] = useState(true);
   const [orderNotes, setOrderNotes] = useState("");
 
   // Cart / Line Items in Direct Order Form
@@ -216,7 +215,6 @@ const DirectOrders = () => {
         street: streetAddress.trim() || undefined,
         city: city.trim() || distributor?.city || "Kathmandu",
         paymentMethod,
-        isPaid: orderType === "HUB_VISIT" ? isPaid : paymentMethod !== "COD",
         notes: orderNotes.trim(),
         items: cartItems.map((c) => ({
           productId: c.productId,
@@ -259,7 +257,7 @@ const DirectOrders = () => {
     try {
       const res = await axios.patch(
         `${backendUrl}/api/distributor/orders/direct/status`,
-        { orderId, status: newStatus, payment: newStatus === "Delivered" ? true : undefined },
+        { orderId, status: newStatus },
         { headers: { token } }
       );
       if (res.data.success) {
@@ -582,10 +580,7 @@ const DirectOrders = () => {
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  setOrderType("HUB_VISIT");
-                  setIsPaid(true);
-                }}
+                onClick={() => setOrderType("HUB_VISIT")}
                 className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
                   orderType === "HUB_VISIT"
                     ? "bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs"
@@ -770,11 +765,11 @@ const DirectOrders = () => {
                 )}
               </div>
 
-              {/* Payment and price summary */}
+              {/* Tender intent and price summary */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Payment Method
+                    Tender Method
                   </label>
                   <select
                     value={paymentMethod}
@@ -796,6 +791,7 @@ const DirectOrders = () => {
                     {currency}{totalAmount}
                   </span>
                   <span className="text-[10px] text-emerald-800">Prices follow the admin catalog. Eligible customer loyalty discounts are applied automatically.</span>
+                  <span className="mt-1 text-[10px] text-amber-800">Tender choice is not a receipt. Payment remains unrecorded until an approved receipt workflow is available.</span>
                 </div>
               </div>
 

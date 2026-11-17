@@ -2,7 +2,9 @@ import express from "express";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 import {
   createExpense,
+  createExpenseVendor,
   getExpenses,
+  getExpenseVendors,
   reviewExpenseInputVat,
   updateExpense,
   deleteExpense,
@@ -17,6 +19,8 @@ import {
 const expenseRouter = express.Router();
 
 // Expenses
+expenseRouter.get("/vendors", authenticate, authorize("expense:read"), getExpenseVendors);
+expenseRouter.post("/vendors/add", authenticate, authorize("expense:create"), createExpenseVendor);
 expenseRouter.post("/add", authenticate, authorize("expense:create"), createExpense);
 expenseRouter.get("/list", authenticate, authorize("expense:read"), getExpenses);
 expenseRouter.post("/update", authenticate, authorize("expense:update"), updateExpense);

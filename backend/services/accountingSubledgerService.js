@@ -93,6 +93,7 @@ export const allocatePaymentToDocuments = async ({
   side = "RECEIVABLE", // RECEIVABLE (Receipt) | PAYABLE (Disbursement)
   amount,
   journalEntryId = null,
+  cashTransactionId = null,
   settlementBatchId = null,
   allocationType = null,
   targetDocumentIds = [],
@@ -129,7 +130,7 @@ export const allocatePaymentToDocuments = async ({
 
   const openDocs = await client.accountingDocument.findMany({
     where,
-    orderBy: [{ dueDate: "asc" }, { issueDate: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ dueDate: "asc" }, { issueDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
 
   const allocations = [];
@@ -189,6 +190,7 @@ export const allocatePaymentToDocuments = async ({
       const allocation = await client.accountingAllocation.create({
         data: {
           documentId: doc.id,
+          cashTransactionId,
           journalEntryId,
           settlementBatchId,
           allocationType: normalizedAllocationType,

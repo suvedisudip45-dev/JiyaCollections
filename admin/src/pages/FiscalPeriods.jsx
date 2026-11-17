@@ -14,6 +14,12 @@ const FiscalPeriods = ({ token }) => {
   const [calendarRetry, setCalendarRetry] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [closeChecklist, setCloseChecklist] = useState([]);
+  const [closeModal, setCloseModal] = useState(null);
+  const [closeDraft, setCloseDraft] = useState([]);
+  const [closeReason, setCloseReason] = useState("");
+  const [savingCloseAction, setSavingCloseAction] = useState(false);
+  const [downloadingClosePack, setDownloadingClosePack] = useState("");
   const initialBsDate = formatNepaliDate(new Date());
   const [initialYear, initialMonth] = initialBsDate.split("-").map(Number);
   const initialFiscalStartYear = initialMonth >= 4 ? initialYear : initialYear - 1;
@@ -45,6 +51,23 @@ const FiscalPeriods = ({ token }) => {
   useEffect(() => {
     if (token) fetchFiscalYears();
   }, [fetchFiscalYears, token]);
+
+  useEffect(() => {
+    let active = true;
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/accounting/period-close-checklist`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.checklist)) {
+          throw new Error(response.data?.message || "Could not load the accounting close checklist.");
+        }
+        if (active) setCloseChecklist(response.data.checklist);
+      })
+      .catch((error) => {
+        console.error("Load accounting close checklist error:", error);
+        if (active) toast.error(error.response?.data?.message || error.message || "Could not load the accounting close checklist.");
+      });
+    return () => { active = false; };
+  }, [token]);
 
   useEffect(() => {
     let active = true;
@@ -81,6 +104,37 @@ const FiscalPeriods = ({ token }) => {
     return () => { active = false; };
   }, [calendarRetry, token]);
 
+  const downloadClosePack = async (period, fiscalYearName) => {
+    setDownloadingClosePack(period.id);
+    try {
+      const response = await axios.get(
+        `${backendUrl}/api/accounting/period-close/${period.id}/pack`,
+        { headers: { token } },
+      );
+      if (!response.data?.success || !response.data.pack || !response.data.integrity?.contentHash) {
+        throw new Error(response.data?.message || "The close pack was incomplete and could not be downloaded.");
+      }
+
+      const blob = new Blob([JSON.stringify(response.data, null, 2)], { type: "application/json;charset=utf-8" });
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const filename = `${fiscalYearName}-${period.periodName}`
+        .replace(/[^A-Za-z0-9._-]/g, "-");
+      link.href = blobUrl;
+      link.download = `internal-close-pack-${filename}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
+      toast.success("Internal close pack downloaded with its SHA-256 content hash.");
+    } catch (error) {
+      console.error("Download accounting close pack error:", error);
+      toast.error(error.response?.data?.message || error.message || "Unable to download the accounting close pack.");
+    } finally {
+      setDownloadingClosePack("");
+    }
+  };
+
   const handleCreateFiscalYear = async (e) => {
     e.preventDefault();
     if (!calendarReady) {
@@ -111,23 +165,62 @@ const FiscalPeriods = ({ token }) => {
     }
   };
 
-  const handleTogglePeriod = async (periodId, currentStatus) => {
-    const nextStatus = currentStatus === "OPEN" ? "CLOSED" : "OPEN";
+  const openPeriodClose = (period, action) => {
+    setCloseReason("");
+    setCloseDraft(closeChecklist.map((item) => ({
+      ...item,
+      status: "",
+      evidenceReference: "",
+      notes: "",
+    })));
+    setCloseModal({ period, action });
+  };
+
+  const updateCloseDraft = (key, field, value) => {
+    setCloseDraft((current) => current.map((item) => (
+      item.key === key ? { ...item, [field]: value } : item
+    )));
+  };
+
+  const submitPeriodCloseAction = async (event, decision) => {
+    event.preventDefault();
+    if (!closeModal || savingCloseAction) return;
+    setSavingCloseAction(true);
+    const periodId = closeModal.period.id;
     try {
-      const res = await axios.post(
-        `${backendUrl}/api/accounting/toggle-period`,
-        { periodId, status: nextStatus },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success(res.data.message || `Period status changed to ${nextStatus}`);
-        fetchFiscalYears();
+      const requestHeaders = { token, "Idempotency-Key": crypto.randomUUID() };
+      let endpoint;
+      let body;
+      if (closeModal.action === "submit") {
+        endpoint = "/period-close/submit";
+        body = { periodId, checklist: closeDraft };
+      } else if (closeModal.action === "review-close") {
+        endpoint = "/period-close/review";
+        body = { periodId, decision, reason: closeReason };
+      } else if (closeModal.action === "request-reopen") {
+        endpoint = "/period-close/reopen/request";
+        body = { periodId, reason: closeReason };
       } else {
-        toast.error(res.data.message || "Failed to update period status");
+        endpoint = "/period-close/reopen/review";
+        body = { periodId, decision, reason: closeReason };
       }
-    } catch (err) {
-      console.error(err);
-      toast.error(err.response?.data?.message || "Error updating period status");
+
+      const response = await axios.post(`${backendUrl}/api/accounting${endpoint}`, body, { headers: requestHeaders });
+      if (!response.data?.success) throw new Error(response.data?.message || "The close action was not completed.");
+      const decisionLabel = decision === "APPROVE" ? "approved" : "rejected";
+      toast.success(
+        closeModal.action === "submit" ? "Period close submitted for independent review."
+          : closeModal.action === "review-close" ? `Period close ${decisionLabel}.`
+            : closeModal.action === "request-reopen" ? "Period reopening submitted for independent review."
+              : `Period reopening ${decisionLabel}.`
+      );
+      setCloseModal(null);
+      await fetchFiscalYears();
+    } catch (error) {
+      console.error("Accounting period close action error:", error);
+      toast.error(error.response?.data?.message || error.message || "Could not complete the period close action.");
+    } finally {
+      setSavingCloseAction(false);
     }
   };
 
@@ -237,6 +330,20 @@ const FiscalPeriods = ({ token }) => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                     {periods.map((period) => {
                       const isOpen = period.status === "OPEN";
+                      const closeEvents = period.closeEvents || [];
+                      const latestCloseEvent = closeEvents[0];
+                      const closePending = latestCloseEvent?.eventType === "CLOSE_SUBMITTED";
+                      const reopenPending = latestCloseEvent?.eventType === "REOPEN_REQUESTED";
+                      const canDownloadClosePack = period.status === "CLOSED" &&
+                        ["CLOSE_APPROVED", "REOPEN_REJECTED"].includes(latestCloseEvent?.eventType);
+                      const fiscalYearClosed = fy.status === "CLOSED";
+                      const canSubmitClose = isOpen && !fiscalYearClosed && (!latestCloseEvent || ["CLOSE_REJECTED", "REOPEN_APPROVED"].includes(latestCloseEvent.eventType));
+                      const canRequestReopen = !isOpen && ["CLOSE_APPROVED", "REOPEN_REJECTED"].includes(latestCloseEvent?.eventType);
+                      const buttonLabel = closePending ? "Review Close"
+                        : reopenPending ? "Review Reopen"
+                          : canSubmitClose ? "Prepare Close"
+                            : canRequestReopen ? "Request Reopen"
+                              : null;
                       return (
                         <div
                           key={period.id}
@@ -253,12 +360,12 @@ const FiscalPeriods = ({ token }) => {
                               </span>
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  isOpen
+                                  isOpen && !fiscalYearClosed
                                     ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                                     : "bg-slate-200 text-slate-600"
                                 }`}
                               >
-                                {period.status}
+                                {period.status === "OPEN" && fiscalYearClosed ? "FISCAL YEAR LOCKED" : period.status}
                               </span>
                             </div>
                             <p className="text-[11px] text-slate-400 mt-1">
@@ -268,19 +375,45 @@ const FiscalPeriods = ({ token }) => {
 
                           <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                             <span className="text-[10px] text-slate-400">
-                              {isOpen ? "Accepts Postings" : "Postings Locked"}
+                              {isOpen && !fiscalYearClosed ? "Accepts Postings" : "Postings Locked"}
                             </span>
-                            <button
-                              onClick={() => handleTogglePeriod(period.id, period.status)}
-                              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-colors shadow-xs ${
-                                isOpen
-                                  ? "text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200"
-                                  : "text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200"
-                              }`}
-                            >
-                              {isOpen ? "Lock / Close Period" : "Re-open Period"}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {buttonLabel && (
+                                <button
+                                  type="button"
+                                  disabled={savingCloseAction || (canSubmitClose && !closeChecklist.length)}
+                                  onClick={() => openPeriodClose(
+                                    period,
+                                    closePending ? "review-close"
+                                      : reopenPending ? "review-reopen"
+                                        : canRequestReopen ? "request-reopen" : "submit"
+                                  )}
+                                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {buttonLabel}
+                                </button>
+                              )}
+                              {canDownloadClosePack && (
+                                <button
+                                  type="button"
+                                  disabled={Boolean(downloadingClosePack)}
+                                  onClick={() => downloadClosePack(period, fy.name)}
+                                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {downloadingClosePack === period.id ? "Preparing pack..." : "Download close pack"}
+                                </button>
+                              )}
+                            </div>
                           </div>
+                          {latestCloseEvent && (
+                            <p className="text-[10px] text-slate-500">
+                              Close workflow: {latestCloseEvent.eventType.replaceAll("_", " ")} by {latestCloseEvent.actorAccountId} ({latestCloseEvent.actorRole}) on {new Date(latestCloseEvent.createdAt).toLocaleString()}
+                              {latestCloseEvent.reason ? ` — ${latestCloseEvent.reason}` : ""}
+                            </p>
+                          )}
+                          {period.status === "CLOSED" && !latestCloseEvent && (
+                            <p className="text-[10px] text-amber-700">Legacy locked period — approval evidence is not recorded; reopening is blocked.</p>
+                          )}
                         </div>
                       );
                     })}
@@ -291,6 +424,133 @@ const FiscalPeriods = ({ token }) => {
           })
         )}
       </div>
+
+      {closeModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6 space-y-4">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">
+                  {closeModal.action === "submit" ? "Prepare Period Close"
+                    : closeModal.action === "review-close" ? "Review Period Close"
+                      : closeModal.action === "request-reopen" ? "Request Period Reopen" : "Review Reopen Request"}
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  {closeModal.period.periodName} · independent preparer/reviewer control · evidence references are stored with the audit snapshot
+                </p>
+              </div>
+              <button type="button" onClick={() => setCloseModal(null)} className="text-slate-400 hover:text-slate-700" aria-label="Close dialog">✕</button>
+            </div>
+
+            {closeModal.action === "submit" && (
+              <form onSubmit={(event) => submitPeriodCloseAction(event)} className="space-y-4">
+                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  Every applicable checklist item needs a source/evidence reference. Only payroll and foreign currency may be marked not applicable, with an explanation.
+                </p>
+                <div className="space-y-3">
+                  {closeDraft.map((item) => (
+                    <div key={item.key} className="rounded-xl border border-slate-200 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-slate-800">{item.label}</p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <select
+                          required
+                          value={item.status}
+                          onChange={(event) => updateCloseDraft(item.key, "status", event.target.value)}
+                          className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        >
+                          <option value="">Select review status</option>
+                          <option value="COMPLETE">Complete</option>
+                          {item.mayBeNotApplicable && <option value="NOT_APPLICABLE">Not applicable</option>}
+                        </select>
+                        {item.status === "COMPLETE" && (
+                          <input
+                            required
+                            maxLength={500}
+                            value={item.evidenceReference}
+                            onChange={(event) => updateCloseDraft(item.key, "evidenceReference", event.target.value)}
+                            placeholder="Evidence reference / report ID"
+                            className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                          />
+                        )}
+                        {item.status === "NOT_APPLICABLE" && (
+                          <input
+                            required
+                            maxLength={1000}
+                            value={item.notes}
+                            onChange={(event) => updateCloseDraft(item.key, "notes", event.target.value)}
+                            placeholder="Explain why this is not applicable"
+                            className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                  <button type="button" onClick={() => setCloseModal(null)} className="rounded-lg px-3 py-2 text-xs text-slate-600 hover:bg-slate-100">Cancel</button>
+                  <button type="submit" disabled={savingCloseAction} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                    {savingCloseAction ? "Submitting..." : "Submit for Review"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {(closeModal.action === "review-close" || closeModal.action === "review-reopen") && (
+              <form onSubmit={(event) => submitPeriodCloseAction(event, "APPROVE")} className="space-y-4">
+                {closeModal.action === "review-reopen" && (
+                  <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                    Request reason: {closeModal.period.closeEvents?.[0]?.reason || "No reason recorded"}
+                  </p>
+                )}
+                {closeModal.action === "review-close" && (
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-bold text-slate-800">Submitted close evidence</h3>
+                    {(closeModal.period.closeEvents?.[0]?.checklistSnapshot?.items || []).map((item) => (
+                      <div key={item.key} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                        <span className="font-semibold">{item.label}: {item.status.replaceAll("_", " ")}</span>
+                        {item.evidenceReference && <span className="block text-slate-600">Evidence: {item.evidenceReference}</span>}
+                        {item.notes && <span className="block text-slate-600">Note: {item.notes}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <label className="block text-xs font-semibold text-slate-700">
+                  Review note (required when rejecting)
+                  <textarea
+                    value={closeReason}
+                    onChange={(event) => setCloseReason(event.target.value)}
+                    maxLength={1000}
+                    rows={3}
+                    className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-normal"
+                    placeholder="Record the decision context; a rejection requires a reason."
+                  />
+                </label>
+                <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                  <button type="button" onClick={() => setCloseModal(null)} className="rounded-lg px-3 py-2 text-xs text-slate-600 hover:bg-slate-100">Cancel</button>
+                  <button type="button" disabled={savingCloseAction} onClick={(event) => submitPeriodCloseAction(event, "REJECT")} className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-700 disabled:opacity-50">Reject</button>
+                  <button type="submit" disabled={savingCloseAction} className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Approve</button>
+                </div>
+              </form>
+            )}
+
+            {closeModal.action === "request-reopen" && (
+              <form onSubmit={(event) => submitPeriodCloseAction(event)} className="space-y-4">
+                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  Reopening is not effective until a different Admin reviews and approves the request.
+                </p>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Reopen reason *
+                  <textarea required value={closeReason} onChange={(event) => setCloseReason(event.target.value)} maxLength={1000} rows={4} className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-normal" />
+                </label>
+                <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                  <button type="button" onClick={() => setCloseModal(null)} className="rounded-lg px-3 py-2 text-xs text-slate-600 hover:bg-slate-100">Cancel</button>
+                  <button type="submit" disabled={savingCloseAction} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">Submit Reopen Request</button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* New Fiscal Year Modal */}
       {showCreateModal && (

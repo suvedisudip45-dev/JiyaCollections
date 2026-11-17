@@ -352,7 +352,7 @@ export const updateAdminProductionRequest = async (req, res) => {
           minimumOrderQuantity: normalized.totalQuantity,
           proposedDeliveryCost: 0,
           vatTreatment: "EXEMPT",
-          vatRate: 13,
+          vatRate: 0,
           vatInvoiceReference: null,
           approvedUnitCogs: null,
           approvedMinimumOrderQuantity: null,

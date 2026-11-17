@@ -2,8 +2,24 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
+import {
+  accountingDecimal,
+  addDecimals,
+  compareDecimals,
+  parseNprAmountString,
+  quantizeCurrencyAmount,
+  serializeAccountingValue,
+  subtractDecimals,
+} from "./accountingDecimal.js";
 
-const roundAmount = (value) => Number(new Prisma.Decimal(String(value || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
+const amountOrZero = (value, fieldName) => accountingDecimal(value ?? "0", fieldName);
+const sumAmounts = (rows, fieldName, selectAmount) => rows.reduce(
+  (total, row) => addDecimals(total, amountOrZero(selectAmount(row), fieldName)),
+  accountingDecimal("0"),
+);
+const nonNegativeAmount = (value) =>
+  compareDecimals(value, "0") > 0 ? accountingDecimal(value) : accountingDecimal("0");
+const serializeNprAmount = (value) => quantizeCurrencyAmount(value, "NPR").toFixed(2);
 const isManufacturerLine = (line, manufacturer) =>
   line.supplierId === manufacturer.id ||
   (line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturer.id);
@@ -60,9 +76,9 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
         },
       })
     : [];
-  let legacyProductionRecognized = 0;
-  let logisticsRecognized = 0;
-  let totalPaid = 0;
+  let legacyProductionRecognized = accountingDecimal("0");
+  let logisticsRecognized = accountingDecimal("0");
+  let totalPaid = accountingDecimal("0");
   let unattributedLegacyLineCount = 0;
   const documentedProductionSources = new Set(
     manufacturerDocuments
@@ -83,7 +99,10 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   for (const document of supplierCredits) {
     supplierCreditOriginalByReturn.set(
       document.sourceId,
-      (supplierCreditOriginalByReturn.get(document.sourceId) || 0) + Number(document.originalAmount || 0)
+      addDecimals(
+        supplierCreditOriginalByReturn.get(document.sourceId) || accountingDecimal("0"),
+        amountOrZero(document.originalAmount, "Manufacturer supplier credit amount"),
+      )
     );
   }
   for (const line of accountingLines) {
@@ -96,64 +115,99 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
     }
     if (!isManufacturerLine(line, manufacturer)) continue;
     const sourceType = line.journalEntry?.sourceType;
-    const netPayable = Number(line.credit || 0) - Number(line.debit || 0);
+    const netPayable = subtractDecimals(
+      amountOrZero(line.credit, "Manufacturer payable journal credit"),
+      amountOrZero(line.debit, "Manufacturer payable journal debit"),
+    );
     if ((sourceType === "MANUFACTURER_PRODUCTION" &&
          !documentedProductionSources.has(line.journalEntry?.sourceId)) ||
         (sourceType === "DELIVERY_SALE" && !documentedProductionSources.has(line.journalEntry?.sourceId))) {
-      legacyProductionRecognized += netPayable;
+      legacyProductionRecognized = addDecimals(legacyProductionRecognized, netPayable);
     }
     if (sourceType === "DELIVERY_RETURN") {
-      legacyProductionRecognized += netPayable + (supplierCreditOriginalByReturn.get(line.journalEntry?.sourceId) || 0);
+      legacyProductionRecognized = addDecimals(
+        legacyProductionRecognized,
+        netPayable,
+        supplierCreditOriginalByReturn.get(line.journalEntry?.sourceId) || accountingDecimal("0"),
+      );
     }
-    if (sourceType === "MANUFACTURER_LOGISTICS") logisticsRecognized += netPayable;
-    if (sourceType === "SUPPLIER_PAYMENT") totalPaid -= netPayable;
+    if (sourceType === "MANUFACTURER_LOGISTICS") {
+      logisticsRecognized = addDecimals(logisticsRecognized, netPayable);
+    }
+    if (sourceType === "SUPPLIER_PAYMENT") {
+      totalPaid = subtractDecimals(totalPaid, netPayable);
+    }
   }
-  const productionBillOriginal = productionBills.reduce((sum, document) => sum + Number(document.originalAmount || 0), 0);
-  const productionBillOutstanding = productionBills.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
-  const productionAllocatedPayments = productionBills.reduce((sum, document) => sum + Number(document.allocatedAmount || 0), 0);
-  const supplierCreditOutstanding = supplierCredits.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
+  const productionBillOriginal = sumAmounts(
+    productionBills,
+    "Manufacturer production bill amount",
+    (document) => document.originalAmount,
+  );
+  const productionBillOutstanding = sumAmounts(
+    productionBills,
+    "Manufacturer production bill balance",
+    (document) => document.remainingAmount,
+  );
+  const productionAllocatedPayments = sumAmounts(
+    productionBills,
+    "Manufacturer production bill allocation",
+    (document) => document.allocatedAmount,
+  );
+  const supplierCreditOutstanding = sumAmounts(
+    supplierCredits,
+    "Manufacturer supplier credit balance",
+    (document) => document.remainingAmount,
+  );
   const activeRequestBalance = (requestType) => settlementTotals
     .filter((entry) => ["PENDING", "PARTIALLY_PAID"].includes(entry.status) && entry.requestType === requestType)
-    .reduce((total, entry) => total.plus(
-      new Prisma.Decimal(String(entry._sum.amount || 0))
-        .minus(new Prisma.Decimal(String(entry._sum.paidAmount || 0))),
-    ), new Prisma.Decimal(0))
-    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  const pendingProduction = activeRequestBalance("PRODUCTION").toNumber();
-  const pendingLogistics = activeRequestBalance("LOGISTICS").toNumber();
+    .reduce((total, entry) => addDecimals(
+      total,
+      subtractDecimals(
+        amountOrZero(entry._sum.amount, "Manufacturer settlement request amount"),
+        amountOrZero(entry._sum.paidAmount, "Manufacturer settlement paid amount"),
+      ),
+    ), accountingDecimal("0"));
+  const pendingProduction = nonNegativeAmount(activeRequestBalance("PRODUCTION"));
+  const pendingLogistics = nonNegativeAmount(activeRequestBalance("LOGISTICS"));
   const paidFromSettlements = (requestType) => {
     const paidEntry = settlementTotals.find((item) => item.status === "PAID" && item.requestType === requestType);
     const partialEntry = settlementTotals.find((item) => item.status === "PARTIALLY_PAID" && item.requestType === requestType);
-    return Number(paidEntry?._sum.paidAmount ?? paidEntry?._sum.amount ?? 0)
-      + Number(partialEntry?._sum.paidAmount || 0);
+    return addDecimals(
+      amountOrZero(paidEntry?._sum.paidAmount ?? paidEntry?._sum.amount, "Manufacturer settled request amount"),
+      amountOrZero(partialEntry?._sum.paidAmount, "Manufacturer partially paid request amount"),
+    );
   };
   const settlementPaidLogistics = paidFromSettlements("LOGISTICS");
-  const pendingRequestTotal = pendingProduction + pendingLogistics;
-  const nonDocumentedProductionPayments = Math.max(0, totalPaid - productionAllocatedPayments - settlementPaidLogistics);
-  const productionRecognized = productionBillOriginal + legacyProductionRecognized;
-  const productionOutstanding = Math.max(
-    0,
-    productionBillOutstanding + legacyProductionRecognized - nonDocumentedProductionPayments
+  const pendingRequestTotal = addDecimals(pendingProduction, pendingLogistics);
+  const nonDocumentedProductionPayments = nonNegativeAmount(
+    subtractDecimals(subtractDecimals(totalPaid, productionAllocatedPayments), settlementPaidLogistics),
   );
-  const logisticsOutstanding = Math.max(0, logisticsRecognized - settlementPaidLogistics);
+  const productionRecognized = addDecimals(productionBillOriginal, legacyProductionRecognized);
+  const productionOutstanding = nonNegativeAmount(
+    subtractDecimals(addDecimals(productionBillOutstanding, legacyProductionRecognized), nonDocumentedProductionPayments),
+  );
+  const logisticsOutstanding = nonNegativeAmount(subtractDecimals(logisticsRecognized, settlementPaidLogistics));
   const completedPayments = totalPaid;
+  const outstandingPayable = nonNegativeAmount(addDecimals(productionOutstanding, logisticsOutstanding));
+  const productionPayableAvailable = nonNegativeAmount(subtractDecimals(productionOutstanding, pendingProduction));
+  const logisticsPayableAvailable = nonNegativeAmount(subtractDecimals(logisticsOutstanding, pendingLogistics));
 
   return {
     manufacturer,
-    totalManufacturedGoodsValue: roundAmount(productionRecognized),
-    logisticsReimbursements: roundAmount(logisticsRecognized),
-    pendingSettlementAmount: roundAmount(pendingRequestTotal),
-    completedPayments: roundAmount(completedPayments),
-    outstandingPayable: roundAmount(Math.max(0, productionOutstanding + logisticsOutstanding)),
-    supplierCreditOutstanding: roundAmount(supplierCreditOutstanding),
-    supplierCreditsRequireExplicitApplication: supplierCreditOutstanding > 0,
+    totalManufacturedGoodsValue: serializeNprAmount(productionRecognized),
+    logisticsReimbursements: serializeNprAmount(logisticsRecognized),
+    pendingSettlementAmount: serializeNprAmount(pendingRequestTotal),
+    completedPayments: serializeNprAmount(completedPayments),
+    outstandingPayable: serializeNprAmount(outstandingPayable),
+    supplierCreditOutstanding: serializeNprAmount(supplierCreditOutstanding),
+    supplierCreditsRequireExplicitApplication: compareDecimals(supplierCreditOutstanding, "0") > 0,
     unattributedLegacyLineCount,
     attributionReconciliationRequired: unattributedLegacyLineCount > 0,
-    productionOutstanding: roundAmount(productionOutstanding),
-    logisticsOutstanding: roundAmount(logisticsOutstanding),
-    productionPayableAvailable: roundAmount(Math.max(0, productionOutstanding - pendingProduction)),
-    logisticsPayableAvailable: roundAmount(Math.max(0, logisticsOutstanding - pendingLogistics)),
-    settlements,
+    productionOutstanding: serializeNprAmount(productionOutstanding),
+    logisticsOutstanding: serializeNprAmount(logisticsOutstanding),
+    productionPayableAvailable: serializeNprAmount(productionPayableAvailable),
+    logisticsPayableAvailable: serializeNprAmount(logisticsPayableAvailable),
+    settlements: serializeAccountingValue(settlements),
   };
 };
 
@@ -267,14 +321,20 @@ export const reconcileManufacturerLogisticsShipmentPayments = async ({ manufactu
   };
 };
 
-export const normalizeSettlementRequest = ({ requestType, amount, notes }) => {
+export const normalizeSettlementRequest = ({ requestType, amount, notes } = {}) => {
   const type = String(requestType || "PRODUCTION").trim().toUpperCase();
-  const normalizedAmount = new Prisma.Decimal(String(amount ?? ""));
   const normalizedNotes = String(notes || "").trim();
   if (!["PRODUCTION", "LOGISTICS"].includes(type)) {
     throw Object.assign(new Error("Settlement type must be PRODUCTION or LOGISTICS."), { statusCode: 400 });
   }
-  if (!normalizedAmount.isFinite() || !normalizedAmount.greaterThan(0)) {
+  let normalizedAmount;
+  try {
+    normalizedAmount = parseNprAmountString(amount, "Settlement amount", { allowZero: false });
+  } catch (error) {
+    if (error.code !== "INVALID_DECIMAL_INPUT" && error.code !== "DECIMAL_OUT_OF_RANGE" &&
+        error.code !== "UNSUPPORTED_DECIMAL_PRECISION") {
+      throw error;
+    }
     throw Object.assign(new Error("Settlement amount must be a positive valid amount."), { statusCode: 400 });
   }
   if (normalizedNotes.length > 2000) {

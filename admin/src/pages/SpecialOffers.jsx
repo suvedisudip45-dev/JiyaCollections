@@ -1,13 +1,20 @@
-/* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const DEFAULT_THEME_COLOR = "#7c3aed";
 const DEFAULT_THEME_COLOR_SECONDARY = "#f59e0b";
 
 const SpecialOffers = ({ token }) => {
+  const { can } = usePermissions();
+  const canList = can("offer:list");
+  const canListProducts = can("product:list_admin");
+  const canCreate = can("offer:create");
+  const canUpdate = can("offer:update");
+  const canDelete = can("offer:delete");
   const [offers, setOffers] = useState([]);
   const [productsList, setProductsList] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -27,31 +34,31 @@ const SpecialOffers = ({ token }) => {
   const [isActive, setIsActive] = useState(true);
   const [searchProduct, setSearchProduct] = useState("");
 
-  const fetchOffersAndProducts = async () => {
+  const fetchOffersAndProducts = useCallback(async () => {
     setLoading(true);
     try {
-      const [offersRes, prodsRes] = await Promise.all([
-        axios.get(backendUrl + "/api/offer/list", { headers: { token } }),
-        axios.get(backendUrl + "/api/product/list", { headers: { token }, params: { limit: 50 } }),
-      ]);
-
-      if (offersRes.data.success) {
-        setOffers(offersRes.data.offers || []);
+      if (canList) {
+        const offersRes = await axios.get(backendUrl + "/api/offer/list", { headers: { token } });
+        if (offersRes.data.success) setOffers(offersRes.data.offers || []);
       }
-      if (prodsRes.data.success) {
-        setProductsList(prodsRes.data.products || []);
+      if ((canCreate || canUpdate) && canListProducts) {
+        const prodsRes = await axios.get(backendUrl + "/api/product/list", {
+          headers: { token },
+          params: { limit: 50 },
+        });
+        if (prodsRes.data.success) setProductsList(prodsRes.data.products || []);
       }
     } catch (err) {
       console.error(err);
-      toast.error("Failed to load offers");
+      toast.error(err.response?.data?.message || "Failed to load offer data.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, canList, canCreate, canUpdate, canListProducts]);
 
   useEffect(() => {
-    fetchOffersAndProducts();
-  }, []);
+    if (token && (canList || canCreate || canUpdate)) fetchOffersAndProducts();
+  }, [token, canList, canCreate, canUpdate, fetchOffersAndProducts]);
 
   const openNewModal = () => {
     setEditingId(null);
@@ -111,6 +118,10 @@ const SpecialOffers = ({ token }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (editingId ? !canUpdate : !canCreate) {
+      toast.error("You do not have permission to save this offer.");
+      return;
+    }
     if (!title || !startDate || !endDate) {
       toast.error("Please fill in campaign title, start date, and end date.");
       return;
@@ -161,6 +172,10 @@ const SpecialOffers = ({ token }) => {
   };
 
   const handleDelete = async (id) => {
+    if (!canDelete) {
+      toast.error("You do not have permission to delete offers.");
+      return;
+    }
     if (!window.confirm("Are you sure you want to delete this festival offer?")) return;
     try {
       const res = await axios.post(backendUrl + "/api/offer/delete", { id }, { headers: { token } });
@@ -213,19 +228,22 @@ const SpecialOffers = ({ token }) => {
             Create automated holiday promotions (Dashain, Tihar, Festive Deals) with bright celebratory themes, live countdowns, and auto-expiry.
           </p>
         </div>
-        <button
-          onClick={openNewModal}
-          className="bg-violet-600 hover:bg-violet-700 text-white font-semibold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-xs transition-all"
-        >
-          + Create Festival Offer
-        </button>
+        {canCreate && (
+          <button
+            onClick={openNewModal}
+            className="bg-violet-600 hover:bg-violet-700 text-white font-semibold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-xs transition-all"
+          >
+            + Create Festival Offer
+          </button>
+        )}
       </div>
 
       {/* Campaigns List */}
       <div className="space-y-4">
+        {!canList && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Offer listing permission is required to browse existing campaigns.</p>}
         {loading ? (
           <p className="text-sm text-gray-500 py-6 text-center">Loading campaigns...</p>
-        ) : offers.length === 0 ? (
+        ) : canList && offers.length === 0 ? (
           <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-300">
             <svg className="w-10 h-10 text-gray-400 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
@@ -235,7 +253,7 @@ const SpecialOffers = ({ token }) => {
               Click &quot;+ Create Festival Offer&quot; to launch a new time-limited festival campaign.
             </p>
           </div>
-        ) : (
+        ) : canList && (
           offers.map((offer) => {
             const status = getCampaignStatus(offer);
             let pIds = [];
@@ -290,18 +308,18 @@ const SpecialOffers = ({ token }) => {
                 </div>
 
                 <div className="flex items-center gap-2 self-end md:self-auto">
-                  <button
+                  {canUpdate && <button
                     onClick={() => openEditModal(offer)}
                     className="px-3.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-semibold rounded-lg transition-colors"
                   >
                     Edit
-                  </button>
-                  <button
+                  </button>}
+                  {canDelete && <button
                     onClick={() => handleDelete(offer.id)}
                     className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-lg border border-rose-200 transition-colors"
                   >
                     Delete
-                  </button>
+                  </button>}
                 </div>
               </div>
             );
@@ -310,7 +328,7 @@ const SpecialOffers = ({ token }) => {
       </div>
 
       {/* Modal for Create/Edit */}
-      {showModal && (
+      {showModal && (editingId ? canUpdate : canCreate) && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border">
             <div className="flex justify-between items-center pb-3 border-b">

@@ -1,14 +1,23 @@
 /* eslint-disable react/prop-types */
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { X } from "lucide-react";
 import { backendUrl } from "../App";
+import { usePermissions } from "../auth/PermissionsContext";
+import {
+  addDecimalStrings,
+  compareDecimalStrings,
+  formatNprAmount,
+  subtractDecimalStrings,
+} from "../utils/decimalDisplay";
 
 const PAGE_SIZE = 25;
 const BANK_TEXT_PATTERN = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’&()-]*$/u;
 const BANK_ACCOUNT_NUMBER_PATTERN = /^\d+$/;
-const money = (value) => Number(value || 0).toLocaleString("en-NP", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const AMOUNT_PATTERN = /^\d{1,18}(?:\.\d{1,2})?$/;
+const money = formatNprAmount;
+const absoluteAmount = (value) => String(value ?? "0").replace(/^-/, "");
 const kathmanduDateInput = (date) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kathmandu",
@@ -29,6 +38,8 @@ const formatDeliveredAt = (value) => value
   : "—";
 
 const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
+  const { can } = usePermissions();
+  const canCorrectSettlement = can("finance:payable_settle");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(() => kathmanduDateInput(new Date()));
   const [candidates, setCandidates] = useState([]);
@@ -48,14 +59,22 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
   const [bankDetails, setBankDetails] = useState({ bankName: "", bankAccountName: "", bankAccountNumber: "" });
   const [resolutionBatchId, setResolutionBatchId] = useState("");
   const [resolutionDraft, setResolutionDraft] = useState(null);
+  const [correctionBatchId, setCorrectionBatchId] = useState("");
+  const [correctionMode, setCorrectionMode] = useState("RETURNED_FUNDS");
+  const [correctionEvidence, setCorrectionEvidence] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const correctionRequest = useRef(null);
 
   const selected = useMemo(() => [...selectedRows.values()], [selectedRows]);
   const totals = useMemo(() => selected.reduce((sum, row) => ({
-    cod: sum.cod + Number(row.codAmount || 0),
-    fee: sum.fee + Number(row.carrierFee || 0),
-    net: sum.net + Number(row.calculatedNetDeposit || 0),
-  }), { cod: 0, fee: 0, net: 0 }), [selected]);
-  const variance = Number((Number(actualDeposit || 0) - totals.net).toFixed(2));
+    cod: addDecimalStrings(sum.cod, String(row.codAmount ?? "0")),
+    fee: addDecimalStrings(sum.fee, String(row.carrierFee ?? "0")),
+    net: addDecimalStrings(sum.net, String(row.calculatedNetDeposit ?? "0")),
+  }), { cod: "0", fee: "0", net: "0" }), [selected]);
+  const variance = actualDeposit === "" || AMOUNT_PATTERN.test(actualDeposit)
+    ? subtractDecimalStrings(actualDeposit || "0", totals.net)
+    : "0";
+  const hasVariance = compareDecimalStrings(variance, "0") !== 0;
   const allCurrentPageSelected = candidates.length > 0 && candidates.every((row) => selectedRows.has(row.id));
   const requestAlreadySent = selected.some((row) => row.ncmTicketId != null || row.settlementState === "REQUESTED");
   const bankNameValid = BANK_TEXT_PATTERN.test(bankDetails.bankName.trim()) && bankDetails.bankName.trim().length <= 191;
@@ -170,8 +189,9 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
   const submitConfirmation = async () => {
     if (!selected.length || selected.length > 100) return toast.error("Select between 1 and 100 delivered orders.");
     if (!financialAccountId) return toast.error("Select the treasury account that received the NCM transfer.");
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(actualDeposit)) return toast.error("Enter the actual NCM deposit to the nearest paisa.");
-    if (variance !== 0 && !varianceReason.trim()) return toast.error("Explain the difference between the calculated and actual NCM deposit.");
+    if (!AMOUNT_PATTERN.test(actualDeposit)) return toast.error("Enter the actual NCM deposit to the nearest paisa.");
+    if (!notes.trim()) return toast.error("Explain why this NCM remittance should be recorded.");
+    if (hasVariance && !varianceReason.trim()) return toast.error("Explain the difference between the calculated and actual NCM deposit.");
     const ticketIds = [...new Set(selected.map((row) => row.ncmTicketId).filter((id) => id != null))];
     setSubmitting(true);
     try {
@@ -181,14 +201,15 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
         actualNetDeposit: actualDeposit,
         reference,
         notes,
-        varianceType: variance !== 0 ? varianceType : null,
-        varianceReason: variance !== 0 ? varianceReason.trim() : null,
+        varianceType: hasVariance ? varianceType : null,
+        varianceReason: hasVariance ? varianceReason.trim() : null,
         startDate,
         endDate,
         ncmTicketId: ticketIds.length === 1 ? ticketIds[0] : null,
+        idempotencyKey: window.crypto.randomUUID(),
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "NCM settlement confirmation failed.");
-      toast.success(response.data.message || "NCM settlement batch recorded.");
+      toast.info(response.data.message || "NCM remittance submitted for independent Admin approval.");
       setSelectedRows(new Map());
       setActualDeposit("");
       setReference("");
@@ -204,12 +225,12 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
   };
 
   const openResolution = (batch) => {
-    const remaining = Number(batch.remainingVarianceAmount ?? Math.abs(Number(batch.varianceAmount)));
-    const action = Number(batch.varianceAmount) < 0 ? "COLLECT_SHORTFALL" : "APPLY_OVERPAYMENT";
+    const remaining = String(batch.remainingVarianceAmount ?? absoluteAmount(batch.varianceAmount));
+    const action = compareDecimalStrings(batch.varianceAmount, "0") < 0 ? "COLLECT_SHORTFALL" : "APPLY_OVERPAYMENT";
     setResolutionBatchId(batch.id);
     setResolutionDraft({
       action,
-      amount: remaining.toFixed(2),
+      amount: remaining,
       reference: "",
       notes: "",
       idempotencyKey: globalThis.crypto?.randomUUID?.() || `ncm-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -218,7 +239,7 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
 
   const submitVarianceResolution = async (batch) => {
     if (!resolutionDraft) return;
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(resolutionDraft.amount) || Number(resolutionDraft.amount) <= 0) {
+    if (!AMOUNT_PATTERN.test(resolutionDraft.amount) || compareDecimalStrings(resolutionDraft.amount, "0") <= 0) {
       return toast.error("Enter a positive resolution amount with up to two decimal places.");
     }
     if (!resolutionDraft.reference.trim() || !resolutionDraft.notes.trim()) {
@@ -238,12 +259,48 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
         { headers: { token } },
       );
       if (!response.data?.success) throw new Error(response.data?.message || "NCM variance resolution failed.");
-      toast.success(response.data.message || "NCM variance resolution recorded.");
+      toast.info(response.data.message || "NCM variance resolution submitted for independent Admin approval.");
       setResolutionBatchId("");
       setResolutionDraft(null);
       await loadHistoryAndAccounts();
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "NCM variance resolution failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitBatchCorrection = async (batch) => {
+    if (!correctionMode || !correctionEvidence.trim() || !correctionReason.trim()) {
+      return toast.error("Choose a correction type and provide evidence and a reason.");
+    }
+    setSubmitting(true);
+    try {
+      const requestPayload = {
+        type: "NCM_COD",
+        recordId: batch.id,
+        cashTransactionId: batch.cashTransactionId,
+        correctionMode,
+        evidenceReference: correctionEvidence.trim(),
+        revertReason: correctionReason.trim(),
+      };
+      const signature = JSON.stringify(requestPayload);
+      if (correctionRequest.current?.signature !== signature) {
+        correctionRequest.current = { signature, key: crypto.randomUUID() };
+      }
+      const response = await axios.post(`${backendUrl}/api/finance/revert-settlement`, {
+        ...requestPayload,
+        idempotencyKey: correctionRequest.current.key,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "NCM batch correction failed.");
+      toast.info(response.data.message || "NCM settlement correction submitted for approval.");
+      setCorrectionBatchId("");
+      setCorrectionEvidence("");
+      setCorrectionReason("");
+      await Promise.all([loadCandidates(pagination?.page || 1), loadHistoryAndAccounts()]);
+      onSettled?.();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "NCM batch correction failed.");
     } finally {
       setSubmitting(false);
     }
@@ -341,13 +398,13 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                   </select>
                 </label>
                 <label className="text-xs font-semibold text-slate-600">Actual NCM deposit (NPR)
-                  <input type="number" min="0.01" step="0.01" value={actualDeposit} onChange={(event) => setActualDeposit(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+                  <input type="text" inputMode="decimal" value={actualDeposit} onChange={(event) => setActualDeposit(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
                 </label>
                 <label className="text-xs font-semibold text-slate-600">Bank reference
                   <input value={reference} onChange={(event) => setReference(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
                 </label>
                 <label className="text-xs font-semibold text-slate-600">Variance type
-                  <select value={varianceType} onChange={(event) => setVarianceType(event.target.value)} disabled={variance === 0} className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100">
+                  <select value={varianceType} onChange={(event) => setVarianceType(event.target.value)} disabled={!hasVariance} className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100">
                     <option value="DISCOUNT_OR_PROMOTION">Discount / promotion</option>
                     <option value="PENALTY_OR_FINE">Penalty / fine</option>
                     <option value="OTHER">Other NCM adjustment</option>
@@ -358,12 +415,12 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                 <label className="text-xs font-semibold text-slate-600">Notes
                   <input value={notes} onChange={(event) => setNotes(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
                 </label>
-                <label className="text-xs font-semibold text-slate-600">Explain variance {variance !== 0 ? "(required)" : "(only needed for a difference)"}
-                  <input value={varianceReason} onChange={(event) => setVarianceReason(event.target.value)} disabled={variance === 0} placeholder="e.g. NCM statement deduction for campaign offer" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
+                <label className="text-xs font-semibold text-slate-600">Explain variance {hasVariance ? "(required)" : "(only needed for a difference)"}
+                  <input value={varianceReason} onChange={(event) => setVarianceReason(event.target.value)} disabled={!hasVariance} placeholder="e.g. NCM statement deduction for campaign offer" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
                 </label>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-emerald-50 px-3 py-2 text-sm">
-                <div>Calculated net: <strong>NPR {money(totals.net)}</strong> · Actual: <strong>NPR {money(actualDeposit)}</strong> · Difference: <strong className={variance < 0 ? "text-rose-700" : "text-emerald-700"}>{variance < 0 ? "−" : "+"} NPR {money(Math.abs(variance))}</strong></div>
+                <div>Calculated net: <strong>NPR {money(totals.net)}</strong> · Actual: <strong>NPR {money(actualDeposit)}</strong> · Difference: <strong className={compareDecimalStrings(variance, "0") < 0 ? "text-rose-700" : "text-emerald-700"}>{compareDecimalStrings(variance, "0") < 0 ? "−" : "+"} NPR {money(absoluteAmount(variance))}</strong></div>
                 <button type="button" onClick={submitConfirmation} disabled={submitting || !selected.length || !financialAccountId || !actualDeposit} className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{submitting ? "Recording…" : `Record one batch for ${selected.length} deliveries`}</button>
               </div>
               <p className="text-xs text-slate-500">A difference is posted to NCM suspense for follow-up; it is not automatically written off as an expense or income.</p>
@@ -378,8 +435,8 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                   <thead className="text-slate-500"><tr><th className="py-2">Settled</th><th>Deliveries</th><th className="text-right">Expected</th><th className="text-right">Received</th><th className="text-right">Difference</th><th>Status</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {batches.map((batch) => {
-                      const remaining = Number(batch.remainingVarianceAmount ?? Math.abs(Number(batch.varianceAmount)));
-                      const hasOpenVariance = remaining > 0;
+                      const remaining = String(batch.remainingVarianceAmount ?? absoluteAmount(batch.varianceAmount));
+                      const hasOpenVariance = compareDecimalStrings(remaining, "0") > 0;
                       return (
                         <Fragment key={batch.id}>
                           <tr key={batch.id}>
@@ -389,14 +446,57 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                             <td className="text-right">NPR {money(batch.actualNetDeposit)}</td>
                             <td className="text-right">NPR {money(batch.varianceAmount)}</td>
                             <td>
-                              {hasOpenVariance
+                              {batch.status === "REVERSED"
+                                ? "Reversed with source accounting restored"
+                                : hasOpenVariance
                                 ? `${batch.status === "VARIANCE_PARTIALLY_RESOLVED" ? "Partially resolved" : "Open"} · NPR ${money(remaining)}`
-                                : Number(batch.varianceAmount) === 0 ? "Matched" : "Resolved"}
+                                : compareDecimalStrings(batch.varianceAmount, "0") === 0 ? "Matched" : "Resolved"}
+                              {canCorrectSettlement && batch.status !== "REVERSED" && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCorrectionBatchId(correctionBatchId === batch.id ? "" : batch.id);
+                                    setCorrectionMode("RETURNED_FUNDS");
+                                    setCorrectionEvidence("");
+                                    setCorrectionReason("");
+                                  }}
+                                  className="ml-2 rounded border border-amber-300 px-2 py-1 text-[10px] font-semibold text-amber-800 hover:bg-amber-50"
+                                >
+                                  Correct
+                                </button>
+                              )}
                             </td>
                           </tr>
+                          {correctionBatchId === batch.id && (
+                            <tr key={`${batch.id}-correction`}>
+                              <td colSpan={6} className="py-2">
+                                <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 sm:grid-cols-2">
+                                  <label className="text-xs font-semibold text-slate-700">Correction type
+                                    <select value={correctionMode} onChange={(event) => setCorrectionMode(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2">
+                                      <option value="RETURNED_FUNDS">Funds were returned</option>
+                                      <option value="VOID_NOT_EXECUTED">Remittance never arrived</option>
+                                    </select>
+                                  </label>
+                                  <label className="text-xs font-semibold text-slate-700">Bank / provider evidence reference
+                                    <input value={correctionEvidence} onChange={(event) => setCorrectionEvidence(event.target.value)} maxLength={191} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-2" />
+                                  </label>
+                                  <label className="text-xs font-semibold text-slate-700 sm:col-span-2">Reason for correction
+                                    <textarea value={correctionReason} onChange={(event) => setCorrectionReason(event.target.value)} maxLength={2000} rows={2} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-2" />
+                                  </label>
+                                  <div className="flex items-center justify-between gap-2 sm:col-span-2">
+                                    <p className="text-[11px] text-amber-900">This reverses linked journals and allocations, restores delivery settlement states, and compensates treasury. Use only after checking bank evidence.</p>
+                                    <div className="flex shrink-0 gap-2">
+                                      <button type="button" onClick={() => setCorrectionBatchId("")} disabled={submitting} className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Cancel</button>
+                                      <button type="button" onClick={() => submitBatchCorrection(batch)} disabled={submitting || !correctionEvidence.trim() || !correctionReason.trim()} className="rounded bg-amber-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{submitting ? "Correcting…" : "Confirm correction"}</button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
                           {batch.varianceResolutions?.map((resolution) => (
                             <tr key={resolution.id} className="bg-slate-50 text-slate-600">
-                              <td className="py-2 pl-4" colSpan={2}>{resolution.action.replace(/_/g, " ")} · {formatDeliveredAt(resolution.createdAt)}</td>
+                              <td className="py-2 pl-4" colSpan={2}>{resolution.action.replace(/_/g, " ")} · {formatDeliveredAt(resolution.createdAt)}{resolution.reversedAt ? ` · Reversed ${formatDeliveredAt(resolution.reversedAt)}` : ""}</td>
                               <td className="text-right">NPR {money(resolution.amount)}</td>
                               <td colSpan={2}>{resolution.reference || "No reference"} · Journal {resolution.journalEntryId}</td>
                               <td>{resolution.cashTransactionId ? `Cash ${resolution.cashTransactionId}` : "Applied to open COD"}</td>
@@ -413,7 +513,7 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                                 {resolutionBatchId === batch.id && resolutionDraft ? (
                                   <div className="grid gap-2 rounded-md bg-amber-50 p-3 sm:grid-cols-2 lg:grid-cols-6">
                                     <label className="text-xs font-semibold text-slate-600">Action
-                                      {Number(batch.varianceAmount) > 0 ? (
+                                      {compareDecimalStrings(batch.varianceAmount, "0") > 0 ? (
                                         <select value={resolutionDraft.action} onChange={(event) => setResolutionDraft((current) => ({ ...current, action: event.target.value, idempotencyKey: globalThis.crypto?.randomUUID?.() || `ncm-${Date.now()}-${Math.random().toString(16).slice(2)}` }))} className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-2">
                                           <option value="APPLY_OVERPAYMENT">Apply to open NCM COD</option>
                                           <option value="REFUND_OVERPAYMENT">Refund NCM</option>

@@ -159,18 +159,18 @@ const FinanceDashboard = ({ token }) => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-200/60">
-              Enterprise Finance
+            <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-amber-50 text-amber-800 rounded-lg border border-amber-200/60">
+              Operational analytics
             </span>
-            <span className="text-xs font-medium text-slate-400">
-              QuickBooks &amp; Xero Standard
+            <span className="text-xs font-medium text-slate-500">
+              Estimates are not posted GL
             </span>
           </div>
           <h1 className="text-2xl font-black text-slate-900 mt-1">
             Financial &amp; Executive Analytics
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time ROI, profit margins, break-even simulation, and live assets valuation.
+            Operational analytics and estimates; posted journal totals are shown separately.
           </p>
         </div>
 
@@ -230,6 +230,23 @@ const FinanceDashboard = ({ token }) => {
           </div>
         </section>
       )}
+
+      <section
+        role="note"
+        aria-label="Operational estimate notice"
+        className="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4"
+      >
+        <div>
+          <h2 className="text-sm font-bold text-amber-950">Operational metrics below are estimates, not posted GL</h2>
+          <p className="mt-1 max-w-4xl text-xs text-amber-900">
+            ROI, profitability, break-even, and net-worth figures use operational records and may differ from posted journal totals.
+            Activity metrics use the selected BS period; the asset and liability snapshot reflects current operational balances.
+          </p>
+        </div>
+        <Link to="/statements" className="text-xs font-bold text-amber-950 underline underline-offset-2">
+          View posted financial statements
+        </Link>
+      </section>
 
       {/* TOP ROW: EXECUTIVE METRICS CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

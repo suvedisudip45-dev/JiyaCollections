@@ -92,11 +92,11 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/order` | Orders, admin order lookup, customer order reads, admin create order |
 | `/api/order/admin/control/:orderId` | Permission-protected Admin order detail with bounded split-shipment, carrier, cash/accounting, and audit history; `POST /:orderId/cancel` permits audited unpaid pre-handoff cancellation |
 | `/api/order-assignment/admin/control` | Permission-protected Admin failed-order assignment override; reasoned and ledger-reserved |
-| `/api/returns` | Customer returns, supplier returns, exchange lifecycle |
+| `/api/returns` | Customer and supplier return workflows; Admin supplier-credit reconciliation, eligible later-bill lookup, and audited credit application; exchange lifecycle |
 | `/api/shipping` | Shipping config and dynamic rate calculation; checkout quotes return the stock-eligible probable distributor and fail rather than invent a generic rate when no shipping origin can be resolved |
 | `/api/customer` | Customer-level operational features |
 | `/api/finance` | Finance domain endpoints |
-| `/api/accounting` | Accounting, journals, fiscal periods, COA |
+| `/api/accounting` | Accounting, journals, fiscal periods, COA, and independent maker-checker approval requests/reviews |
 | `/api/manufacturer` | Manufacturer management |
 | `/api/manufacturer-inventory` | Manufacturer stock and inventory adjustments |
 | `/api/assignment` and `/api/order-assignment` | Assignment flow |
@@ -105,6 +105,51 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/features` | Public feature flags and admin-only platform feature updates |
 | `/api/storefront-content` | Public storefront announcement, shared header/footer logo, card, footer, About, and terms content with permission-protected admin updates/image uploads |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
+
+Admin direct-order creation revalidates legacy product stock and commits the
+order, optional paid-order journal, stock deductions, and `StockLog` audit rows
+in one serializable transaction. Distributor allocation follows the commit and
+may remain pending; it is not part of that transaction.
+
+Accounting period close uses `/api/accounting/period-close/*` submit, review,
+and reopen routes with separate RBAC permissions. The service validates the
+monthly checklist and evidence references, prohibits self-review, changes
+period status only after approval, stores sequenced close events, and writes
+the system audit outbox in the same serializable transaction. Fiscal-year close
+and reopen require the underlying monthly approvals and use transaction-scoped
+journal posting. The legacy `/toggle-period` endpoint now rejects direct status
+changes. `GET /api/accounting/period-close/:periodId/pack` exports a SHA-256
+content-hashed internal JSON snapshot only for an approved period that remains
+closed, and records the export hash in the audit outbox. Evidence references
+are not retrieved or validated; the export is not a digital signature or
+statutory report.
+
+Financial action requests are listed at `/api/accounting/approval-requests` and
+reviewed through `/api/accounting/approval-requests/review`, with separate
+`accounting:approval_read` and `accounting:approval_review` permissions. A
+different active Admin must review each request before the financial mutation
+executes. The queue currently covers journals/opening balances/reversals, COA
+and Treasury setup, VAT actions, fixed-asset write-offs, distributor refund
+payouts/netting, settlement corrections, NCM remittance/variance actions,
+supplier-return postings, manufacturer and collaboration credit applications,
+loan repayments, and share buybacks. These entry points use the queue rather
+than executing directly. Deployment remains gated on applying the maker-checker
+migration in an isolated database and completing UAT.
+
+Invoice-backed customer-receipt corrections identify the receipt `CashTransaction`
+ID in this same approval workflow. The reviewer must be independent of the
+request maker; execution reverses the linked customer-payment journal and each
+invoice allocation, debits the original Treasury by actual cash received, and
+records a full-only reversal. The additive allocation self-link migration is
+unapplied, and persisted reversal behavior remains unvalidated.
+
+`GET /api/finance/receipt-reconciliation` is a read-only, paginated internal
+check behind `finance:treasury_read`. It compares customer receipt records with
+their allocations, current invoice balances, Treasury mapping, customer-payment
+journals, stored reference reuse, and reversal links. The current schema has no
+bank-statement line or independent receipt-evidence source, so supplied payment
+references remain unverified and the endpoint cannot report bank settlement,
+unmatched statement lines, or external date/amount/currency differences.
 
 `/api/finance/paper-bill-books`, `/paper-bill-allocations`, and
 `/paper-bill-orders` provide Admin bill-book/range management and date-filtered
@@ -347,6 +392,21 @@ Older distributor settlement requests retain their legacy payout lifecycle;
 new Admin-issued requests reconcile COD and posted distributor payable
 sources together through the party subledger.
 
+Generic supplier-return credit notes are applied only to later-issued payable
+bills for the same stable VENDOR party and currency. The serializable application
+updates both documents, records paired offset allocations against the existing
+return journal, and writes audit evidence without posting a second journal.
+Admin can read a supplier-return reconciliation report; it only classifies
+matched and missing/duplicate legacy evidence and does not backfill or reclassify
+old supplier receivables.
+
+Marketing-partner fee credits can be offset against a later open collaboration
+invoice for the same partner and currency. The Admin endpoint is protected by
+`finance:receivable_collect`; it verifies both source documents and their
+posted 1130 journals, applies paired allocations in a serializable transaction,
+and writes audit evidence without posting a second journal. Cash refunds of
+unapplied partner credits are not part of this flow.
+
 Manufacturer request availability reserves the remaining unpaid amount of
 both `PENDING` and `PARTIALLY_PAID` requests. Manufacturer finance history is
 available through a paginated, manufacturer-scoped endpoint, while Admin can
@@ -355,6 +415,13 @@ each request with its payout attempts, treasury account, transfer and bank
 evidence references, and the linked cash transaction and payment journal when
 posted; this uses payout idempotency keys rather than ambiguous manufacturer-
 wide cash references.
+
+The settlement-request creation route uses the shared Decimal summary for exact
+payable eligibility and requires a client-supplied stable idempotency key.
+Request creation, availability validation, and audit-outbox evidence are
+transactional; exact retries reuse the existing request and changed payloads
+conflict. This increment has mock unit-test evidence only; it does not establish
+persisted concurrency or source-to-journal reconciliation.
 
 Manual local stock-transfer dispatch posts delivery expense 6430 and manufacturer
 payable 2160 together with an idempotent shipment-linked payable bill.
@@ -372,8 +439,31 @@ For accounts receivable, it separately compares collaboration-fee invoice
 totals, their receivable documents, and the 1130 invoice debits. Existing
 document allocations are checked against the document balances and their linked
 posted 1130 receipt journals. This does not establish a collaboration
-collection workflow, cover unlinked or legacy collections, reconcile
-credits/reversals, or complete the 1130 control.
+collection workflow, cover unlinked or legacy collections, or complete the
+1130 control. Return credits that exceed current-period fees are posted as
+signed collaboration credit notes; zero-net adjustments issue without a
+zero-value document or journal. Verified credit notes can be offset against
+later open invoices for the same partner and currency through the
+finance-controlled application flow. Cash refund of an unapplied credit remains
+unsupported.
+
+Marketing CPA redemption posts expense 6420 and partner payable 2170 with a
+source-linked payable bill in the same transaction. The partner
+`BENEFIT_REDEEMED` event stores the captured CPA rate and redemption reference;
+the accounting poster uses that captured rate. Accounting Health compares
+these source events with journals and bills to flag missing/duplicate records,
+reversals, and mismatches. Older events without rate metadata remain unknown;
+customer-claimed checkout rewards are not CPA accrual evidence. Admin Payables
+lists these bills and supports evidence-backed cash-only payouts through
+`MARKETING_CPA_PAYABLE`: initiation reserves an NPR mapped-Treasury balance;
+confirmation atomically debits 2170, credits the mapped Treasury GL account,
+records the cash movement and bill allocation, and audits the result. A failed
+payout releases its reservation. Correcting a confirmed payout requires
+returned-funds evidence and posts a linked reversal; it cannot be voided as
+unexecuted. This flow does not calculate or clear TDS/withholding, discounts,
+or fines; any amount not paid in cash remains open. The legacy
+`MarketingPartnerSettlement` model is not used or backfilled. Historical
+settlements and the full 2170 control remain unreconciled.
 
 Manufacturer-to-distributor stock-transfer booking resolves the destination
 branch from the distributor profile and validates origin and destination
@@ -385,6 +475,8 @@ branch and status fields displayed in portal shipment views.
 Manufacturer stock quantity edits are captured in the `ManufacturerInventoryMovement` ledger per size/color variant. Each stock-in or stock-out event retains before/after quantity, signed delta, required reason, optional note, authenticated actor, and timestamp in the same database transaction as the current inventory update. This follows established inventory audit practice of retaining adjustment history instead of relying on the latest on-hand balance alone.
 
 Factory production receipts are not storefront inventory. `Product.stockQuantity` and each product variant's available quantity are synchronized only from unreserved balances at active distributor locations. Production completion therefore leaves storefront stock unchanged; dispatched stock remains unavailable while in transit; confirmed good receipt at a distributor makes it available. Allocation reserves distributor balances, and delivery/direct hub fulfillment consumes the reservation and on-hand balance through auditable ledger movements. Cancellation releases the distributor reservation. These transitions, direct hub sales, and evidence-backed distributor stock decreases recalculate the product projection. Startup reconciles the product projection from distributor ledger balances before the API begins listening.
+
+The legacy `POST /api/finance/record-operating-expense` accepts decimal-string monetary values and writes an `OperatingExpense` source, paid/payable split, Treasury cash movement, supplier payable and BILL allocation where applicable, journal, and audit event in one transaction. Exact idempotent retries reuse the source; changed-payload reuse conflicts. The posted-GL cash-flow report uses Decimal aggregation and decimal-string serialization. Selected expense/payable fields use fixed-precision Decimal storage under the P4.2 migration, but finance dashboard, tax-estimate, legacy operational cash-flow, and legacy settlement-history Number conversions, historical conversion evidence, and full source-to-subledger/journal reconciliation remain open. The staged migration was verified only in isolated `clothing_test`; it is not deployment evidence.
 
 ## 4. Request / Response Lifecycle
 
@@ -427,6 +519,10 @@ The schema includes:
 - `AuthAccountRoleMapping`
 
 Authorization is enforced through a centralized `authorize` middleware that resolves account permissions from the RBAC service and checks required permission strings such as `product:create`, `order:list_admin`, `delivery:admin_list`, `access:roles_read`, and `marketing_card:admin_manage`.
+
+The built-in broad `ADMIN` role is synchronized by the seed for the active account identified by the required `ADMIN_EMAIL`; active role mappings for other Admin accounts are deactivated while their custom mappings remain. The seed fails closed if the configured owner is missing or inactive, and records role changes in both access-management audit history and the system audit outbox. Review existing Admin assignments and back up the database before running this seed in an established environment. Custom roles cannot receive the `all:function` authorization bypass.
+
+The Admin UI additionally gates individual category, offer, review, and journal-reversal actions by their matching permission. These controls are only UX; backend route authorization remains authoritative. Generic journal reversal requires an authenticated actor and a reason and is restricted to `MANUAL_JOURNAL` entries, so source-backed transactions must use their originating correction workflow.
 
 The admin-only `platform:features_manage` permission protects changes to the singleton `PlatformFeatureConfig`. The public read endpoint supplies flags for storefront, marketing-partner, and distributor portals. Loyalty, marketing cards, and letters default to enabled for compatibility. Backend order reward logic and feature-sensitive card, loyalty, letter, and fulfillment endpoints also enforce the flags; client-side hiding is only the corresponding UX. Disabling letters skips the required-letter validation without deleting `LetterDelivery` or customer story-assignment progress, so the same persisted progression remains available when letters are re-enabled.
 
@@ -477,7 +573,7 @@ The posted Profit & Loss statement recognizes COGS when a distributor-fulfilled 
 
 Admin selects the manufacturer, product SKUs and quantities, fabric/GSM, target date, and batch plan when creating a production order. The manufacturer submits per-piece pricing and batch expenses as a quote; the order stays out of production until an admin approves the quoted terms. The manufacturer then completes the required pre-production checks before starting, followed by post-production QA before stock receipt. Production quote terms capture VAT treatment as exempt, inclusive, or exclusive plus rate and supplier invoice reference. Admin approval records whether the invoice was verified. Production receipt recognizes input VAT only if the supplier invoice is verified and the business is VAT-registered at acquisition; otherwise VAT is included in inventory cost. The manufacturer payable remains gross. Cost layers retain the input-VAT recoverability decision so later registration cannot create a retroactive credit.
 
-The Admin Tax Compliance page stores seller PAN/legal identity and effective `TaxRegistrationVersion` history. Missing registration history defaults to `PAN_ONLY`; output VAT is posted only for tax points inside an effective VAT-registration window. Append-only `VatRateVersion` records separately control the percentage. Delivered-sales and return journals resolve registration/rate by transaction tax point; customer-return snapshots retain the applicable treatment. Paper-bill records retain immutable sale/tax snapshots and allow Admin to record the actual paper number/date after issuance; they do not generate or submit a statutory bill or connect to an IRD e-billing provider. Operating-expense input VAT remains unclaimed until Finance verifies supplier VAT identity, invoice evidence and amount reconciliation and confirms buyer registration on the invoice date; approval reclassifies VAT to GL input VAT. Manufacturer production VAT recovery also requires retained invoice evidence and buyer registration at acquisition. VAT return drafts exclude netting/payment journals, include opening input/output VAT credits, reconcile covered sales and partial purchase sources to the GL, and reject overlapping periods. Filing and later IRD amendments preserve the assessed amount/reference/reason and post linked balanced journals; these are accounting records only, not statutory submission. Other purchase sources, returns, opening balances, and any source/GL variance remain for accountant reconciliation. Admin date entry and report periods use date-only Bikram Sambat values (`YYYY-MM-DD`) with explicit `calendar: "BS"` semantics. The backend performs the authoritative conversion to Asia/Kathmandu day boundaries. Financial report ranges retain their BS default; single-date tax mutation endpoints without a calendar preserve their previous input interpretation for backwards compatibility. The same mapping is used for accounting reports, journal filters/manual entries, fiscal periods, tax/VAT effective dates, payments, paper-bill reports, filing periods, partnership profit-distribution periods, and loan start dates. Fiscal-year setup requires exact Shrawan 1-through-Ashadh-end boundaries and transactionally creates 12 continuous BS accounting periods from the configured mapping. Verify periods and all documents with a Nepal-qualified accountant before filing.
+The Admin Tax Compliance page stores seller PAN/legal identity and effective `TaxRegistrationVersion` history (`UNREGISTERED`, `PAN_ONLY`, `VAT_REGISTERED`). Missing registration history resolves to `UNREGISTERED`. Output VAT requires both an effective VAT-registration window and an explicit effective `VatRateVersion`; missing rates fail instead of using a fallback. Delivered-sales and return journals resolve registration/rate by transaction tax point; unregistered delivered sales retain internal-only accounting snapshots. Paper-bill issuance and recording are rejected while unregistered and must match the effective registration type. Internal records do not generate or submit a statutory bill or connect to an IRD e-billing provider. Operating-expense input VAT remains unclaimed until Finance verifies supplier VAT identity, invoice evidence and amount reconciliation and confirms buyer registration on the invoice date; approval reclassifies VAT to GL input VAT. Manufacturer production VAT recovery also requires retained invoice evidence and buyer registration at acquisition. VAT return drafts exclude netting/payment journals, include opening input/output VAT credits, reconcile covered sales and partial purchase sources to the GL, and reject overlapping periods. Filing and later IRD amendments preserve the assessed amount/reference/reason and post linked balanced journals; these are accounting records only, not statutory submission. Other purchase sources, returns, opening balances, and any source/GL variance remain for accountant reconciliation. Admin date entry and report periods use date-only Bikram Sambat values (`YYYY-MM-DD`) with explicit `calendar: "BS"` semantics. The backend performs the authoritative conversion to Asia/Kathmandu day boundaries. Financial report ranges retain their BS default; single-date tax mutation endpoints without a calendar preserve their previous input interpretation for backwards compatibility. The same mapping is used for accounting reports, journal filters/manual entries, fiscal periods, tax/VAT effective dates, payments, paper-bill reports, filing periods, partnership profit-distribution periods, and loan start dates. Fiscal-year setup requires exact Shrawan 1-through-Ashadh-end boundaries and transactionally creates 12 continuous BS accounting periods from the configured mapping. Verify periods and all documents with a Nepal-qualified accountant before filing.
 
 Corporate income tax estimates use the shared `corporateIncomeTaxService` and effective-dated `CorporateTaxPolicyVersion` records, not a built-in percentage. Admin policy versions support a base rate, progressive brackets, and validated context rules for user/taxpayer/location matching, rate overrides, discounts, and penalties. The Tax Compliance API accepts optional preview context; financial statements use the same policy resolver. Monthly projections annualize the monthly taxable-income run rate for bracket calculation and divide the estimated annual liability by 12. Missing policy is reported as unconfigured, and estimates are not filing assessments. Policy configuration must be reviewed by a qualified tax adviser.
 
@@ -489,6 +585,12 @@ The distributor rate editor exposes separate approved amounts for self-delivery/
 
 Delivered NCM COD creates party receivables against control 1170. Admin can select delivered COD orders within a Kathmandu-local date range and create one NCM transfer request for the batch. Confirmation records one actual net deposit; carrier fees clear payable control 2180, shortfalls remain open against NCM COD receivables, and overpayments remain in suspense payable 2185 until reconciled. The selected delivery links, batch journal, Treasury movement, and cash transaction are committed serializably. Accounting Health compares open NCM COD, distributor COD, NCM carrier-fee, and distributor-earning documents with controls 1170, 1190, 2180, and 2190 respectively. It also compares each stored GL account balance with journal-derived balances across posted and reversed journals; opening balances without posted journal support remain visible as variances. Its balance-sheet coverage registry enumerates the 23 configured control accounts and distinguishes source-scoped checks from legacy-partial, treasury-register-only, and not-reconciled controls; it does not infer a complete source balance. Legacy/opening balances are not auto-converted; Finance must review and approve a documented cutover. These checks do not reconcile all legacy and other-party documents, so overall accounting coverage remains partial until those sources are migrated and reconciled.
 For NCM carrier fees, Accounting Health additionally matches each 2180 accrual journal to its payable bill, allocation, and 2180 debit in the linked NCM remittance journal. This is limited to the current NCM fee settlement flow; it does not establish historical carrier or broader 2180 completeness.
+
+Accounting Health also ties active fixed-asset gross cost and accumulated depreciation to controls 1510–1530 and 1590 using the existing acquisition/disposal category map. The check flags register book-value anomalies but remains current-balance and source-scoped; physical existence, historical opening balances, tax basis, and depreciation-policy approval remain outside its coverage.
+
+The inventory check compares Account 1140 with current platform-owned `InventoryBalance` quantities and production cost-layer movements, counting only exact quantity matches with valid positive layer COGS. It flags unmatched/unvalued quantities and sensitive location types instead of using product retail/cost-price fallbacks. This source-scoped view does not prove historical or supplier-stock completeness, legal ownership, physical existence, or approved valuation treatment.
+
+NCM batch corrections require a mode, reason, and external evidence reference. In one serializable transaction they reverse the remittance, carrier-fee and every variance-resolution journal; write compensating cash and negative allocation records; restore COD document balances; cancel the batch-only carrier-fee and overpayment-suspense documents; mark variance resolutions reversed; restore each delivery's captured pre-batch state; and mark the original batch `REVERSED`. Corrected deliveries can be included in later batches without deleting prior batch history. Corrections fail closed if a journal, document, allocation, treasury balance, or prior delivery state cannot be matched. Historical batch items created before prior-state capture cannot be automatically corrected.
 
 Admins configure service districts through the Service-area coverage tab in Distributor Management. Saving coverage replaces that distributor's district list and records the change in the system audit outbox. Customers may submit or edit one distributor rating per delivered order through `POST /api/review/distributor/:orderId`; the endpoint verifies order ownership, delivery, and the assigned hub, then recalculates the distributor's aggregate rating inside the transaction.
 
@@ -549,7 +651,7 @@ Business mutations enqueue a redacted `SystemAuditOutbox` record in the same Pri
 
 `recordSystemAudit` centralizes actor/request context, changed-field diffs, and sensitive-key redaction. Capture points include access-management changes, order fulfillment status transitions, product and manufacturer inventory adjustments, customer-return decisions/inspection/refund transitions, privileged authentication/MFA events, unsuccessful authentication, admin password changes, rate-limit denials, refresh-token reuse, and authenticated RBAC denials. Authentication, rate-limit, and RBAC signals that do not share a business transaction are enqueued asynchronously to avoid delaying their primary response; these signals are best-effort if the process stops before enqueue completion. Existing domain event/movement logs and legacy access-management audit records remain in place.
 
-The protected endpoints `GET /api/admin/access/audit-logs` and `GET /api/admin/access/audit-logs/export` require `access:audit_read`. The list API supports bounded pagination and filters for date range, actor, entity, action, result status, and search; export is capped at 1,000 rows and CSV cells are protected against spreadsheet formula injection. `SecurityEvent` records are review signals, not confirmed breach determinations. Read-only page views and full request bodies are deliberately excluded.
+The protected endpoint `GET /api/admin/access/audit-logs` requires `access:audit_read`; CSV export at `GET /api/admin/access/audit-logs/export` separately requires `access:audit_export`. The list API supports bounded pagination and filters for date range, actor, entity, action, result status, and search; export is capped at 1,000 rows and CSV cells are protected against spreadsheet formula injection. `SecurityEvent` records are review signals, not confirmed breach determinations. Read-only page views and full request bodies are deliberately excluded.
 
 RBAC permission resolution uses a per-process cache capped at 1,000 entries with a 2-second TTL. Access-management changes invalidate the relevant account or whole cache. The short expiry bounds stale permissions across multiple API instances; session validation is not cached. Admin audit-history query results are cached in the browser for 15 seconds, with a 20-query memory bound and an explicit refresh action.
 
@@ -597,3 +699,4 @@ This makes the backend the actual business service layer for the project rather 
 - NCM exchange replacement stock follows the manufacturer reservation and carrier-status lifecycle. For self-delivery exchanges, reserved distributor-ledger stock is consumed at dispatch; the distributor must receive and inspect the return before dispatch, then mark the replacement delivered. Good returned items are ledgered as `RETURN`; damaged items are ledgered to `DAMAGED` and recorded as open inventory discrepancies.
 - NCM exchange replacements are not variant- or price-adjusted by NCM's API call. The requested variant is stored/reserved internally, so admins must verify the NCM replacement waybill; the assigned distributor separately handles and evidences any price difference.
 - Existing processed return rows are preserved as `LEGACY_PROCESSED`; new requests use the reviewed lifecycle rather than the old immediate refund/restock route.
+- Admin supplier-return debit notes use a stable request key and commit the return, stock deduction and `StockLog`, AP credit note or supplier cash receipt, balanced source journal, and audit outbox in one serializable transaction. Credit-note settlement reduces supplier AP (2110); cash-refund settlement requires an active NPR Treasury account mapped to an active GL account. Input VAT reversal is explicit and requires an original supplier-invoice reference; the system does not assume a rate. Supplier identity uses a stable entered reference when available, otherwise a normalized supplier-name key until a canonical supplier profile exists. Vendor credit-note allocation against future bills is not yet implemented.

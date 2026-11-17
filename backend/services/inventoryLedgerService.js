@@ -422,7 +422,7 @@ export const receiveCompletedProductionLine = async ({
   unitVatAmount = 0,
   manufacturerPayableRecognizedAtProduction = false,
   vatTreatment = "EXEMPT",
-  vatRate = 13,
+  vatRate = 0,
   vatInvoiceVerified = false,
   inputVatRecoverable = false,
   unitDeliveryCost,

@@ -6,6 +6,11 @@ import {
   resolveLocationEntry,
 } from "../utils/nepalLocationData.js";
 import { getLocationLookupData } from "./locationLookupService.js";
+import { compareDecimals } from "./accountingDecimal.js";
+import {
+  decimalFromStoredFloat,
+  pricingSnapshotAmounts,
+} from "./checkoutPricingService.js";
 
 const MAX_BATCH_SIZE = 5000;
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["ACTIVE"]);
@@ -29,6 +34,14 @@ export const isMarketingCardAttachable = (card, now = new Date()) => {
   if (campaign.cardExpiresAt && now > new Date(campaign.cardExpiresAt)) return false;
   return true;
 };
+
+export const campaignMeetsMinimumOrderValue = (campaign, order) => (
+  !campaign?.minOrderValue ||
+  compareDecimals(
+    decimalFromStoredFloat(pricingSnapshotAmounts(order).finalPayableTotal, "Accepted order amount"),
+    decimalFromStoredFloat(campaign.minOrderValue, "Campaign minimum order value"),
+  ) >= 0
+);
 
 const normalizeCode = (value, fallback = "AAMA") => {
   const code = String(value || fallback).toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -987,7 +1000,6 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distrib
     });
 
     const now = new Date();
-    const orderAmount = Number(order.amount || 0);
     const parsedItems = (() => {
       if (Array.isArray(order.items)) return order.items;
       if (typeof order.items === "string") {
@@ -1006,7 +1018,7 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distrib
     let eligibleInventory = inventory.filter((card) => {
       const c = card.campaign;
       if (!isMarketingCardAttachable(card, now)) return false;
-      if (c.minOrderValue && orderAmount < Number(c.minOrderValue)) return false;
+      if (!campaignMeetsMinimumOrderValue(c, order)) return false;
       return campaignMatchesOrder(c, order);
     });
 

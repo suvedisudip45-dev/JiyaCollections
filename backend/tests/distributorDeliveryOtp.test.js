@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { decryptNotificationText } from "../utils/secureNotificationPayload.js";
 import {
+  formatCollectionAmount,
   issueDistributorDeliveryOtp,
   verifyDistributorDeliveryOtp,
 } from "../services/distributorDeliveryOtpService.js";
@@ -93,6 +94,20 @@ const createHarness = ({ activeChallenge = null } = {}) => {
   return { state, tx, client };
 };
 
+test("COD collection amount uses NPR HALF_EVEN Decimal rounding and rejects invalid values", () => {
+  assert.equal(formatCollectionAmount({ amount: "10.105", deliveryFee: "0" }), "10.10");
+  assert.equal(formatCollectionAmount({ amount: "10.115", deliveryFee: "0" }), "10.12");
+  assert.equal(formatCollectionAmount({ amount: "10.10", deliveryFee: "0.05" }), "10.15");
+  assert.throws(
+    () => formatCollectionAmount({ amount: "not-an-amount", deliveryFee: "0" }),
+    { code: "INVALID_COLLECTION_AMOUNT" },
+  );
+  assert.throws(
+    () => formatCollectionAmount({ amount: "-1", deliveryFee: "0" }),
+    { code: "INVALID_COLLECTION_AMOUNT" },
+  );
+});
+
 test("delivery OTP issues an encrypted SMS challenge bound to the distributor and COD amount", async () => {
   const previousSecret = process.env.OTP_SERVER_SECRET;
   process.env.OTP_SERVER_SECRET = secret;
@@ -113,7 +128,7 @@ test("delivery OTP issues an encrypted SMS challenge bound to the distributor an
 
     assert.equal(result.success, true);
     assert.equal(result.expiresInSeconds, 300);
-    assert.equal(harness.state.challenge.collectionAmount, "1500.00");
+    assert.equal(harness.state.challenge.collectionAmount, "1600.00");
     assert.equal(harness.state.challenge.status, "PENDING");
     assert.equal(harness.state.challenge.activeOrderKey, "order-1:ACTIVE");
     assert.equal(harness.state.notification.notificationType, "DISTRIBUTOR_DELIVERY_OTP");
@@ -172,7 +187,7 @@ test("failed delivery OTP attempts are committed and become locked at the limit"
         distributorId: "distributor-1",
         status: "PENDING",
         activeOrderKey: "order-1:ACTIVE",
-        collectionAmount: "1500.00",
+        collectionAmount: "1600.00",
         codeHash: "0".repeat(64),
         attemptCount: 4,
         maxAttempts: 5,

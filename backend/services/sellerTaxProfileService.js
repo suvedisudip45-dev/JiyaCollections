@@ -27,6 +27,16 @@ const parseFutureEffectiveFrom = (value, now) => {
   return effectiveFrom;
 };
 
+const isSameNepalCalendarDay = (left, right) => {
+  const formatDay = (date) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kathmandu",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+  return formatDay(left) === formatDay(right);
+};
+
 export const getSellerTaxProfile = async ({ client = prisma } = {}) => {
   const [profile, registrations] = await Promise.all([
     client.sellerTaxProfile.findUnique({ where: { id: "default" } }),
@@ -103,8 +113,8 @@ export const scheduleTaxRegistrationVersion = async ({
   afterCreate = null,
 } = {}) => {
   const normalizedStatus = String(taxStatus ?? "").trim().toUpperCase();
-  if (!["PAN_ONLY", "VAT_REGISTERED"].includes(normalizedStatus)) {
-    throw fail("Tax registration status must be PAN_ONLY or VAT_REGISTERED.", 400, "INVALID_TAX_REGISTRATION_STATUS");
+  if (!["UNREGISTERED", "PAN_ONLY", "VAT_REGISTERED"].includes(normalizedStatus)) {
+    throw fail("Tax registration status must be UNREGISTERED, PAN_ONLY, or VAT_REGISTERED.", 400, "INVALID_TAX_REGISTRATION_STATUS");
   }
   const normalizedVatNumber = normalizeText(vatNumber, "VAT registration number", 32);
   if (normalizedStatus === "VAT_REGISTERED" && !normalizedVatNumber) {
@@ -116,7 +126,12 @@ export const scheduleTaxRegistrationVersion = async ({
       throw fail("Save the business PAN before scheduling VAT registration.", 400, "SELLER_PAN_REQUIRED");
     }
   }
-  const startsAt = parseFutureEffectiveFrom(effectiveFrom, now);
+  const isInitialStatusForToday =
+    effectiveFrom &&
+    !Number.isNaN(new Date(effectiveFrom).getTime()) &&
+    new Date(effectiveFrom) <= now &&
+    isSameNepalCalendarDay(new Date(effectiveFrom), now);
+  const startsAt = isInitialStatusForToday ? new Date(now) : parseFutureEffectiveFrom(effectiveFrom, now);
   if (!client.taxRegistrationVersion?.findFirst || !client.taxRegistrationVersion?.create) {
     throw fail("Tax registration history storage is unavailable. Apply the pending Prisma migration first.", 503, "TAX_REGISTRATION_STORAGE_UNAVAILABLE");
   }
@@ -127,6 +142,9 @@ export const scheduleTaxRegistrationVersion = async ({
         where: { status: "ACTIVE" },
         orderBy: { effectiveFrom: "desc" },
       });
+      if (startsAt <= now && latest) {
+        throw fail("Only the initial tax status may be recorded from today; later status changes must be scheduled for a future date.", 400, "INVALID_TAX_EFFECTIVE_DATE");
+      }
       if (latest && startsAt <= latest.effectiveFrom) {
         throw fail("Tax registration changes must be scheduled after the latest active version.", 409, "TAX_REGISTRATION_VERSION_ORDER_CONFLICT");
       }
@@ -138,6 +156,9 @@ export const scheduleTaxRegistrationVersion = async ({
         if (closed.count !== 1) {
           throw fail("Tax registration changed concurrently. Refresh and retry.", 409, "TAX_REGISTRATION_CONCURRENCY_CONFLICT");
         }
+      }
+      if (normalizedStatus === "VAT_REGISTERED") {
+        await resolveVatRatePercent(startsAt, { client: tx });
       }
       const version = await tx.taxRegistrationVersion.create({
         data: {
@@ -249,7 +270,10 @@ export const resolveSellerTaxTreatment = async (transactionDate, { client = pris
   const profile = client.sellerTaxProfile?.findUnique
     ? await client.sellerTaxProfile.findUnique({ where: { id: "default" } })
     : null;
-  const taxStatus = version?.taxStatus === "VAT_REGISTERED" ? "VAT_REGISTERED" : "PAN_ONLY";
+  if (version && !["UNREGISTERED", "PAN_ONLY", "VAT_REGISTERED"].includes(version.taxStatus)) {
+    throw fail("Stored tax registration status is invalid; correct the registration record before processing tax.", 409, "INVALID_STORED_TAX_REGISTRATION_STATUS");
+  }
+  const taxStatus = version?.taxStatus || "UNREGISTERED";
   const vatRate = taxStatus === "VAT_REGISTERED"
     ? await resolveVatRatePercent(effectiveAt, { client })
     : null;
@@ -260,7 +284,11 @@ export const resolveSellerTaxTreatment = async (transactionDate, { client = pris
     panNumber: profile?.panNumber || "",
     address: profile?.address || "",
     vatRate,
-    taxTreatment: taxStatus === "VAT_REGISTERED" ? "STANDARD_RATED" : "NON_VAT",
+    taxTreatment: taxStatus === "VAT_REGISTERED"
+      ? "STANDARD_RATED"
+      : taxStatus === "UNREGISTERED"
+        ? "UNREGISTERED"
+        : "NON_VAT",
   };
 };
 

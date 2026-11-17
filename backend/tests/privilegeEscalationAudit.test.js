@@ -6,6 +6,7 @@ import path from "node:path";
 const backendRoot = path.resolve(".");
 const excluded = new Set([
   "prisma/seed.js",
+  "services/rbacSeedService.js",
   "services/rbacService.js",
   "services/accessManagementService.js",
   "controllers/accessManagementController.js",

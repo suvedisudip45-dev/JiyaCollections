@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import nepaliDateModule from "nepali-date-converter";
+import { getManufacturerFinancialSummary } from "../controllers/financialController.js";
 import {
   getConfiguredAdDateForNepaliDate,
   getConfiguredNepaliFiscalPeriod,
   getConfiguredNepaliFiscalYear,
   getConfiguredNepaliDateRange,
   getConfiguredNepaliMonthRange,
+  getKathmanduDateRange,
   getNepaliCalendarDateFromAD,
   getNepaliDateRange,
   getNepaliFiscalPeriod,
@@ -61,6 +63,39 @@ test("BS date ranges map to inclusive Kathmandu calendar-day boundaries", () => 
   const range = getNepaliDateRange("2083-07-01", "2083-07-02");
   assert.equal(range.startDate.toISOString(), "2026-10-17T18:15:00.000Z");
   assert.equal(range.endDate.toISOString(), "2026-10-19T18:14:59.999Z");
+});
+
+test("Gregorian date ranges use half-open Kathmandu calendar-day boundaries", () => {
+  const range = getKathmanduDateRange("2026-10-17", "2026-10-18");
+  assert.equal(range.startDate.toISOString(), "2026-10-16T18:15:00.000Z");
+  assert.equal(range.endDateExclusive.toISOString(), "2026-10-18T18:15:00.000Z");
+  assert.throws(
+    () => getKathmanduDateRange("2026-02-29", "2026-03-01"),
+    { code: "INVALID_AD_DATE", statusCode: 400 },
+  );
+  assert.throws(
+    () => getKathmanduDateRange("2026-10-18", "2026-10-17"),
+    { code: "INVALID_AD_DATE_RANGE", statusCode: 400 },
+  );
+});
+
+test("manufacturer summary rejects invalid custom dates as a client error before querying", async () => {
+  const response = {
+    statusCode: 200,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
+  };
+  await getManufacturerFinancialSummary({
+    query: { range: "custom", startDate: "2026-02-29", endDate: "2026-03-01" },
+  }, response);
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, "INVALID_AD_DATE");
 });
 
 test("BS date ranges reject invalid dates and reversed boundaries", () => {
@@ -140,6 +175,40 @@ test("calendar date inputs preserve date-only BS semantics at Kathmandu boundari
   });
 });
 
+test("AD calendar inputs validate dates and use inclusive Kathmandu day boundaries", async () => {
+  await assert.rejects(resolveCalendarDateInput("2023-02-29", "AD"), {
+    code: "INVALID_AD_DATE",
+    statusCode: 400,
+  });
+  await assert.rejects(
+    resolveCalendarDateRangeInput("2023-03-01", "2023-02-28", "AD"),
+    { code: "INVALID_AD_DATE_RANGE", statusCode: 400 },
+  );
+  await assert.rejects(
+    resolveCalendarDateFilterInput("2023-03-01", "2023-02-28", "AD"),
+    { code: "INVALID_AD_DATE_RANGE", statusCode: 400 },
+  );
+  await assert.rejects(
+    resolveCalendarDateFilterInput("2023-02-30", "", "AD"),
+    { code: "INVALID_AD_DATE", statusCode: 400 },
+  );
+
+  const adRange = await resolveCalendarDateRangeInput("2023-04-15", "2023-04-16", "AD");
+  assert.equal(adRange.startDate.toISOString(), "2023-04-14T18:15:00.000Z");
+  assert.equal(adRange.endDate.toISOString(), "2023-04-16T18:14:59.999Z");
+  const adFilter = await resolveCalendarDateFilterInput("2023-04-15", "2023-04-16", "AD");
+  assert.equal(adFilter.startDate.toISOString(), "2023-04-14T18:15:00.000Z");
+  assert.equal(adFilter.endDate.toISOString(), "2023-04-16T18:14:59.999Z");
+
+  const timestampRange = await resolveCalendarDateRangeInput(
+    "2023-04-15T00:00:00.000Z",
+    "2023-04-15T12:00:00.000Z",
+    "AD",
+  );
+  assert.equal(timestampRange.startDate.toISOString(), "2023-04-15T00:00:00.000Z");
+  assert.equal(timestampRange.endDate.toISOString(), "2023-04-15T12:00:00.000Z");
+});
+
 test("custom calendar ranges require mappings for every BS year they cross", async () => {
   const calendar = {
     year: 2080,
@@ -154,6 +223,13 @@ test("custom calendar ranges require mappings for every BS year they cross", asy
   await assert.rejects(
     getConfiguredNepaliDateRange("2080-12-30", "2081-01-02", [calendar]),
     { code: "NEPALI_CALENDAR_YEAR_REQUIRED", statusCode: 409 },
+  );
+});
+
+test("configured calendar ranges reject reversed dates spanning multiple BS years", async () => {
+  await assert.rejects(
+    getConfiguredNepaliDateRange("2082-01-01", "2080-01-01", []),
+    { code: "INVALID_NEPALI_DATE_RANGE", statusCode: 400 },
   );
 });
 

@@ -70,7 +70,6 @@ const CreateOrder = ({ token }) => {
   // Financials & Payment state
   const [discountAmount, setDiscountAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("COD");
-  const [isPaid, setIsPaid] = useState(false);
   const [initialStatus, setInitialStatus] = useState("Order Placed");
   const [customDeliveryFee, setCustomDeliveryFee] = useState("");
   const [useCustomShipping, setUseCustomShipping] = useState(false);
@@ -811,13 +810,13 @@ const CreateOrder = ({ token }) => {
             : "Door2Door",
         },
         items: selectedItems,
-        discount: activeDiscount,
-        ...((useCustomShipping && customDeliveryFee !== "") && { deliveryFee: activeShippingFee }),
+        discount: discountAmount === "" ? "0" : discountAmount,
+        ...((useCustomShipping && customDeliveryFee !== "") && { deliveryFee: customDeliveryFee }),
         deliveryType: hasCurrentShippingQuote
           ? shippingQuoteResult.quote.deliveryType || "Door2Door"
           : "Door2Door",
         paymentMethod,
-        payment: isPaid,
+        payment: false,
         status: initialStatus,
       };
 
@@ -871,7 +870,6 @@ const CreateOrder = ({ token }) => {
     setSelectedItems([]);
     setDiscountAmount("");
     setPaymentMethod("COD");
-    setIsPaid(false);
     setInitialStatus("Order Placed");
     setCustomDeliveryFee("");
     setUseCustomShipping(false);
@@ -1598,11 +1596,11 @@ const CreateOrder = ({ token }) => {
               </div>
             </div>
 
-            {/* Payment Method & Payment Status */}
+            {/* Tender method and receipt status */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-gray-100">
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Payment Method
+                  Tender Method
                 </label>
                 <select
                   value={paymentMethod}
@@ -1621,30 +1619,9 @@ const CreateOrder = ({ token }) => {
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
                   Payment Status
                 </label>
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsPaid(false)}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all ${
-                      !isPaid
-                        ? "bg-amber-100 text-amber-900 border-amber-300 shadow-2xs"
-                        : "bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100"
-                    }`}
-                  >
-                    Pending (COD)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsPaid(true)}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all ${
-                      isPaid
-                        ? "bg-emerald-600 text-white border-emerald-700 shadow-2xs"
-                        : "bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100"
-                    }`}
-                  >
-                    ✓ Paid / Received
-                  </button>
-                </div>
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Receipt not recorded. Tender selection does not confirm funds received.
+                </p>
               </div>
             </div>
 

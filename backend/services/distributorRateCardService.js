@@ -7,7 +7,7 @@ const DEFAULT_COUNTER_SALE_CHARGE = 0;
 const DEFAULT_COMMISSION_RATE = 0;
 const DEFAULT_BONUS_RATE = 0;
 const DEFAULT_INCENTIVE_RATE = 0;
-const DEFAULT_VAT_RATE = 13;
+const DEFAULT_VAT_RATE = 0;
 
 const nonNegativeRateValue = (value, label, maximum = 999_999_999_999_999_999) => {
   const parsed = Number(value ?? 0);

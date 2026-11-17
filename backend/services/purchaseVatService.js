@@ -1,14 +1,13 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { getOperatingExpenseAccountCode, postJournalEntry } from "./accountingPostingEngine.js";
+import { accountingDecimal, CURRENCY_PRECISION, quantizeNprAmount } from "./accountingDecimal.js";
 import { resolveSellerTaxTreatment } from "./sellerTaxProfileService.js";
 import { hasValidVatSupplierIdentity } from "./manufacturerTaxIdentity.js";
 
 const fail = (message, statusCode = 400, code = "PURCHASE_VAT_REVIEW_ERROR") =>
   Object.assign(new Error(message), { statusCode, code });
 
-const amount = (value) => new Prisma.Decimal(String(value ?? 0))
-  .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+const amount = (value) => quantizeNprAmount(accountingDecimal(value ?? "0"));
 
 const isHttpUrl = (value) => {
   try {
@@ -76,7 +75,10 @@ export const reviewOperatingExpenseInputVat = async ({
     const grossAmount = amount(expense.amount);
     const inputVat = amount(expense.vatAmount);
     const taxableAmount = amount(expense.purchaseTaxableAmount ?? grossAmount.minus(inputVat));
-    const rate = amount(expense.purchaseVatRate ?? 13);
+    if (expense.purchaseVatRate === null || expense.purchaseVatRate === undefined) {
+      throw fail("The supplier invoice VAT rate must be recorded before input VAT can be approved.", 409, "PURCHASE_VAT_RATE_REQUIRED");
+    }
+    const rate = amount(expense.purchaseVatRate);
     if (
       grossAmount.lessThanOrEqualTo(0) ||
       inputVat.lessThanOrEqualTo(0) ||
@@ -85,7 +87,11 @@ export const reviewOperatingExpenseInputVat = async ({
       rate.lessThanOrEqualTo(0) ||
       rate.greaterThan(100) ||
       taxableAmount.plus(inputVat).minus(grossAmount).abs().greaterThan("0.02") ||
-      taxableAmount.mul(rate).div(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).minus(inputVat).abs().greaterThan("0.02")
+      taxableAmount.mul(rate).div(100)
+        .toDecimalPlaces(2, CURRENCY_PRECISION.NPR.roundingMode)
+        .minus(inputVat)
+        .abs()
+        .greaterThan("0.02")
     ) {
       throw fail("The supplier invoice taxable base, VAT amount, rate, and gross total do not reconcile.", 400, "PURCHASE_VAT_AMOUNT_MISMATCH");
     }
@@ -96,7 +102,7 @@ export const reviewOperatingExpenseInputVat = async ({
     }
     const buyerTreatment = await resolveSellerTaxTreatment(taxPoint, { client: tx });
     if (buyerTreatment.taxStatus !== "VAT_REGISTERED") {
-      throw fail("The business was not VAT-registered on the supplier invoice date; input VAT cannot be claimed.", 409, "BUYER_NOT_VAT_REGISTERED_ON_PURCHASE_DATE");
+      throw fail("The business was not VAT-registered on the supplier invoice date; input VAT cannot be recognized.", 409, "BUYER_NOT_VAT_REGISTERED_ON_PURCHASE_DATE");
     }
 
     const duplicate = await tx.operatingExpense.findFirst({

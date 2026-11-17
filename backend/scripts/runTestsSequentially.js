@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertIntegrationDatabaseSafety } from "../utils/integrationDatabaseSafety.js";
+
+assertIntegrationDatabaseSafety();
 
 const backendDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testsDirectory = path.join(backendDirectory, "tests");
@@ -17,6 +20,12 @@ const databaseIntegrationTests = new Set([
   "operationalFlawsResolution.test.js",
   "settlementIdempotencyAndRevert.test.js",
 ]);
+const isDatabaseIntegrationTest = (testFile) => {
+  const fileName = path.basename(testFile);
+  return databaseIntegrationTests.has(fileName) ||
+    /\.integration\.(test|spec)\.(c|m)?js$/i.test(fileName) ||
+    /integration\.(test|spec)\.(c|m)?js$/i.test(fileName);
+};
 
 const findTestFiles = (directory) => readdirSync(directory, { withFileTypes: true })
   .flatMap((entry) => {
@@ -34,7 +43,7 @@ if (testFiles.length === 0) {
 const failedFiles = [];
 const skippedFiles = [];
 for (const testFile of testFiles) {
-  if (process.env.RUN_DATABASE_INTEGRATION_TESTS !== "1" && databaseIntegrationTests.has(path.basename(testFile))) {
+  if (process.env.RUN_DATABASE_INTEGRATION_TESTS !== "1" && isDatabaseIntegrationTest(testFile)) {
     console.log(`\n=== ${path.relative(backendDirectory, testFile)} (skipped: requires isolated database) ===`);
     skippedFiles.push(testFile);
     continue;

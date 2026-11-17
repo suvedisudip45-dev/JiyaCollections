@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import "dotenv/config";
 import { prisma } from "../config/db.js";
 import {
@@ -6,6 +7,13 @@ import {
   postProfitDistributionAccounting,
 } from "../services/accountingPostingEngine.js";
 import { closeFiscalYear, reopenFiscalYear } from "../services/fiscalClosingService.js";
+import {
+  getAccountingPeriodCloseChecklist,
+  requestAccountingPeriodReopen,
+  reviewAccountingPeriodClose,
+  reviewAccountingPeriodReopen,
+  submitAccountingPeriodClose,
+} from "../services/accountingPeriodCloseService.js";
 import { ICourierAdapter } from "../services/courier/ICourierAdapter.js";
 import { NcmCourierAdapter } from "../services/courier/adapters/NcmCourierAdapter.js";
 import {
@@ -99,6 +107,19 @@ const runTests = async () => {
         status: "OPEN",
       },
     });
+    await prisma.accountingPeriod.createMany({
+      data: Array.from({ length: 12 }, (_, index) => {
+        const month = index + 1;
+        const monthKey = String(month).padStart(2, "0");
+        return {
+          fiscalYearId: testFy.id,
+          periodName: `2028-${monthKey}`,
+          startDate: new Date(Date.UTC(2028, index, 1)),
+          endDate: new Date(Date.UTC(2028, index + 1, 0)),
+          status: "OPEN",
+        };
+      }),
+    });
 
     // Create posted test revenue entry in this FY: DR Bank (1120) 50,000 / CR Sales Revenue (4100) 50,000
     await postJournalEntry({
@@ -126,6 +147,30 @@ const runTests = async () => {
       allowClosedPeriod: true,
     });
 
+    const fiscalPeriods = await prisma.accountingPeriod.findMany({
+      where: { fiscalYearId: testFy.id },
+    });
+    const closeChecklist = getAccountingPeriodCloseChecklist().map((item) => ({
+      key: item.key,
+      status: "COMPLETE",
+      evidenceReference: `TEST:${item.key}`,
+      notes: "",
+    }));
+    for (const [index, period] of fiscalPeriods.entries()) {
+      await submitAccountingPeriodClose({
+        periodId: period.id,
+        checklist: closeChecklist,
+        idempotencyKey: `fiscal-close-submit-${period.id}`,
+        actor: { accountId: "SYSTEM_TEST_PREPARER", role: "ADMIN" },
+      });
+      await reviewAccountingPeriodClose({
+        periodId: period.id,
+        decision: "APPROVE",
+        idempotencyKey: `fiscal-close-review-${period.id}`,
+        actor: { accountId: `SYSTEM_TEST_REVIEWER_${index}`, role: "ADMIN" },
+      });
+    }
+
     // Execute Fiscal Closing
     const closeResult = await closeFiscalYear({
       fiscalYearId: testFy.id,
@@ -141,6 +186,20 @@ const runTests = async () => {
     assert(closeResult.closingJournalEntry != null, "Balanced period closing journal entry posted");
 
     // Test Reopening Fiscal Year
+    for (const [index, period] of fiscalPeriods.entries()) {
+      await requestAccountingPeriodReopen({
+        periodId: period.id,
+        reason: "Test fiscal year reopening.",
+        idempotencyKey: `fiscal-reopen-request-${period.id}`,
+        actor: { accountId: "SYSTEM_TEST_PREPARER", role: "ADMIN" },
+      });
+      await reviewAccountingPeriodReopen({
+        periodId: period.id,
+        decision: "APPROVE",
+        idempotencyKey: `fiscal-reopen-review-${period.id}`,
+        actor: { accountId: `SYSTEM_TEST_REVIEWER_${index}`, role: "ADMIN" },
+      });
+    }
     const reopenResult = await reopenFiscalYear({
       fiscalYearId: testFy.id,
       reopenedBy: "SYSTEM_TEST",

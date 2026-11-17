@@ -6,6 +6,10 @@ import {
   getDeliveryAccountingOutboxStatus,
   processDeliveryAccountingOutbox,
 } from "../services/accountingOutboxService.js";
+import {
+  createOrderPricingSnapshotV3,
+  withOrderPricingSnapshot,
+} from "../services/checkoutPricingService.js";
 
 const stableStringify = (value) => {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
@@ -117,6 +121,52 @@ test("enqueueDeliveredSaleAccounting stores a minimal immutable snapshot with an
   assert.equal(event.payload.deliveryOrder.id, "delivery-1");
 });
 
+test("delivery outbox freezes the exact accepted checkout amounts from its versioned snapshot", async () => {
+  const pricingSnapshot = createOrderPricingSnapshotV3({
+    lines: [{
+      productId: "product-1",
+      catalogUnitPrice: "100.25",
+      unitPrice: "100.25",
+      quantity: "1",
+      lineTotal: "100.25",
+      discountSource: "BASE",
+      priceSteps: [{
+        source: "BASE",
+        unitPriceBefore: "100.25",
+        unitPriceAfter: "100.25",
+      }],
+    }],
+    subtotal: "100.25",
+    deliveryFee: "2.50",
+    preCommercialRoundingTotal: "102.75",
+    finalPayableTotal: "102.75",
+    source: "CHECKOUT",
+  });
+  let created;
+  const client = {
+    accountingEvent: {
+      upsert: async (args) => {
+        created = args.create;
+        return { id: "event-snapshot", ...args.create };
+      },
+    },
+  };
+
+  await enqueueDeliveredSaleAccounting({
+    order: {
+      ...makeOrder(),
+      amount: 100,
+      deliveryFee: 2,
+      locationPricingSnapshot: withOrderPricingSnapshot(null, pricingSnapshot),
+    },
+  }, { client });
+
+  assert.equal(created.payload.order.amount, "102.75");
+  assert.equal(created.payload.order.deliveryCharge, "2.5");
+  assert.equal(created.payload.order.pricingSnapshot.version, 3);
+  assert.equal(created.payload.order.pricingSnapshot.totals.finalPayableTotal, "102.75");
+});
+
 test("delivery accounting worker posts claimed events and marks them posted", async () => {
   const event = makeEvent();
   const now = new Date("2026-10-16T10:00:01.000Z");
@@ -159,6 +209,45 @@ test("delivery accounting worker retains failed events and schedules retry", asy
   assert.equal(event.lastError, "Temporary database error");
   assert.equal(event.claimedAt, null);
   assert.ok(event.nextAttemptAt > now);
+});
+
+test("delivery accounting worker blocks permanent source-value failures without retry", async () => {
+  const event = makeEvent();
+  const now = new Date("2026-10-16T10:00:01.000Z");
+  const client = makeWorkerClient(event);
+
+  const result = await processDeliveryAccountingOutbox({
+    client,
+    now,
+    poster: async () => {
+      throw Object.assign(new Error("Delivered sale contains invalid COGS."), {
+        code: "DELIVERED_SALE_COST_INVALID",
+      });
+    },
+  });
+
+  assert.deepEqual(result, { posted: 0, failed: 0, blocked: 1, skipped: 0 });
+  assert.equal(event.status, "BLOCKED");
+  assert.equal(event.nextAttemptAt, null);
+});
+
+test("delivery accounting worker blocks unlinked payment-state assertions", async () => {
+  const event = makeEvent();
+  const client = makeWorkerClient(event);
+
+  const result = await processDeliveryAccountingOutbox({
+    client,
+    now: new Date("2026-10-16T10:00:01.000Z"),
+    poster: async () => {
+      throw Object.assign(new Error("Paid status has no source-linked customer receipt."), {
+        code: "DELIVERED_SALE_TENDER_UNVERIFIED",
+      });
+    },
+  });
+
+  assert.deepEqual(result, { posted: 0, failed: 0, blocked: 1, skipped: 0 });
+  assert.equal(event.status, "BLOCKED");
+  assert.equal(event.nextAttemptAt, null);
 });
 
 test("delivery accounting worker blocks invalid or tampered snapshots", async () => {

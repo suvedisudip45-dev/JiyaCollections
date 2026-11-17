@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import { prisma } from "../config/db.js";
 import {
   ensureStandardChartOfAccounts,
@@ -216,11 +217,11 @@ const runAccountingIntegrationTests = async () => {
     // Test 11: Journal Reversal Integrity Test
     // -------------------------------------------------------------
     console.log("\n--- 11. Testing Journal Reversal Audit Chain ---");
-    const reversal = await reverseJournalEntry(salesJournal.id, "Order cancellation RMA adjustment");
+    const reversal = await reverseJournalEntry(entry1.id, "Manual journal audit test", "TEST_ADMIN");
     assert(reversal && reversal.status === "POSTED", "Reversal journal generated and posted");
     assert(reversal.sourceType === "REVERSAL", "Reversal has sourceType REVERSAL");
 
-    const originalRechecked = await prisma.journalEntry.findUnique({ where: { id: salesJournal.id } });
+    const originalRechecked = await prisma.journalEntry.findUnique({ where: { id: entry1.id } });
     assert(originalRechecked.status === "REVERSED", "Original journal entry marked as REVERSED");
 
     // -------------------------------------------------------------

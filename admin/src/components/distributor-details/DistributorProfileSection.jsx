@@ -46,7 +46,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       stockTransferCharge: numericValue(generalRate.stockTransferCharge ?? generalRate.ncmTransferCharge),
       counterSaleCharge: numericValue(generalRate.counterSaleCharge),
       commissionRate: numericValue(generalRate.commissionRate),
-      vatRate: numericValue(generalRate.vatRate, 13),
+      vatRate: numericValue(generalRate.vatRate),
       vatInclusive: Boolean(generalRate.vatInclusive),
     });
   }, [distributor, locationLookups]);
@@ -258,6 +258,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
           </label>
         ))}
         <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><input type="checkbox" checked={Boolean(rate.vatInclusive)} onChange={(event) => setRate((current) => ({ ...current, vatInclusive: event.target.checked }))} disabled={!canEdit} /> VAT inclusive</label>
+        <p className="text-[11px] leading-5 text-amber-800">Use the rate supported by the distributor&apos;s service invoice or agreement. This rate-card screen does not verify invoice evidence or approve input VAT.</p>
         <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">Stock-transfer compensation is calculated per product unit in the order and is payable only after successful delivery. It is additional to channel-specific compensation; no VAT is added. Configure monthly target bonuses separately below.</p>
         {canEdit && <button type="submit" disabled={savingRate} className="w-full rounded-lg bg-indigo-700 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50">{savingRate ? "Saving…" : "Save approved rates"}</button>}
       </form>

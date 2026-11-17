@@ -88,7 +88,10 @@ const createHarness = () => {
     return { accountCode: account.accountType === "CASH" ? "1110" : account.accountType === "WALLET" ? "1180" : "1120" };
   };
 
-  return { state, client: makeClient(state), validateTreasury };
+  const client = makeClient(state);
+  const transactionClient = { ...client };
+  delete transactionClient.$transaction;
+  return { state, client, transactionClient, validateTreasury };
 };
 
 const loanData = {
@@ -339,4 +342,36 @@ test("loan repayment rejects retry-key reuse with different details", async () =
     interestPortion: "20.00",
   }), { code: "IDEMPOTENCY_KEY_REUSED" });
   assert.equal(harness.state.accounts[0].currentBalance.toFixed(2), "890.00");
+});
+
+test("loan repayment supports execution inside an approval transaction", async () => {
+  const harness = createHarness();
+  harness.state.liabilities["loan-1"] = {
+    id: "loan-1",
+    investorName: "Example Bank",
+    principalAmount: 500,
+    principalPaid: 0,
+    interestPaid: 0,
+    amountRepaid: 0,
+    outstandingBalance: 500,
+    status: "ACTIVE",
+    loanSchedule: [{ status: "UPCOMING", monthNumber: 1 }],
+    notes: null,
+  };
+  const result = await recordLoanRepayment({
+    liabilityId: "loan-1",
+    repaymentAmount: "110.00",
+    principalPortion: "100.00",
+    interestPortion: "10.00",
+    fromAccountId: "treasury-bank",
+    idempotencyKey: "approval-loan-repayment",
+    notes: "Approved loan repayment.",
+    client: harness.transactionClient,
+    validateTreasury: harness.validateTreasury,
+    postRepayment: async () => {},
+  });
+
+  assert.equal(result.isReplay, false);
+  assert.equal(result.liability.outstandingBalance, 400);
+  assert.equal(harness.state.accounts[0].currentBalance, 890);
 });

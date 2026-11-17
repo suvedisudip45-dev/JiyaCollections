@@ -145,6 +145,29 @@ test("share buyback atomically retires shares, pays mapped Treasury, and replays
   assert.equal(accountingCalls.length, 1);
 });
 
+test("share buyback supports execution inside an approval transaction", async () => {
+  const { state, tx } = createHarness();
+  const result = await recordShareBuyback(baseRequest, {
+    client: tx,
+    postAccounting: async (params) => {
+      const journal = {
+        id: "journal-approved-buyback",
+        status: "POSTED",
+        sourceType: "SHARE_BUYBACK",
+        idempotencyKey: params.idempotencyKey,
+        referenceNumber: params.referenceNumber,
+      };
+      state.journals.push(journal);
+      return journal;
+    },
+  });
+
+  assert.equal(result.alreadyProcessed, false);
+  assert.equal(state.treasury.currentBalance, 900000);
+  assert.equal(state.cashTransactions.length, 1);
+  assert.equal(state.shareTransactions.length, 1);
+});
+
 test("share buyback rejects changed payload with the same idempotency key", async () => {
   const { client, state } = createHarness();
   const postAccounting = async (params) => {

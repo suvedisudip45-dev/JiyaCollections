@@ -124,7 +124,6 @@ const cancelOrderBeforeHandoff = async ({
   actorId,
   actorRole,
   reason,
-  requireUnpaid = false,
 }) => {
   const cancellationReason = String(reason || "").trim();
   if (!orderId || !actorId || cancellationReason.length < 3) {
@@ -141,9 +140,15 @@ const cancelOrderBeforeHandoff = async ({
     if (order.status === "Cancelled") {
       return { alreadyCancelled: true, order };
     }
-    if (requireUnpaid && order.payment) {
+    const [journalEntry, accountingDocument, cashTransaction, distributorCashEvent] = await Promise.all([
+      tx.journalEntry.findFirst({ where: { sourceId: order.id }, select: { id: true } }),
+      tx.accountingDocument.findFirst({ where: { sourceId: order.id }, select: { id: true } }),
+      tx.cashTransaction.findFirst({ where: { referenceId: order.id }, select: { id: true } }),
+      tx.distributorCashEvent.findFirst({ where: { orderId: order.id }, select: { id: true } }),
+    ]);
+    if (order.payment || journalEntry || accountingDocument || cashTransaction || distributorCashEvent) {
       throw cancelledError(
-        "This paid order requires the approved refund workflow before it can be cancelled.",
+        "This order has payment or financial activity and requires the approved refund workflow before it can be cancelled.",
         "PAID_ORDER_REFUND_REQUIRED",
         409,
       );
@@ -305,5 +310,4 @@ export const cancelAdminOrder = ({ orderId, actorId, reason }) =>
     actorId,
     actorRole: "ADMIN",
     reason,
-    requireUnpaid: true,
   });

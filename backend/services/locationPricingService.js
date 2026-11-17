@@ -1,6 +1,12 @@
 import { prisma } from "../config/db.js";
 import { resolveLocationEntry } from "../utils/nepalLocationData.js";
 import { getLocationLookupData } from "./locationLookupService.js";
+import {
+  applyPercentagePriceDiscount,
+  calculatePricedLine,
+  decimalFromStoredFloat,
+} from "./checkoutPricingService.js";
+import { serializeAccountingDecimal } from "./accountingDecimal.js";
 
 const cleanKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 const LOCATION_ALIASES = new Map([
@@ -29,12 +35,22 @@ export const canonicalizeNepalLocation = (provinceValue, districtValue) => {
 };
 
 export const resolveEffectiveProductDiscount = ({ productDiscount, locationDiscount, hasLocationRule }) => {
-  const globalPercentage = Math.min(100, Math.max(0, Number(productDiscount || 0)));
-  const localPercentage = Number(locationDiscount);
-  if (hasLocationRule && Number.isFinite(localPercentage) && localPercentage >= 0 && localPercentage <= 100) {
-    return { percentage: localPercentage, source: "LOCATION" };
+  const globalPercentage = decimalFromStoredFloat(productDiscount, "Product discount");
+  if (globalPercentage.isNegative() || globalPercentage.greaterThan(100)) {
+    throw Object.assign(new TypeError("Product discount must be between 0 and 100."), { code: "INVALID_ORDER_DISCOUNT" });
   }
-  return { percentage: globalPercentage, source: globalPercentage > 0 ? "PRODUCT" : "BASE" };
+  const localPercentage = locationDiscount === null || locationDiscount === undefined
+    ? null
+    : decimalFromStoredFloat(locationDiscount, "Location discount");
+  if (hasLocationRule && localPercentage && !localPercentage.isNegative() && !localPercentage.greaterThan(100)) {
+    const decimalPercentage = serializeAccountingDecimal(localPercentage);
+    return { percentage: Number(decimalPercentage), source: "LOCATION" };
+  }
+  const decimalPercentage = serializeAccountingDecimal(globalPercentage);
+  return {
+    percentage: Number(decimalPercentage),
+    source: globalPercentage.greaterThan(0) ? "PRODUCT" : "BASE",
+  };
 };
 
 export const selectLocationProductRule = (rules, distributorId) =>
@@ -46,7 +62,7 @@ const normalizeRequestItems = (items = []) => items.map((item) => ({
   productId: String(item.productId || item._id || item.id || "").trim(),
   size: String(item.size || "").trim(),
   color: String(item.color || "").trim(),
-  quantity: Math.max(1, Math.floor(Number(item.quantity || 1))),
+  quantity: Number(item.quantity ?? 1),
 }));
 
 const validateInputItems = (items) => {
@@ -54,7 +70,12 @@ const validateInputItems = (items) => {
     throw Object.assign(new Error("Provide between 1 and 100 product lines for price resolution."), { code: "INVALID_PRICE_ITEMS", status: 400 });
   }
   const normalized = normalizeRequestItems(items);
-  if (normalized.some((item) => !item.productId || !Number.isInteger(item.quantity) || item.quantity <= 0)) {
+  if (normalized.some((item) =>
+    !item.productId ||
+    !Number.isSafeInteger(item.quantity) ||
+    item.quantity <= 0 ||
+    item.quantity > 2147483647
+  )) {
     throw Object.assign(new Error("Every price line requires a product ID and positive whole-number quantity."), { code: "INVALID_PRICE_ITEMS", status: 400 });
   }
   return normalized;
@@ -84,7 +105,7 @@ export const resolveLocationProductPrices = async ({
       items: normalizedItems.map((item) => {
         const product = productMap.get(item.productId);
         const percentage = Number(product.discount || 0);
-        return buildResolvedLine(item, product, percentage, percentage > 0 ? "PRODUCT" : "BASE", null, null);
+        return buildResolvedLine(item, product, percentage, percentage > 0 ? "PRODUCT" : "BASE", null, null, null);
       }),
     };
   }
@@ -112,14 +133,14 @@ export const resolveLocationProductPrices = async ({
       hasLocationRule: Boolean(rule),
     });
     const locationApplies = pricing.source === "LOCATION";
-    const percentage = pricing.percentage;
     return buildResolvedLine(
       item,
       product,
-      percentage,
+      pricing.percentage,
       pricing.source,
       locationApplies ? locationPercentage : null,
       locationApplies ? rule.distributorId || null : null,
+      locationApplies ? rule.id : null,
     );
   });
 
@@ -132,19 +153,48 @@ export const resolveLocationProductPrices = async ({
   };
 };
 
-const buildResolvedLine = (item, product, percentage, discountSource, locationDiscountPercentage, locationDiscountDistributorId) => {
-  const basePrice = Number(product.price || 0);
-  const effectiveUnitPrice = Math.round(basePrice * (1 - percentage / 100));
+const buildResolvedLine = (
+  item,
+  product,
+  percentage,
+  discountSource,
+  locationDiscountPercentage,
+  locationDiscountDistributorId,
+  locationDiscountRuleId,
+) => {
+  const basePriceDecimal = decimalFromStoredFloat(product.price, "Product price");
+  if (basePriceDecimal.isNegative()) {
+    throw Object.assign(new TypeError("Product price cannot be negative."), { code: "INVALID_ORDER_PRICE" });
+  }
+  const percentageDecimal = decimalFromStoredFloat(percentage, "Discount percentage");
+  const effectiveUnitPriceDecimal = applyPercentagePriceDiscount(
+    serializeAccountingDecimal(basePriceDecimal),
+    serializeAccountingDecimal(percentageDecimal),
+  );
+  const line = calculatePricedLine({
+    unitPrice: serializeAccountingDecimal(effectiveUnitPriceDecimal),
+    quantity: String(item.quantity),
+  });
+  const globalDiscountDecimal = decimalFromStoredFloat(product.discount || 0, "Product discount");
   return {
     ...item,
-    basePrice,
-    productDiscountPercentage: Number(product.discount || 0),
+    basePrice: Number(serializeAccountingDecimal(basePriceDecimal)),
+    productDiscountPercentage: Number(serializeAccountingDecimal(globalDiscountDecimal)),
     locationDiscountPercentage,
-    effectiveDiscountPercentage: percentage,
-    effectiveUnitPrice,
+    effectiveDiscountPercentage: Number(serializeAccountingDecimal(percentageDecimal)),
+    effectiveUnitPrice: Number(serializeAccountingDecimal(effectiveUnitPriceDecimal)),
     discountSource,
     locationDiscountDistributorId,
-    lineTotal: effectiveUnitPrice * item.quantity,
+    locationDiscountRuleId,
+    lineTotal: Number(serializeAccountingDecimal(line.lineTotal)),
+    pricing: {
+      basePrice: serializeAccountingDecimal(basePriceDecimal),
+      productDiscountPercentage: serializeAccountingDecimal(globalDiscountDecimal),
+      effectiveDiscountPercentage: serializeAccountingDecimal(percentageDecimal),
+      effectiveUnitPrice: serializeAccountingDecimal(effectiveUnitPriceDecimal),
+      quantity: serializeAccountingDecimal(line.quantity),
+      lineTotal: serializeAccountingDecimal(line.lineTotal),
+    },
   };
 };
 

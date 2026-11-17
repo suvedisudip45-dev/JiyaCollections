@@ -30,6 +30,7 @@ const ChartOfAccounts = ({ token }) => {
     normalBalance: "DEBIT",
     parentAccountId: "",
     description: "",
+    reason: "",
   });
 
   const [editFormData, setEditFormData] = useState({
@@ -37,6 +38,7 @@ const ChartOfAccounts = ({ token }) => {
     accountName: "",
     description: "",
     isActive: true,
+    reason: "",
   });
 
   const fetchAccounts = async () => {
@@ -78,15 +80,16 @@ const ChartOfAccounts = ({ token }) => {
         normalBalance: formData.normalBalance,
         parentAccountId: formData.parentAccountId || null,
         description: formData.description.trim() || null,
+        reason: formData.reason.trim(),
       };
 
       const res = await axios.post(
         `${backendUrl}/api/accounting/create-account`,
         payload,
-        { headers: { token } }
+        { headers: { token, "Idempotency-Key": crypto.randomUUID() } }
       );
       if (res.data.success) {
-        toast.success(res.data.message || "Account created successfully");
+        toast.success(res.data.message || "Chart-of-accounts request submitted for approval");
         setShowAddModal(false);
         setFormData({
           accountCode: "",
@@ -95,6 +98,7 @@ const ChartOfAccounts = ({ token }) => {
           normalBalance: "DEBIT",
           parentAccountId: "",
           description: "",
+          reason: "",
         });
         fetchAccounts();
       } else {
@@ -114,10 +118,10 @@ const ChartOfAccounts = ({ token }) => {
       const res = await axios.post(
         `${backendUrl}/api/accounting/update-account`,
         editFormData,
-        { headers: { token } }
+        { headers: { token, "Idempotency-Key": crypto.randomUUID() } }
       );
       if (res.data.success) {
-        toast.success(res.data.message || "Account updated successfully");
+        toast.success(res.data.message || "Chart-of-accounts change submitted for approval");
         setShowEditModal(false);
         setSelectedAccountForEdit(null);
         fetchAccounts();
@@ -137,6 +141,7 @@ const ChartOfAccounts = ({ token }) => {
       accountName: acc.accountName,
       description: acc.description || "",
       isActive: acc.isActive,
+      reason: "",
     });
     setShowEditModal(true);
   };
@@ -479,6 +484,19 @@ const ChartOfAccounts = ({ token }) => {
                 />
               </div>
 
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reason for change *</label>
+                <textarea
+                  required
+                  minLength={3}
+                  maxLength={2000}
+                  rows="2"
+                  value={formData.reason}
+                  onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
+                />
+              </div>
+
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
@@ -553,6 +571,19 @@ const ChartOfAccounts = ({ token }) => {
                 <label htmlFor="isActiveToggle" className="text-xs font-medium text-slate-700 cursor-pointer">
                   Account is Active for Postings
                 </label>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reason for change *</label>
+                <textarea
+                  required
+                  minLength={3}
+                  maxLength={2000}
+                  rows="2"
+                  value={editFormData.reason}
+                  onChange={(e) => setEditFormData({ ...editFormData, reason: e.target.value })}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
+                />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">

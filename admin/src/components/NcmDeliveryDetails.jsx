@@ -378,7 +378,7 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
                 <Info label="State" value={settlement.settlementState} />
                 <Info label="NCM ticket" value={settlement.ncmTicketId} />
                 <Info label="Expected COD" value={settlement.codExpected} />
-                <Info label="Collected COD" value={settlement.codCollected} />
+                <Info label="COD collected field (not remittance evidence)" value={settlement.codCollected} />
                 <Info label="Expected delivery fee" value={settlement.deliveryFeeExpected} />
                 <Info label="NCM discount" value={settlement.deliveryFeeDiscount ?? 0} />
                 <Info label="Net actual carrier fee" value={settlement.deliveryFeeActual} />

@@ -1,9 +1,10 @@
 import { prisma } from "../config/db.js";
 import { postJournalEntry } from "./accountingPostingEngine.js";
+import { recordSystemAudit } from "./auditService.js";
 
 /**
  * Closes an entire fiscal year:
- * 1. Closes all underlying monthly accounting periods.
+ * 1. Requires all underlying monthly accounting periods to have independent close approvals.
  * 2. Sums all posted revenues (4xxx) and expenses (5xxx, 6xxx, 7xxx).
  * 3. Generates a balanced closing Journal Entry:
  *    - DR all Revenue accounts with net credit balance (to zero them out).
@@ -15,9 +16,19 @@ export const closeFiscalYear = async ({
   fiscalYearId,
   closedBy = "ADMIN",
 }) => {
-  const fy = await prisma.fiscalYear.findUnique({
+  return prisma.$transaction(async (tx) => {
+  const fy = await tx.fiscalYear.findUnique({
     where: { id: fiscalYearId },
-    include: { periods: true },
+    include: {
+      periods: {
+        include: {
+          closeEvents: {
+            orderBy: { sequence: "desc" },
+            take: 1,
+          },
+        },
+      },
+    },
   });
 
   if (!fy) {
@@ -28,14 +39,14 @@ export const closeFiscalYear = async ({
     throw new Error(`Fiscal Year ${fy.name} is already closed.`);
   }
 
-  // 1. Close any remaining open periods in this fiscal year
-  await prisma.accountingPeriod.updateMany({
-    where: { fiscalYearId: fy.id, status: "OPEN" },
-    data: { status: "CLOSED" },
-  });
+  if (!fy.periods.length || fy.periods.some((period) => (
+    period.status !== "CLOSED" || period.closeEvents[0]?.eventType !== "CLOSE_APPROVED"
+  ))) {
+    throw new Error(`Every accounting period in ${fy.name} must be independently approved before fiscal year close.`);
+  }
 
   // 2. Fetch all posted journal lines within this fiscal year date range
-  const journalLines = await prisma.journalLine.findMany({
+  const journalLines = await tx.journalLine.findMany({
     where: {
       journalEntry: {
         status: "POSTED",
@@ -162,11 +173,12 @@ export const closeFiscalYear = async ({
       lines: closingLines,
       createdBy: closedBy,
       allowClosedPeriod: true,
+      client: tx,
     });
   }
 
   // 6. Update Fiscal Year record to CLOSED
-  const updatedFy = await prisma.fiscalYear.update({
+  const updatedFy = await tx.fiscalYear.update({
     where: { id: fy.id },
     data: {
       status: "CLOSED",
@@ -175,6 +187,24 @@ export const closeFiscalYear = async ({
       closedBy,
     },
   });
+  await recordSystemAudit({
+    actorId: closedBy,
+    actorRole: "ADMIN",
+    portalSource: "ADMIN",
+  }, {
+    action: "ACCOUNTING_FISCAL_YEAR_CLOSED",
+    entityType: "FiscalYear",
+    entityId: fy.id,
+    beforeState: { status: fy.status, isClosed: fy.isClosed },
+    afterState: {
+      status: updatedFy.status,
+      isClosed: updatedFy.isClosed,
+      netIncome,
+      totalRevenue: totalRevenueNet,
+      totalExpenses: totalExpenseNet,
+      closingJournalEntryId: closingJournal?.id || null,
+    },
+  }, { client: tx });
 
   return {
     success: true,
@@ -184,6 +214,7 @@ export const closeFiscalYear = async ({
     totalExpenses: totalExpenseNet,
     closingJournalEntry: closingJournal,
   };
+  }, { isolationLevel: "Serializable", maxWait: 5000, timeout: 30000 });
 };
 
 /**
@@ -191,17 +222,33 @@ export const closeFiscalYear = async ({
  * Reverses the period closing journal entry and sets status back to OPEN.
  */
 export const reopenFiscalYear = async ({ fiscalYearId, reopenedBy = "ADMIN", reason = "Audit Correction" }) => {
-  const fy = await prisma.fiscalYear.findUnique({
+  return prisma.$transaction(async (tx) => {
+  const fy = await tx.fiscalYear.findUnique({
     where: { id: fiscalYearId },
+    include: {
+      periods: {
+        include: {
+          closeEvents: {
+            orderBy: { sequence: "desc" },
+            take: 1,
+          },
+        },
+      },
+    },
   });
 
   if (!fy) throw new Error(`Fiscal Year ${fiscalYearId} not found.`);
   if (fy.status !== "CLOSED" && !fy.isClosed) {
     throw new Error(`Fiscal Year ${fy.name} is already OPEN.`);
   }
+  if (!fy.periods.length || fy.periods.some((period) => (
+    period.status !== "OPEN" || period.closeEvents[0]?.eventType !== "REOPEN_APPROVED"
+  ))) {
+    throw new Error(`Every accounting period in ${fy.name} must be independently reopened before fiscal year reopen.`);
+  }
 
   // Find and reverse the closing journal entry
-  const closingEntry = await prisma.journalEntry.findFirst({
+  const closingEntry = await tx.journalEntry.findFirst({
     where: {
       sourceType: "PERIOD_CLOSING",
       sourceId: fy.id,
@@ -228,15 +275,16 @@ export const reopenFiscalYear = async ({ fiscalYearId, reopenedBy = "ADMIN", rea
       lines: reversalLines,
       createdBy: reopenedBy,
       allowClosedPeriod: true,
+      client: tx,
     });
 
-    await prisma.journalEntry.update({
+    await tx.journalEntry.update({
       where: { id: closingEntry.id },
       data: { status: "REVERSED", reversalReason: reason },
     });
   }
 
-  const updatedFy = await prisma.fiscalYear.update({
+  const updatedFy = await tx.fiscalYear.update({
     where: { id: fy.id },
     data: {
       status: "OPEN",
@@ -245,10 +293,22 @@ export const reopenFiscalYear = async ({ fiscalYearId, reopenedBy = "ADMIN", rea
       closedBy: null,
     },
   });
+  await recordSystemAudit({
+    actorId: reopenedBy,
+    actorRole: "ADMIN",
+    portalSource: "ADMIN",
+  }, {
+    action: "ACCOUNTING_FISCAL_YEAR_REOPENED",
+    entityType: "FiscalYear",
+    entityId: fy.id,
+    beforeState: { status: fy.status, isClosed: fy.isClosed },
+    afterState: { status: updatedFy.status, isClosed: updatedFy.isClosed, reason },
+  }, { client: tx });
 
   return {
     success: true,
     fiscalYear: updatedFy,
     message: `Fiscal Year ${fy.name} has been reopened successfully.`,
   };
+  }, { isolationLevel: "Serializable", maxWait: 5000, timeout: 30000 });
 };

@@ -1,8 +1,15 @@
+import {
+  accountingDecimal,
+  addDecimals,
+  allocateDecimal,
+  CURRENCY_PRECISION,
+  quantizeNprAmount,
+  subtractDecimals,
+} from "./accountingDecimal.js";
+
 const CASH_EQUIVALENT_ACCOUNT_CODES = new Set(["1110", "1120", "1180"]);
 const CUSTOMER_RECEIPT_CODES = new Set(["1130", "4100", "4200"]);
 const SUPPLIER_PAYABLE_CODES = new Set(["2110", "2160"]);
-
-const roundCurrency = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 
 const getCashFlowCategory = (account) => {
   const code = String(account?.accountCode || "");
@@ -12,6 +19,9 @@ const getCashFlowCategory = (account) => {
   }
   return "operating";
 };
+
+const amountString = (value) => quantizeNprAmount(value).toFixed(2);
+const zeroAmount = () => accountingDecimal("0");
 
 export const buildDirectCashFlowStatement = ({
   journalLines = [],
@@ -36,22 +46,23 @@ export const buildDirectCashFlowStatement = ({
   });
 
   const totals = {
-    operating: { inflows: 0, outflows: 0 },
-    investing: { inflows: 0, outflows: 0 },
-    financing: { inflows: 0, outflows: 0 },
+    operating: { inflows: zeroAmount(), outflows: zeroAmount() },
+    investing: { inflows: zeroAmount(), outflows: zeroAmount() },
+    financing: { inflows: zeroAmount(), outflows: zeroAmount() },
   };
-  const details = {
-    cashReceivedFromCustomers: 0,
-    otherOperatingInflows: 0,
-    supplierPayments: 0,
-    otherOperatingOutflows: 0,
-    investingInflows: 0,
-    investingOutflows: 0,
-    financingInflows: 0,
-    financingOutflows: 0,
-  };
-  let beginningCash = 0;
-  let endingCash = 0;
+  const detailKeys = [
+    "cashReceivedFromCustomers",
+    "otherOperatingInflows",
+    "supplierPayments",
+    "otherOperatingOutflows",
+    "investingInflows",
+    "investingOutflows",
+    "financingInflows",
+    "financingOutflows",
+  ];
+  const details = Object.fromEntries(detailKeys.map((key) => [key, zeroAmount()]));
+  let beginningCash = zeroAmount();
+  let endingCash = zeroAmount();
 
   journals.forEach(({ date, lines }) => {
     if (Number.isNaN(date.getTime()) || date > end) return;
@@ -59,88 +70,126 @@ export const buildDirectCashFlowStatement = ({
     const cashLines = lines.filter((line) => CASH_EQUIVALENT_ACCOUNT_CODES.has(String(line.account?.accountCode || "")));
     if (!cashLines.length) return;
     const cashMovement = cashLines.reduce(
-      (sum, line) => sum + Number(line.debit || 0) - Number(line.credit || 0),
-      0,
+      (sum, line) => addDecimals(
+        sum,
+        subtractDecimals(line.debit ?? "0", line.credit ?? "0"),
+      ),
+      zeroAmount(),
     );
-    if (Math.abs(cashMovement) < 0.005) return;
+    if (cashMovement.isZero()) return;
 
     if (date < start) {
-      beginningCash += cashMovement;
-      endingCash += cashMovement;
+      beginningCash = addDecimals(beginningCash, cashMovement);
+      endingCash = addDecimals(endingCash, cashMovement);
       return;
     }
 
-    endingCash += cashMovement;
-    const isInflow = cashMovement > 0;
-    const movementAmount = Math.abs(cashMovement);
+    endingCash = addDecimals(endingCash, cashMovement);
+    const isInflow = cashMovement.isPositive();
+    const flowType = isInflow ? "inflows" : "outflows";
+    const movementAmount = cashMovement.abs();
     const counterpartLines = lines.filter(
       (line) => !CASH_EQUIVALENT_ACCOUNT_CODES.has(String(line.account?.accountCode || "")),
     );
-    const counterpartTotal = counterpartLines.reduce(
-      (sum, line) => sum + Number(isInflow ? line.credit || 0 : line.debit || 0),
-      0,
-    );
+    const counterpartAllocations = counterpartLines
+      .map((line, index) => ({
+        line,
+        index,
+        weight: accountingDecimal(isInflow ? line.credit ?? "0" : line.debit ?? "0"),
+      }))
+      .filter(({ weight }) => weight.greaterThan(0))
+      .sort((left, right) => {
+        const leftAccountCode = String(left.line.account?.accountCode || "");
+        const rightAccountCode = String(right.line.account?.accountCode || "");
+        const accountCodeOrder = leftAccountCode < rightAccountCode
+          ? -1
+          : leftAccountCode > rightAccountCode
+            ? 1
+            : 0;
+        if (accountCodeOrder !== 0) return accountCodeOrder;
+        const leftId = String(left.line.id || left.index);
+        const rightId = String(right.line.id || right.index);
+        return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+      });
+    const counterpartTotal = addDecimals(...counterpartAllocations.map(({ weight }) => weight));
 
-    if (counterpartTotal <= 0) {
-      totals.operating[isInflow ? "inflows" : "outflows"] += movementAmount;
-      details[isInflow ? "otherOperatingInflows" : "otherOperatingOutflows"] += movementAmount;
+    if (counterpartTotal.isZero()) {
+      totals.operating[flowType] = addDecimals(totals.operating[flowType], movementAmount);
+      const detailKey = isInflow ? "otherOperatingInflows" : "otherOperatingOutflows";
+      details[detailKey] = addDecimals(details[detailKey], movementAmount);
       return;
     }
 
-    counterpartLines.forEach((line) => {
-      const counterpartAmount = Number(isInflow ? line.credit || 0 : line.debit || 0);
-      if (counterpartAmount <= 0) return;
-      const allocatedAmount = movementAmount * counterpartAmount / counterpartTotal;
+    const { allocations } = allocateDecimal(
+      movementAmount,
+      counterpartAllocations.map(({ weight }) => weight),
+      {
+        scale: 2,
+        roundingMode: CURRENCY_PRECISION.NPR.roundingMode,
+        residualTargetIndex: counterpartAllocations.length - 1,
+        divisionSignificantDigits: 80,
+      },
+    );
+    counterpartAllocations.forEach(({ line }, index) => {
+      const allocatedAmount = allocations[index];
       const category = getCashFlowCategory(line.account);
-      totals[category][isInflow ? "inflows" : "outflows"] += allocatedAmount;
+      totals[category][flowType] = addDecimals(totals[category][flowType], allocatedAmount);
 
       if (category === "investing") {
-        details[isInflow ? "investingInflows" : "investingOutflows"] += allocatedAmount;
+        const detailKey = isInflow ? "investingInflows" : "investingOutflows";
+        details[detailKey] = addDecimals(details[detailKey], allocatedAmount);
       } else if (category === "financing") {
-        details[isInflow ? "financingInflows" : "financingOutflows"] += allocatedAmount;
+        const detailKey = isInflow ? "financingInflows" : "financingOutflows";
+        details[detailKey] = addDecimals(details[detailKey], allocatedAmount);
       } else if (isInflow && CUSTOMER_RECEIPT_CODES.has(String(line.account?.accountCode || ""))) {
-        details.cashReceivedFromCustomers += allocatedAmount;
+        details.cashReceivedFromCustomers = addDecimals(details.cashReceivedFromCustomers, allocatedAmount);
       } else if (!isInflow && SUPPLIER_PAYABLE_CODES.has(String(line.account?.accountCode || ""))) {
-        details.supplierPayments += allocatedAmount;
+        details.supplierPayments = addDecimals(details.supplierPayments, allocatedAmount);
       } else {
-        details[isInflow ? "otherOperatingInflows" : "otherOperatingOutflows"] += allocatedAmount;
+        const detailKey = isInflow ? "otherOperatingInflows" : "otherOperatingOutflows";
+        details[detailKey] = addDecimals(details[detailKey], allocatedAmount);
       }
     });
   });
 
   Object.keys(totals).forEach((category) => {
-    totals[category].inflows = roundCurrency(totals[category].inflows);
-    totals[category].outflows = roundCurrency(totals[category].outflows);
-    totals[category].net = roundCurrency(totals[category].inflows - totals[category].outflows);
+    totals[category].inflows = quantizeNprAmount(totals[category].inflows);
+    totals[category].outflows = quantizeNprAmount(totals[category].outflows);
+    totals[category].net = subtractDecimals(totals[category].inflows, totals[category].outflows);
   });
-  Object.keys(details).forEach((key) => {
-    details[key] = roundCurrency(details[key]);
+  detailKeys.forEach((key) => {
+    details[key] = quantizeNprAmount(details[key]);
   });
 
-  const netCashFlow = roundCurrency(
-    totals.operating.net + totals.investing.net + totals.financing.net,
+  const netCashFlow = addDecimals(
+    totals.operating.net,
+    totals.investing.net,
+    totals.financing.net,
   );
-  beginningCash = roundCurrency(beginningCash);
-  endingCash = roundCurrency(endingCash);
-  const reconciliationDifference = roundCurrency(endingCash - beginningCash - netCashFlow);
+  beginningCash = quantizeNprAmount(beginningCash);
+  endingCash = quantizeNprAmount(endingCash);
+  const reconciliationDifference = subtractDecimals(
+    subtractDecimals(endingCash, beginningCash),
+    netCashFlow,
+  );
 
   return {
-    operatingActivities: totals.operating.net,
-    investingActivities: totals.investing.net,
-    financingActivities: totals.financing.net,
-    netCashFlow,
-    beginningCash,
-    endingCash,
-    reconciliationDifference,
-    isReconciled: Math.abs(reconciliationDifference) <= 0.05,
+    operatingActivities: amountString(totals.operating.net),
+    investingActivities: amountString(totals.investing.net),
+    financingActivities: amountString(totals.financing.net),
+    netCashFlow: amountString(netCashFlow),
+    beginningCash: amountString(beginningCash),
+    endingCash: amountString(endingCash),
+    reconciliationDifference: amountString(reconciliationDifference),
+    isReconciled: reconciliationDifference.abs().lessThanOrEqualTo("0.05"),
     details: {
-      ...details,
-      operatingInflows: totals.operating.inflows,
-      operatingOutflows: totals.operating.outflows,
-      investingInflows: totals.investing.inflows,
-      investingOutflows: totals.investing.outflows,
-      financingInflows: totals.financing.inflows,
-      financingOutflows: totals.financing.outflows,
+      ...Object.fromEntries(detailKeys.map((key) => [key, amountString(details[key])])),
+      operatingInflows: amountString(totals.operating.inflows),
+      operatingOutflows: amountString(totals.operating.outflows),
+      investingInflows: amountString(totals.investing.inflows),
+      investingOutflows: amountString(totals.investing.outflows),
+      financingInflows: amountString(totals.financing.inflows),
+      financingOutflows: amountString(totals.financing.outflows),
     },
     basis: "POSTED_GL_CASH_EQUIVALENTS",
     cashEquivalentAccountCodes: [...CASH_EQUIVALENT_ACCOUNT_CODES],

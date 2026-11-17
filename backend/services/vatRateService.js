@@ -154,11 +154,8 @@ export const resolveVatRatePercent = async (transactionDate, { client = prisma }
     orderBy: { effectiveFrom: "desc" },
     select: { vatRate: true },
   });
-  const configuredRate = version?.vatRate ?? (
-    await client.taxConfiguration.findUnique({
-      where: { id: "default" },
-      select: { vatRate: true },
-    })
-  )?.vatRate ?? 13;
-  return parseRate(configuredRate);
+  if (!version) {
+    throw fail("No explicitly scheduled VAT rate is effective for this transaction date.", 409, "VAT_RATE_NOT_CONFIGURED");
+  }
+  return parseRate(version.vatRate);
 };

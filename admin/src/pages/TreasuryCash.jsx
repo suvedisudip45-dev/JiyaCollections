@@ -1,6 +1,7 @@
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect, useRef } from "react";
+import React, { useCallback, useState, useEffect, useRef } from "react";
 import axios from "axios";
+import PropTypes from "prop-types";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
@@ -8,12 +9,19 @@ const TreasuryCash = ({ token }) => {
   const [accounts, setAccounts] = useState([]);
   const [accountingAccounts, setAccountingAccounts] = useState([]);
   const [mappingSelections, setMappingSelections] = useState({});
+  const [mappingReasons, setMappingReasons] = useState({});
   const [transactions, setTransactions] = useState([]);
   const [transactionPage, setTransactionPage] = useState(1);
   const [transactionPagination, setTransactionPagination] = useState({ page: 1, total: 0, totalPages: 0 });
+  const [receiptReconciliation, setReceiptReconciliation] = useState(null);
+  const [receiptReconciliationPage, setReceiptReconciliationPage] = useState(1);
+  const [receiptReconciliationLoading, setReceiptReconciliationLoading] = useState(false);
+  const [receiptReconciliationError, setReceiptReconciliationError] = useState("");
   const [loading, setLoading] = useState(true);
   const transferIdempotencyKey = useRef(null);
   const directEntryIdempotencyKey = useRef(null);
+  const accountCreationRequestKey = useRef(null);
+  const mappingRequestKeys = useRef({});
 
   // Modal states
   const [showAddAccount, setShowAddAccount] = useState(false);
@@ -27,6 +35,7 @@ const TreasuryCash = ({ token }) => {
     accountNumber: "",
     bankName: "",
     accountingAccountId: "",
+    reason: "",
   });
 
   const [transferData, setTransferData] = useState({
@@ -47,7 +56,7 @@ const TreasuryCash = ({ token }) => {
     stockReturnId: "",
   });
 
-  const fetchData = async (page = 1) => {
+  const fetchData = useCallback(async (page = 1) => {
     try {
       setLoading(true);
       const [accRes, txRes, coaRes] = await Promise.all([
@@ -84,24 +93,47 @@ const TreasuryCash = ({ token }) => {
     } finally {
       setLoading(false);
     }
+  }, [token]);
+
+  const fetchReceiptReconciliation = async (page = 1) => {
+    try {
+      setReceiptReconciliationLoading(true);
+      setReceiptReconciliationError("");
+      const response = await axios.get(`${backendUrl}/api/finance/receipt-reconciliation`, {
+        headers: { token },
+        params: { page, limit: 12 },
+      });
+      if (!response.data?.success) {
+        throw new Error(response.data?.message || "Receipt reconciliation could not be loaded.");
+      }
+      setReceiptReconciliation(response.data);
+      setReceiptReconciliationPage(page);
+    } catch (error) {
+      setReceiptReconciliationError(error.response?.data?.message || error.message || "Receipt reconciliation could not be loaded.");
+    } finally {
+      setReceiptReconciliationLoading(false);
+    }
   };
 
   useEffect(() => {
     if (token) fetchData();
-  }, [token]);
+  }, [token, fetchData]);
 
   const handleCreateAccount = async (e) => {
     e.preventDefault();
     if (!newAccount.accountName) return toast.warn("Account name is required");
     if (!newAccount.accountingAccountId) return toast.warn("Select the matching GL account");
+    if (newAccount.reason.trim().length < 3) return toast.warn("Provide a reason for creating this mapped Treasury account");
     try {
+      accountCreationRequestKey.current ||= crypto.randomUUID();
       const res = await axios.post(`${backendUrl}/api/finance/create-account`, newAccount, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": accountCreationRequestKey.current },
       });
       if (res.data.success) {
-        toast.success("Account created successfully");
+        toast.info(res.data.message || "Treasury account request submitted for approval");
+        accountCreationRequestKey.current = null;
         setShowAddAccount(false);
-        setNewAccount({ accountName: "", accountType: "BANK", accountNumber: "", bankName: "", accountingAccountId: "" });
+        setNewAccount({ accountName: "", accountType: "BANK", accountNumber: "", bankName: "", accountingAccountId: "", reason: "" });
         fetchData();
       } else {
         toast.error(res.data.message);
@@ -114,13 +146,19 @@ const TreasuryCash = ({ token }) => {
   const handleMapAccount = async (financialAccountId) => {
     const accountingAccountId = mappingSelections[financialAccountId];
     if (!accountingAccountId) return toast.warn("Select the matching GL account");
+    const reason = mappingReasons[financialAccountId] || "";
+    if (reason.trim().length < 3) return toast.warn("Provide a reason for changing this Treasury mapping");
     try {
+      mappingRequestKeys.current[financialAccountId] ||= crypto.randomUUID();
       const res = await axios.post(`${backendUrl}/api/finance/map-treasury-account`, {
         financialAccountId,
         accountingAccountId,
-      }, { headers: { token } });
+        reason,
+      }, { headers: { token, "Idempotency-Key": mappingRequestKeys.current[financialAccountId] } });
       if (!res.data.success) return toast.error(res.data.message || "Failed to map account");
-      toast.success("Treasury account mapped to the GL");
+      toast.info(res.data.message || "Treasury mapping request submitted for approval");
+      delete mappingRequestKeys.current[financialAccountId];
+      setMappingReasons({ ...mappingReasons, [financialAccountId]: "" });
       fetchData(transactionPage);
     } catch (err) {
       toast.error(err.response?.data?.message || err.message);
@@ -183,7 +221,9 @@ const TreasuryCash = ({ token }) => {
         headers: { token },
       });
       if (res.data.success) {
-        toast.success(`${directEntry.type} recorded successfully`);
+        toast.info(res.data.alreadyPending
+          ? res.data.message
+          : `${directEntry.type} recorded successfully`);
         directEntryIdempotencyKey.current = null;
         setShowDirectEntry(false);
         setDirectEntry({
@@ -333,7 +373,10 @@ const TreasuryCash = ({ token }) => {
                   <div className="flex gap-2">
                     <select
                       value={mappingSelections[acc.id] ?? acc.accountingAccountId ?? ""}
-                      onChange={(event) => setMappingSelections({ ...mappingSelections, [acc.id]: event.target.value })}
+                      onChange={(event) => {
+                        delete mappingRequestKeys.current[acc.id];
+                        setMappingSelections({ ...mappingSelections, [acc.id]: event.target.value });
+                      }}
                       className="min-w-0 flex-1 p-2 bg-slate-50 border border-slate-200 rounded text-xs"
                     >
                       <option value="">Select GL account...</option>
@@ -346,12 +389,23 @@ const TreasuryCash = ({ token }) => {
                     <button
                       type="button"
                       onClick={() => handleMapAccount(acc.id)}
-                      disabled={!mappingSelections[acc.id] || mappingSelections[acc.id] === acc.accountingAccountId}
+                      disabled={!mappingSelections[acc.id] || mappingSelections[acc.id] === acc.accountingAccountId || (mappingReasons[acc.id] || "").trim().length < 3}
                       className="px-2 py-1 border border-slate-200 rounded text-[10px] font-semibold disabled:opacity-40"
                     >
-                      Save
+                      Request
                     </button>
                   </div>
+                  <textarea
+                    value={mappingReasons[acc.id] || ""}
+                    onChange={(event) => {
+                      delete mappingRequestKeys.current[acc.id];
+                      setMappingReasons({ ...mappingReasons, [acc.id]: event.target.value });
+                    }}
+                    rows={2}
+                    maxLength={2000}
+                    placeholder="Reason for mapping change"
+                    className="w-full mt-2 p-2 bg-slate-50 border border-slate-200 rounded text-xs"
+                  />
                 </div>
               </div>
 
@@ -365,6 +419,113 @@ const TreasuryCash = ({ token }) => {
           ))}
         </div>
       )}
+
+      <section className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Customer Receipt Reconciliation</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Checks stored receipt, invoice-allocation, Treasury, and journal links. This does not verify bank settlement.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => fetchReceiptReconciliation(1)}
+            disabled={receiptReconciliationLoading}
+            className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          >
+            {receiptReconciliationLoading ? "Checking..." : "Run internal checks"}
+          </button>
+        </div>
+        {receiptReconciliationError && (
+          <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-xs text-rose-800">
+            {receiptReconciliationError}
+          </p>
+        )}
+        {receiptReconciliation && (
+          <>
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Bank statement data is not available. Supplied payment references are unverified and are not proof of settlement.
+              Unmatched statement lines and statement date, currency, or amount differences cannot be checked.
+            </div>
+            <p className="mt-3 text-xs font-semibold text-slate-600">
+              {receiptReconciliation.summary.receiptCount} receipts on this page · {receiptReconciliation.summary.exceptionCount} internal exception(s) · 0 bank-verified
+            </p>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 text-slate-500">
+                    <th className="p-3">Receipt / date</th>
+                    <th className="p-3">Invoices</th>
+                    <th className="p-3 text-right">Cash / allocated</th>
+                    <th className="p-3">Reference</th>
+                    <th className="p-3">Internal result</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(receiptReconciliation.receipts || []).map((receipt) => (
+                    <tr key={receipt.receiptId} className="align-top">
+                      <td className="p-3">
+                        <span className="font-mono">{receipt.receiptId}</span>
+                        <span className="mt-1 block text-slate-500">
+                          {receipt.receiptDate ? new Date(receipt.receiptDate).toLocaleDateString() : "Date unavailable"}
+                          {" · "}{receipt.receiptStatus}
+                        </span>
+                      </td>
+                      <td className="p-3">{receipt.sourceDocuments.map((document) => document.documentNumber).join(", ") || "No linked invoice"}</td>
+                      <td className="p-3 text-right font-mono">
+                        {receipt.currency || "NPR"} {receipt.amount} / {receipt.allocatedAmount}
+                      </td>
+                      <td className="p-3">
+                        <span className="font-mono">{receipt.evidenceReference || "Missing"}</span>
+                        <span className="mt-1 block text-[10px] text-amber-700">{receipt.evidenceReferenceStatus}</span>
+                      </td>
+                      <td className="p-3">
+                        <span className={receipt.internalStatus === "EXCEPTION" ? "font-semibold text-rose-700" : "font-semibold text-emerald-700"}>
+                          {receipt.internalStatus.replaceAll("_", " ")}
+                        </span>
+                        {receipt.issueCodes.length > 0 && (
+                          <span className="mt-1 block max-w-xs text-[10px] text-rose-700">
+                            {receipt.issueCodes.map((code) => code.replaceAll("_", " ")).join(", ")}
+                          </span>
+                        )}
+                        <span className="mt-1 block text-[10px] text-amber-700">Bank: {receipt.bankStatementStatus.replaceAll("_", " ")}</span>
+                      </td>
+                    </tr>
+                  ))}
+                  {receiptReconciliation.receipts?.length === 0 && (
+                    <tr><td colSpan="5" className="p-6 text-center text-slate-500">No customer receipts on this page.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+              <span>
+                Page {receiptReconciliationPage} of {Math.max(receiptReconciliation.pagination?.totalPages || 0, 1)}
+                {" · "}{receiptReconciliation.pagination?.total || 0} total receipts
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => fetchReceiptReconciliation(receiptReconciliationPage - 1)}
+                  disabled={receiptReconciliationPage <= 1 || receiptReconciliationLoading}
+                  className="rounded border border-slate-200 px-3 py-1.5 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fetchReceiptReconciliation(receiptReconciliationPage + 1)}
+                  disabled={receiptReconciliationPage >= (receiptReconciliation.pagination?.totalPages || 1) || receiptReconciliationLoading}
+                  className="rounded border border-slate-200 px-3 py-1.5 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
 
       {/* RECENT TRANSACTIONS LOG */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
@@ -482,7 +643,10 @@ const TreasuryCash = ({ token }) => {
                   type="text"
                   placeholder="e.g. NIC Asia Business Current A/C"
                   value={newAccount.accountName}
-                  onChange={(e) => setNewAccount({ ...newAccount, accountName: e.target.value })}
+                  onChange={(e) => {
+                    accountCreationRequestKey.current = null;
+                    setNewAccount({ ...newAccount, accountName: e.target.value });
+                  }}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
                   required
                 />
@@ -493,7 +657,10 @@ const TreasuryCash = ({ token }) => {
                   <label className="font-semibold text-slate-700 block mb-1">Account Type</label>
                   <select
                     value={newAccount.accountType}
-                    onChange={(e) => setNewAccount({ ...newAccount, accountType: e.target.value })}
+                    onChange={(e) => {
+                      accountCreationRequestKey.current = null;
+                      setNewAccount({ ...newAccount, accountType: e.target.value });
+                    }}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
                   >
                     <option value="BANK">Bank Account</option>
@@ -507,7 +674,10 @@ const TreasuryCash = ({ token }) => {
                 <label className="font-semibold text-slate-700 block mb-1">GL account *</label>
                 <select
                   value={newAccount.accountingAccountId}
-                  onChange={(event) => setNewAccount({ ...newAccount, accountingAccountId: event.target.value })}
+                  onChange={(event) => {
+                    accountCreationRequestKey.current = null;
+                    setNewAccount({ ...newAccount, accountingAccountId: event.target.value });
+                  }}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
                   required
                 >
@@ -527,7 +697,10 @@ const TreasuryCash = ({ token }) => {
                   type="text"
                   placeholder="e.g. Nabil Bank Ltd"
                   value={newAccount.bankName}
-                  onChange={(e) => setNewAccount({ ...newAccount, bankName: e.target.value })}
+                  onChange={(e) => {
+                    accountCreationRequestKey.current = null;
+                    setNewAccount({ ...newAccount, bankName: e.target.value });
+                  }}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
                 />
               </div>
@@ -538,8 +711,26 @@ const TreasuryCash = ({ token }) => {
                   type="text"
                   placeholder="e.g. 0192839201923"
                   value={newAccount.accountNumber}
-                  onChange={(e) => setNewAccount({ ...newAccount, accountNumber: e.target.value })}
+                  onChange={(e) => {
+                    accountCreationRequestKey.current = null;
+                    setNewAccount({ ...newAccount, accountNumber: e.target.value });
+                  }}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Reason for request *</label>
+                <textarea
+                  value={newAccount.reason}
+                  onChange={(e) => {
+                    accountCreationRequestKey.current = null;
+                    setNewAccount({ ...newAccount, reason: e.target.value });
+                  }}
+                  rows={3}
+                  maxLength={2000}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                  required
                 />
               </div>
 
@@ -828,6 +1019,10 @@ const TreasuryCash = ({ token }) => {
       )}
     </div>
   );
+};
+
+TreasuryCash.propTypes = {
+  token: PropTypes.string.isRequired,
 };
 
 export default TreasuryCash;

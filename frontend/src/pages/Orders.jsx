@@ -883,7 +883,12 @@ const Orders = () => {
                     const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
                     const productNames = displayItems.map((item) => item.name || "Product");
                     const deliveredAt = order.distributorDelivery?.deliveredAt || order.deliveryOrder?.deliveredAt || order.delivery?.deliveredAt;
-                    const paymentLabel = order.payment ? "Paid" : /cod|cash/i.test(String(order.paymentMethod || "")) ? "Due on delivery" : "Pending";
+                    const hasDeliveryOccurred = Boolean(deliveredAt) || String(order.status || "").toLowerCase() === "delivered";
+                    const paymentLabel = order.payment
+                      ? "Payment recorded"
+                      : /cod|cash/i.test(String(order.paymentMethod || ""))
+                        ? hasDeliveryOccurred ? "Collection not verified" : "Due on delivery"
+                        : "Pending";
 
                     return (
                       <tr key={order.id} className="align-top hover:bg-slate-50/70">
@@ -1205,10 +1210,10 @@ const Orders = () => {
                     <span className="text-slate-500 font-semibold">Cash on Delivery:</span>
                     <strong className={trackingOrder.payment ? "text-emerald-700" : "text-amber-700"}>
                       {trackingOrder.payment
-                        ? isSelfDelivery && distributorDelivery?.status?.toLowerCase() === "delivered"
-                          ? "Collected by distributor"
-                          : "Paid"
-                        : "Due on delivery"}
+                        ? "Payment recorded"
+                        : isCod && deliveryStatus.toLowerCase() === "delivered"
+                          ? "Collection not verified"
+                          : "Due on delivery"}
                     </strong>
                   </div>
                 )}
@@ -1513,7 +1518,7 @@ const Orders = () => {
                     Date: {new Date(invoiceOrder.dateNum).toLocaleDateString()}
                   </p>
                   <p className="text-[11px] font-bold text-emerald-600">
-                    Payment: {invoiceOrder.paymentMethod} ({invoiceOrder.payment ? "Paid" : "Due on Delivery"})
+                    Payment: {invoiceOrder.paymentMethod} ({invoiceOrder.payment ? "Recorded" : "Not recorded"})
                   </p>
                 </div>
               </div>

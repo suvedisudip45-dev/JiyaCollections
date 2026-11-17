@@ -33,8 +33,8 @@ const TaxCompliance = ({ token }) => {
   const [vatVersions, setVatVersions] = useState([]);
   const [sellerTaxProfile, setSellerTaxProfile] = useState({ legalName: "", panNumber: "", address: "" });
   const [taxRegistrationVersions, setTaxRegistrationVersions] = useState([]);
-  const [currentTaxStatus, setCurrentTaxStatus] = useState("PAN_ONLY");
-  const [registrationStatus, setRegistrationStatus] = useState("VAT_REGISTERED");
+  const [currentTaxStatus, setCurrentTaxStatus] = useState("UNREGISTERED");
+  const [registrationStatus, setRegistrationStatus] = useState("");
   const [registrationVatNumber, setRegistrationVatNumber] = useState("");
   const [registrationEffectiveDate, setRegistrationEffectiveDate] = useState(initialBsDate);
   const [savingSellerProfile, setSavingSellerProfile] = useState(false);
@@ -53,8 +53,8 @@ const TaxCompliance = ({ token }) => {
       periodEnd: `${month}-${String(getNepaliMonthLength(year, monthNumber)).padStart(2, "0")}`,
     };
   });
-  const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" });
-  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: initialBsDate, adjustmentReason: "" });
+  const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "", approvalReason: "", idempotencyKey: "" });
+  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: initialBsDate, adjustmentReason: "", approvalReason: "", idempotencyKey: "" });
   const [vatAmendment, setVatAmendment] = useState({ filingId: "", amendedAssessedAmount: "", amendedReference: "", amendedDate: initialBsDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" });
   const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: initialBsDate, evidenceUrl: "" });
   const [paperBillBooks, setPaperBillBooks] = useState([]);
@@ -83,7 +83,7 @@ const TaxCompliance = ({ token }) => {
     notes: "",
   });
   const [savingTaxAction, setSavingTaxAction] = useState(false);
-  const [vatRate, setVatRate] = useState("13");
+  const [vatRate, setVatRate] = useState("");
   const [vatEffectiveDate, setVatEffectiveDate] = useState(initialBsDate);
   const [savingVatRate, setSavingVatRate] = useState(false);
   const [corporateTaxPolicies, setCorporateTaxPolicies] = useState([]);
@@ -106,6 +106,11 @@ const TaxCompliance = ({ token }) => {
   const [taxContext, setTaxContext] = useState({});
   const { canAny } = usePermissions();
   const canConfigureVat = canAny(["finance:tax_configure"]);
+  const currentTaxStatusLabel = currentTaxStatus === "VAT_REGISTERED"
+    ? "VAT registered"
+    : currentTaxStatus === "PAN_ONLY"
+      ? "PAN-only (not VAT-registered)"
+      : "Unregistered";
   const canViewStorefrontOrders = canAny(["order:control", "order:list_all"]);
   const canViewAdminOrders = canAny(["order:control", "order:list_admin"]);
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -200,7 +205,7 @@ const TaxCompliance = ({ token }) => {
         address: response.data.profile?.address || "",
       });
       setTaxRegistrationVersions(response.data.registrations || []);
-      setCurrentTaxStatus(response.data.currentRegistration?.taxStatus || "PAN_ONLY");
+      setCurrentTaxStatus(response.data.currentRegistration?.taxStatus || "UNREGISTERED");
     } catch (error) {
       console.error(error);
       toast.error(error.response?.data?.message || error.message || "Failed to load seller tax details.");
@@ -379,12 +384,14 @@ const TaxCompliance = ({ token }) => {
         assessmentAdjustmentAccountId: filingSubmission.assessmentAdjustmentAccountId,
         filedReference: filingSubmission.filedReference,
         adjustmentReason: filingSubmission.adjustmentReason,
+        approvalReason: filingSubmission.approvalReason,
+        idempotencyKey: filingSubmission.idempotencyKey,
         filedDate,
         calendar: "BS",
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT filing could not be recorded.");
-      toast.success(response.data.message || "VAT filing recorded.");
-      setFilingSubmission({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" });
+      toast.info(response.data.message || "VAT filing submitted for approval.");
+      setFilingSubmission({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "", approvalReason: "", idempotencyKey: "" });
       await fetchTaxRecords();
     } catch (error) {
       console.error(error);
@@ -406,11 +413,12 @@ const TaxCompliance = ({ token }) => {
         paymentDate,
         calendar: "BS",
         adjustmentReason: vatPayment.adjustmentReason,
-        idempotencyKey: `VATPAY:${vatPayment.filingId}:${vatPayment.paymentReference.trim()}`,
+        approvalReason: vatPayment.approvalReason,
+        idempotencyKey: vatPayment.idempotencyKey,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT payment could not be recorded.");
-      toast.success(response.data.message || "VAT payment recorded.");
-      setVatPayment((current) => ({ ...current, filingId: "", amount: "", paymentReference: "", adjustmentReason: "" }));
+      toast.info(response.data.message || "VAT payment submitted for approval.");
+      setVatPayment((current) => ({ ...current, filingId: "", amount: "", paymentReference: "", adjustmentReason: "", approvalReason: "", idempotencyKey: "" }));
       await fetchTaxRecords();
     } catch (error) {
       console.error(error);
@@ -436,7 +444,7 @@ const TaxCompliance = ({ token }) => {
         idempotencyKey: vatAmendment.idempotencyKey,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT amendment could not be recorded.");
-      toast.success(response.data.message || "VAT amendment recorded.");
+      toast.info(response.data.message || "VAT amendment submitted for approval.");
       setVatAmendment((current) => ({ ...current, filingId: "", amendedAssessedAmount: "", amendedReference: "", adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" }));
       await fetchTaxRecords();
     } catch (error) {
@@ -673,6 +681,7 @@ const TaxCompliance = ({ token }) => {
   const vat = taxData?.vat || {};
   const incomeTax = taxData?.incomeTax || {};
   const strategies = taxData?.taxOptimizationStrategies || [];
+  const reportBasis = taxData?.reportBasis;
 
   return (
     <div className="space-y-8 pb-12">
@@ -685,7 +694,7 @@ const TaxCompliance = ({ token }) => {
             </span>
             <span className="text-xs font-medium text-slate-400">Configured effective VAT rates &amp; CIT projection</span>
           </div>
-          <h1 className="text-2xl font-black text-slate-900 mt-1">VAT &amp; Tax Reconciliation</h1>
+          <h1 className="text-2xl font-black text-slate-900 mt-1">VAT Summary &amp; Tax Projection</h1>
           <p className="text-xs text-slate-500 mt-0.5">
           Effective-dated output VAT tracking, posted-ledger reconciliation, and corporate income tax projection.
           </p>
@@ -718,6 +727,20 @@ const TaxCompliance = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <section
+        role="note"
+        aria-label="Tax report basis"
+        className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950"
+      >
+        <h2 className="font-bold">Mixed report basis — not a tax assessment or filing</h2>
+        <p className="mt-1">
+          {(reportBasis?.limitations || [
+            "The VAT summary uses posted-accounting data; the corporate income-tax projection also uses operational expense and asset records.",
+            "Source completeness and tax treatment require qualified review before filing.",
+          ]).join(" ")}
+        </p>
+      </section>
 
       <section id="physical-bill-allocation" className="scroll-mt-6 rounded-2xl border-2 border-sky-200 bg-white p-6 shadow-xs">
         <div className="border-b border-slate-100 pb-4">
@@ -835,7 +858,7 @@ const TaxCompliance = ({ token }) => {
           <div>
             <h2 className="text-base font-bold text-slate-900">Seller identity and PAN/VAT status</h2>
             <p className="mt-1 max-w-3xl text-xs text-slate-500">
-              PAN-only is the safe default. Output VAT is posted only for transactions whose tax point falls inside an effective VAT-registration period.
+              Unregistered and PAN-only records never calculate output VAT. VAT calculation requires an effective VAT registration and an explicitly scheduled rate. Unregistered status also blocks statutory paper-bill issuance; internal sales records remain available.
             </p>
           </div>
           <span className={`rounded-lg border px-3 py-1.5 text-[11px] font-bold ${
@@ -843,7 +866,7 @@ const TaxCompliance = ({ token }) => {
               ? "border-emerald-200 bg-emerald-50 text-emerald-800"
               : "border-slate-200 bg-slate-100 text-slate-700"
           }`}>
-            Current: {currentTaxStatus === "VAT_REGISTERED" ? "VAT registered" : "PAN-only"}
+            Current: {currentTaxStatusLabel}
           </span>
         </div>
 
@@ -892,7 +915,9 @@ const TaxCompliance = ({ token }) => {
           <form onSubmit={scheduleTaxRegistration} className="mt-5 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <label className="text-xs font-semibold text-slate-700">
               Registration status
-              <select value={registrationStatus} onChange={(event) => setRegistrationStatus(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+              <select required value={registrationStatus} onChange={(event) => setRegistrationStatus(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="" disabled>Select from registration evidence</option>
+                <option value="UNREGISTERED">Unregistered</option>
                 <option value="PAN_ONLY">PAN-only</option>
                 <option value="VAT_REGISTERED">VAT registered</option>
               </select>
@@ -901,6 +926,7 @@ const TaxCompliance = ({ token }) => {
               <label className="text-xs font-semibold text-slate-700">
                 VAT registration number
                 <input value={registrationVatNumber} onChange={(event) => setRegistrationVatNumber(event.target.value)} maxLength={32} required className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+                <span className="mt-1 block font-normal text-slate-500">An effective VAT rate must also be scheduled for this date before VAT registration can be saved.</span>
               </label>
             )}
             <NepaliDatePicker label="Registration effective date" value={registrationEffectiveDate} onChange={setRegistrationEffectiveDate} calendars={calendarYears} />
@@ -928,7 +954,7 @@ const TaxCompliance = ({ token }) => {
                   const isFuture = version.status === "ACTIVE" && new Date(version.effectiveFrom) > new Date();
                   return (
                     <tr key={version.id} className="text-slate-700">
-                      <td className="py-3 pr-4 font-semibold">{version.taxStatus === "VAT_REGISTERED" ? "VAT registered" : "PAN-only"}</td>
+                      <td className="py-3 pr-4 font-semibold">{version.taxStatus === "VAT_REGISTERED" ? "VAT registered" : version.taxStatus === "PAN_ONLY" ? "PAN-only" : "Unregistered"}</td>
                       <td className="py-3 pr-4">{version.vatNumber || "—"}</td>
                       <td className="py-3 pr-4">{formatNepaliDate(version.effectiveFrom, calendarYears)}</td>
                       <td className="py-3 pr-4">{version.effectiveUntil ? formatNepaliDate(version.effectiveUntil, calendarYears) : "Open"}</td>
@@ -970,6 +996,7 @@ const TaxCompliance = ({ token }) => {
                 onChange={(event) => setVatRate(event.target.value)}
                 className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
               />
+              <span className="mt-1 block font-normal text-slate-500">No rate is preselected; confirm the rate and effective date against current official sources and accountant review.</span>
             </label>
             <NepaliDatePicker label="VAT effective date" value={vatEffectiveDate} onChange={setVatEffectiveDate} calendars={calendarYears} />
             <button
@@ -1050,7 +1077,7 @@ const TaxCompliance = ({ token }) => {
               {salesInvoices.map((invoice) => (
                 <tr key={invoice.id} className="text-slate-700">
                   <td className="py-3 pr-4">{invoice.order?.orderReference || invoice.documentNumber}</td>
-                  <td className="py-3 pr-4 font-semibold">{invoice.documentType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : "PAN bill"}</td>
+                  <td className="py-3 pr-4 font-semibold">{invoice.documentType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : invoice.documentType === "PAN_BILL" ? "PAN bill" : "Internal sales record (not a statutory invoice)"}</td>
                   <td className="py-3 pr-4">{formatNepaliDate(invoice.taxPoint, calendarYears)}</td>
                   <td className="py-3 pr-4">{currency}{Number(invoice.totalAmount).toLocaleString()}</td>
                   <td className="py-3 pr-4">{currency}{Number(invoice.vatAmount).toLocaleString()}</td>
@@ -1163,34 +1190,36 @@ const TaxCompliance = ({ token }) => {
         )}
         {filingSubmission.id && canConfigureVat && (
           <form onSubmit={submitVatFiling} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-            <label className="text-xs font-semibold text-slate-700">IRD-assessed amount<input type="number" min="0" step="0.01" required value={filingSubmission.assessedAmount} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Apply carried-forward payment credit<input type="number" min="0" max={Math.min(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.carriedForwardPaymentCredit || 0), Number(filingSubmission.assessedAmount || 0))} step="0.01" required value={filingSubmission.paymentCreditApplied} onChange={(event) => setFilingSubmission((current) => ({ ...current, paymentCreditApplied: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            {Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005 && <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={filingSubmission.assessmentAdjustmentAccountId} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessmentAdjustmentAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>}
-            <label className="text-xs font-semibold text-slate-700">IRD filing reference<input required value={filingSubmission.filedReference} onChange={(event) => setFilingSubmission((current) => ({ ...current, filedReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Reason if assessment differs<input required={Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005} value={filingSubmission.adjustmentReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Saving..." : "Record filed return"}</button>
+            <label className="text-xs font-semibold text-slate-700">IRD-assessed amount<input type="number" min="0" step="0.01" required value={filingSubmission.assessedAmount} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessedAmount: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Apply carried-forward payment credit<input type="number" min="0" max={Math.min(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.carriedForwardPaymentCredit || 0), Number(filingSubmission.assessedAmount || 0))} step="0.01" required value={filingSubmission.paymentCreditApplied} onChange={(event) => setFilingSubmission((current) => ({ ...current, paymentCreditApplied: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            {Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005 && <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={filingSubmission.assessmentAdjustmentAccountId} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessmentAdjustmentAccountId: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>}
+            <label className="text-xs font-semibold text-slate-700">IRD filing reference<input required value={filingSubmission.filedReference} onChange={(event) => setFilingSubmission((current) => ({ ...current, filedReference: event.target.value, idempotencyKey: crypto.randomUUID() }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Reason if assessment differs<input required={Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005} value={filingSubmission.adjustmentReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, adjustmentReason: event.target.value, idempotencyKey: crypto.randomUUID() }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for approval request<textarea required minLength={3} maxLength={2000} value={filingSubmission.approvalReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, approvalReason: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Submitting..." : "Request filing approval"}</button>
           </form>
         )}
         {vatPayment.filingId && canConfigureVat && (
           <form onSubmit={submitVatPayment} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
-            <label className="text-xs font-semibold text-slate-700">Payment amount<input type="number" min="0.01" step="0.01" required value={vatPayment.amount} onChange={(event) => setVatPayment((current) => ({ ...current, amount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Payment reference<input required value={vatPayment.paymentReference} onChange={(event) => setVatPayment((current) => ({ ...current, paymentReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Paid from<select required value={vatPayment.treasuryAccountId} onChange={(event) => setVatPayment((current) => ({ ...current, treasuryAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select cash/bank</option>{treasuryAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName} ({account.accountingAccount?.accountCode})</option>)}</select></label>
-            <NepaliDatePicker label="Payment date" value={vatPayment.paymentDate} onChange={(paymentDate) => setVatPayment((current) => ({ ...current, paymentDate }))} calendars={calendarYears} />
-            {Number(vatPayment.amount || 0) > Number(vatFilings.find((filing) => filing.id === vatPayment.filingId)?.outstandingAmount || 0) + 0.005 && <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for VAT overpayment (required)<input required minLength={3} value={vatPayment.adjustmentReason} onChange={(event) => setVatPayment((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>}
-            <button type="submit" disabled={savingTaxAction || !treasuryAccounts.length} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record payment"}</button>
+            <label className="text-xs font-semibold text-slate-700">Payment amount<input type="number" min="0.01" step="0.01" required value={vatPayment.amount} onChange={(event) => setVatPayment((current) => ({ ...current, amount: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Payment reference<input required value={vatPayment.paymentReference} onChange={(event) => setVatPayment((current) => ({ ...current, paymentReference: event.target.value, idempotencyKey: crypto.randomUUID() }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Paid from<select required value={vatPayment.treasuryAccountId} onChange={(event) => setVatPayment((current) => ({ ...current, treasuryAccountId: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select cash/bank</option>{treasuryAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName} ({account.accountingAccount?.accountCode})</option>)}</select></label>
+            <NepaliDatePicker label="Payment date" value={vatPayment.paymentDate} onChange={(paymentDate) => setVatPayment((current) => ({ ...current, paymentDate, idempotencyKey: crypto.randomUUID() }))} calendars={calendarYears} />
+            {Number(vatPayment.amount || 0) > Number(vatFilings.find((filing) => filing.id === vatPayment.filingId)?.outstandingAmount || 0) + 0.005 && <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for VAT overpayment (required)<input required minLength={3} value={vatPayment.adjustmentReason} onChange={(event) => setVatPayment((current) => ({ ...current, adjustmentReason: event.target.value, idempotencyKey: crypto.randomUUID() }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>}
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for approval request<textarea required minLength={3} maxLength={2000} value={vatPayment.approvalReason} onChange={(event) => setVatPayment((current) => ({ ...current, approvalReason: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction || !treasuryAccounts.length} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Submitting..." : "Request payment approval"}</button>
           </form>
         )}
         {vatAmendment.filingId && canConfigureVat && (
           <form onSubmit={submitVatAmendment} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-            <p className="text-xs text-slate-600 lg:col-span-4">Record a filed-return change as a dated, auditable amendment. The reason, IRD reference, and balanced accounting journal are required.</p>
-            <label className="text-xs font-semibold text-slate-700">Amended assessed amount<input type="number" min="0" step="0.01" required value={vatAmendment.amendedAssessedAmount} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedAssessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <NepaliDatePicker label="Amendment date" value={vatAmendment.amendedDate} onChange={(amendedDate) => setVatAmendment((current) => ({ ...current, amendedDate }))} calendars={calendarYears} />
-            <label className="text-xs font-semibold text-slate-700">IRD amendment reference<input required maxLength={191} value={vatAmendment.amendedReference} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedReference: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={vatAmendment.adjustmentAccountId} onChange={(event) => setVatAmendment((current) => ({ ...current, adjustmentAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>
-            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for amendment (required)<textarea required minLength={3} maxLength={2000} value={vatAmendment.reason} onChange={(event) => setVatAmendment((current) => ({ ...current, reason: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Evidence URL (optional)<input type="url" maxLength={5000} value={vatAmendment.evidenceUrl} onChange={(event) => setVatAmendment((current) => ({ ...current, evidenceUrl: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record amendment"}</button>
+            <p className="text-xs text-slate-600 lg:col-span-4">Submit a dated, evidenced amendment for independent Admin approval. The amendment and its balanced journal post only after approval.</p>
+            <label className="text-xs font-semibold text-slate-700">Amended assessed amount<input type="number" min="0" step="0.01" required value={vatAmendment.amendedAssessedAmount} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedAssessedAmount: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <NepaliDatePicker label="Amendment date" value={vatAmendment.amendedDate} onChange={(amendedDate) => setVatAmendment((current) => ({ ...current, amendedDate, idempotencyKey: crypto.randomUUID() }))} calendars={calendarYears} />
+            <label className="text-xs font-semibold text-slate-700">IRD amendment reference<input required maxLength={191} value={vatAmendment.amendedReference} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedReference: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={vatAmendment.adjustmentAccountId} onChange={(event) => setVatAmendment((current) => ({ ...current, adjustmentAccountId: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for amendment (required)<textarea required minLength={3} maxLength={2000} value={vatAmendment.reason} onChange={(event) => setVatAmendment((current) => ({ ...current, reason: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Evidence URL (optional)<input type="url" maxLength={5000} value={vatAmendment.evidenceUrl} onChange={(event) => setVatAmendment((current) => ({ ...current, evidenceUrl: event.target.value, idempotencyKey: crypto.randomUUID() }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Submitting..." : "Request amendment approval"}</button>
           </form>
         )}
         {canConfigureVat && treasuryAccounts.length === 0 && <p className="mt-3 text-xs text-amber-800">Map an active NPR cash or bank Treasury account to GL account 1110 or 1120 before recording a tax payment.</p>}
@@ -1222,7 +1251,7 @@ const TaxCompliance = ({ token }) => {
                     {filing.sourceReconciliation?.salesAdjustments?.unresolvedCount > 0 && <span className="mt-1 block text-[10px] text-rose-700">{filing.sourceReconciliation.salesAdjustments.unresolvedCount} unresolved adjustment(s)</span>}
                   </td>
                   <td className="py-3 pr-4">{filing.status}</td>
-                  {canConfigureVat && <td className="py-3 text-right"><div className="flex flex-col items-end gap-1">{filing.status === "DRAFT" ? <button type="button" onClick={() => setFilingSubmission({ id: filing.id, assessedAmount: Math.max(Number(filing.netVatPayable), 0).toFixed(2), paymentCreditApplied: Math.min(Number(filing.carriedForwardPaymentCredit || 0), Math.max(Number(filing.netVatPayable), 0)).toFixed(2), assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" })} className="font-semibold text-indigo-700 hover:text-indigo-900">Record filing</button> : <>{Number(filing.outstandingAmount || 0) > 0 && <button type="button" onClick={() => setVatPayment((current) => ({ ...current, filingId: filing.id, amount: filing.outstandingAmount, adjustmentReason: "" }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Record payment</button>}<button type="button" onClick={() => setVatAmendment({ filingId: filing.id, amendedAssessedAmount: filing.assessedAmount, amendedReference: "", amendedDate: todayInputDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: `VATAMEND:${window.crypto.randomUUID()}` })} className="font-semibold text-rose-700 hover:text-rose-900">Amend filing</button></>}</div></td>}
+                  {canConfigureVat && <td className="py-3 text-right"><div className="flex flex-col items-end gap-1">{filing.status === "DRAFT" ? <button type="button" onClick={() => setFilingSubmission({ id: filing.id, assessedAmount: Math.max(Number(filing.netVatPayable), 0).toFixed(2), paymentCreditApplied: Math.min(Number(filing.carriedForwardPaymentCredit || 0), Math.max(Number(filing.netVatPayable), 0)).toFixed(2), assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "", approvalReason: "", idempotencyKey: crypto.randomUUID() })} className="font-semibold text-indigo-700 hover:text-indigo-900">Request filing approval</button> : <>{Number(filing.outstandingAmount || 0) > 0 && <button type="button" onClick={() => setVatPayment((current) => ({ ...current, filingId: filing.id, amount: filing.outstandingAmount, adjustmentReason: "", approvalReason: "", idempotencyKey: crypto.randomUUID() }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Request payment approval</button>}<button type="button" onClick={() => setVatAmendment({ filingId: filing.id, amendedAssessedAmount: filing.assessedAmount, amendedReference: "", amendedDate: todayInputDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: `VATAMEND:${window.crypto.randomUUID()}` })} className="font-semibold text-rose-700 hover:text-rose-900">Request amendment approval</button></>}</div></td>}
                 </tr>
               ))}
               {vatFilings.length === 0 && <tr><td colSpan={canConfigureVat ? 13 : 12} className="py-6 text-center text-slate-400">No VAT returns recorded.</td></tr>}

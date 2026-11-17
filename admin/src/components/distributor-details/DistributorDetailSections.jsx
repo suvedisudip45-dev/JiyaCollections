@@ -1,14 +1,28 @@
 /* eslint-disable react/prop-types */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../../App";
 import { toast } from "react-toastify";
 import Pagination from "../Pagination";
+import {
+  compareDecimalStrings,
+  formatNprAmount,
+  maxZeroDecimalString,
+  minDecimalStrings,
+} from "../../utils/decimalDisplay";
 
 const pageLimit = 10;
 const emptyQuery = {};
-const amountText = (value) => `${currency}${Number(value || 0).toLocaleString()}`;
+const amountText = (value) => `${currency}${formatNprAmount(value ?? "0")}`;
+const absoluteDecimalString = (value) => {
+  const amount = String(value ?? "0");
+  return amount.startsWith("-") ? amount.slice(1) : amount;
+};
 const dateText = (value) => (value ? new Date(value).toLocaleString() : "—");
+const getFileDigest = async (file) => {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 const returnDispositionOptions = [
   ["RESTOCK_REVIEW", "Restock review"],
   ["REPAIR_REVIEW", "Repair review"],
@@ -1122,6 +1136,7 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
   const [data, setData] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [accountByBatch, setAccountByBatch] = useState({});
+  const [actualReceivedAmountByRequest, setActualReceivedAmountByRequest] = useState({});
   const [loading, setLoading] = useState(true);
   const [busyBatchId, setBusyBatchId] = useState(null);
   const [postingSettlement, setPostingSettlement] = useState(false);
@@ -1133,6 +1148,7 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
     notes: "",
   });
   const [payoutFormByRequest, setPayoutFormByRequest] = useState({});
+  const payoutRequestKeys = useRef({});
   const endpoint = `${backendUrl}/api/admin/distributors/${distributorId}/finance/remittances`;
 
   const load = useCallback(async () => {
@@ -1187,18 +1203,26 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
 
   const postUnifiedSettlement = async () => {
     const position = data?.settlementPosition;
-    const maximum = Math.abs(Number(position?.netBalance || 0));
+    const netBalance = String(position?.netBalance || "0");
+    const netBalanceAmount = absoluteDecimalString(netBalance);
+    const companyCollects = compareDecimalStrings(netBalance, "0") > 0;
+    const maximum = companyCollects
+      ? minDecimalStrings(netBalanceAmount, data?.position?.availableToRemit || "0")
+      : netBalanceAmount;
     const requestedAmount = settlementForm.requestedAmount.trim();
-    const amount = Number(requestedAmount);
-    const offsetAmount = Math.min(
-      Number(position?.outstandingReceivable || 0),
-      Number(position?.outstandingPayable || 0),
+    const offsetAmount = minDecimalStrings(
+      maxZeroDecimalString(position?.outstandingReceivable || "0"),
+      maxZeroDecimalString(position?.outstandingPayable || "0"),
     );
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(requestedAmount) || !Number.isFinite(amount) || amount <= 0 || amount > maximum) {
-      toast.error(`Enter a positive request amount up to the net balance of NPR ${maximum.toFixed(2)}.`);
+    if (
+      !/^\d{1,18}(?:\.\d{1,2})?$/.test(requestedAmount) ||
+      compareDecimalStrings(requestedAmount, "0") <= 0 ||
+      compareDecimalStrings(requestedAmount, maximum) > 0
+    ) {
+      toast.error(`Enter a positive request amount up to NPR ${formatNprAmount(maximum)}.`);
       return;
     }
-    if (offsetAmount > 0 && (
+    if (compareDecimalStrings(offsetAmount, "0") > 0 && (
       !settlementForm.setoffAgreementReference.trim() ||
       !settlementForm.setoffConfirmed
     )) {
@@ -1244,6 +1268,14 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
       ? window.prompt("Why is this transfer evidence being rejected?")?.trim()
       : "";
     if (decision === "REJECT" && !reviewNotes) return;
+    const actualReceivedAmount = actualReceivedAmountByRequest[request.id]?.trim();
+    if (decision === "VERIFY" && (
+      !/^\d{1,18}(?:\.\d{1,2})?$/.test(actualReceivedAmount || "") ||
+      compareDecimalStrings(actualReceivedAmount, String(request.requestedAmount)) !== 0
+    )) {
+      toast.error("Enter and confirm the exact amount received in the selected Treasury account.");
+      return;
+    }
     const financialAccountId = accountByBatch[request.id] || accounts.find((account) =>
       account.status === "ACTIVE" &&
       account.currency === "NPR" &&
@@ -1257,7 +1289,7 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
     try {
       await axios.post(
         `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlement-requests/${request.id}/review`,
-        { decision, financialAccountId, reviewNotes },
+        { decision, financialAccountId, reviewNotes, actualReceivedAmount },
         { headers: { token } },
       );
       toast.success(decision === "VERIFY" ? "Distributor transfer evidence acknowledged and posted." : "Transfer evidence rejected.");
@@ -1271,22 +1303,39 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
 
   const recordPayoutTransfer = async (request) => {
     const form = payoutFormByRequest[request.id] || {};
-    if (!form.transferReference?.trim() || !form.financialAccountId || !form.evidenceFile) {
-      toast.error("Enter the transfer reference, select the treasury account, and attach transfer evidence.");
+    if (!form.transferReference?.trim() || !form.financialAccountId || !form.evidenceFile || (form.reason || "").trim().length < 3) {
+      toast.error("Enter the transfer reference, select the treasury account, attach evidence, and provide a reason.");
       return;
     }
-    const formData = new FormData();
-    formData.append("transferReference", form.transferReference.trim());
-    formData.append("financialAccountId", form.financialAccountId);
-    formData.append("evidence", form.evidenceFile);
     setBusyBatchId(request.id);
     try {
-      await axios.post(
+      const evidenceDigest = await getFileDigest(form.evidenceFile);
+      const fingerprint = JSON.stringify({
+        requestId: request.id,
+        transferReference: form.transferReference.trim(),
+        financialAccountId: form.financialAccountId,
+        reason: form.reason.trim(),
+        evidenceDigest,
+      });
+      if (payoutRequestKeys.current[request.id]?.fingerprint !== fingerprint) {
+        payoutRequestKeys.current[request.id] = {
+          fingerprint,
+          key: crypto.randomUUID(),
+        };
+      }
+      const formData = new FormData();
+      formData.append("transferReference", form.transferReference.trim());
+      formData.append("financialAccountId", form.financialAccountId);
+      formData.append("evidence", form.evidenceFile);
+      formData.append("reason", form.reason.trim());
+      formData.append("evidenceDigest", evidenceDigest);
+      formData.append("idempotencyKey", payoutRequestKeys.current[request.id].key);
+      const response = await axios.post(
         `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlement-requests/${request.id}/payout`,
         formData,
         { headers: { token } },
       );
-      toast.success("Company payout recorded. The distributor can acknowledge receipt.");
+      toast.info(response.data?.message || "Company payout request submitted for independent Admin approval.");
       await load();
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not record the company payout.");
@@ -1296,25 +1345,38 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
   };
 
   const settlementPosition = data?.settlementPosition || {};
-  const openReceivable = Number(settlementPosition.outstandingReceivable || 0);
-  const openPayable = Number(settlementPosition.outstandingPayable || 0);
-  const offsetPreview = Math.min(openReceivable, openPayable);
-  const maximumNetCash = Math.abs(Number(settlementPosition.netBalance || 0));
+  const netBalance = String(settlementPosition.netBalance || "0");
+  const companyCollects = compareDecimalStrings(netBalance, "0") > 0;
+  const maximumNetBalance = absoluteDecimalString(netBalance);
+  const maximumNetCash = companyCollects
+    ? minDecimalStrings(maximumNetBalance, data?.position?.availableToRemit || "0")
+    : maximumNetBalance;
+  const hasUnsupportedCollectionSource = companyCollects &&
+    (settlementPosition.receivableDocuments || []).some((document) => document.sourceType !== "DISTRIBUTOR_COD_SALE");
+  const offsetPreview = minDecimalStrings(
+    maxZeroDecimalString(settlementPosition.outstandingReceivable || "0"),
+    maxZeroDecimalString(settlementPosition.outstandingPayable || "0"),
+  );
   const activeSettlementRequest = (data?.settlementRequests || []).find((request) =>
     ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"].includes(request.status)
   );
-  const settlementBlocked = Number(settlementPosition.pendingRemittance || 0) > 0 ||
-    Number(settlementPosition.pendingSettlementRequests || 0) > 0 ||
+  const hasPendingRemittance = compareDecimalStrings(settlementPosition.pendingRemittance || "0", "0") > 0;
+  const hasPendingSettlementRequests = Number(settlementPosition.pendingSettlementRequests || 0) > 0;
+  const settlementBlocked = hasPendingRemittance ||
+    hasPendingSettlementRequests ||
     (data?.settlementRequests || []).some((request) => ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"].includes(request.status)) ||
-    settlementPosition.unifiedSettlementBlocked === true;
-  const hasOpenBalance = openReceivable > 0 || openPayable > 0;
+    settlementPosition.unifiedSettlementBlocked === true ||
+    hasUnsupportedCollectionSource ||
+    (companyCollects && compareDecimalStrings(maximumNetCash, "0") <= 0);
+  const hasOpenBalance = compareDecimalStrings(settlementPosition.outstandingReceivable || "0", "0") > 0 ||
+    compareDecimalStrings(settlementPosition.outstandingPayable || "0", "0") > 0;
   const toggleSettlementForm = () => {
     if (settlementFormOpen) {
       setSettlementFormOpen(false);
       return;
     }
     setSettlementForm({
-      requestedAmount: maximumNetCash.toFixed(2),
+      requestedAmount: maximumNetCash,
       setoffAgreementReference: "",
       setoffConfirmed: false,
       notes: "",
@@ -1338,10 +1400,14 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
               ["Company receivable", settlementPosition.outstandingReceivable],
               ["Company payable", settlementPosition.outstandingPayable],
               [
-                Number(settlementPosition.netBalance || 0) > 0 ? "Net due to company" : "Net due to distributor",
-                Math.abs(Number(settlementPosition.netBalance || 0)),
+                companyCollects ? "Net due to company" : "Net due to distributor",
+                maximumNetBalance,
               ],
               ["Pending remittance review", data.position?.pendingRemittance],
+              ["Verified customer COD collection", data.position?.verifiedCustomerCollections],
+              ["Calculated cash held by distributor", data.position?.cashHeldByDistributor],
+              ["Company receipts recorded (not statement-reconciled)", data.position?.companyReceiptRecorded],
+              ["Available verified COD remittance", data.position?.availableToRemit],
             ].map(([label, amount]) => (
               <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
@@ -1351,11 +1417,11 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
             <p className="max-w-3xl text-xs leading-5 text-indigo-950">
-              Admin issues one request for the distributor's current net amount. The distributor submits evidence for money owed to the company; company payouts are recorded by Admin and acknowledged by the distributor.
+              Admin issues one request for the distributor&apos;s current net amount. The distributor submits evidence for money owed to the company; company payouts are recorded by Admin and acknowledged by the distributor.
             </p>
             <button
               type="button"
-              disabled={!hasOpenBalance || maximumNetCash <= 0 || settlementBlocked || postingSettlement}
+              disabled={!hasOpenBalance || compareDecimalStrings(maximumNetCash, "0") <= 0 || settlementBlocked || postingSettlement}
               onClick={toggleSettlementForm}
               className="rounded-lg bg-indigo-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
             >
@@ -1367,12 +1433,22 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
               Request {activeSettlementRequest.id} is in progress ({activeSettlementRequest.status.replaceAll("_", " ")}). Complete or reject it before issuing another request.
             </p>
           )}
-          {(Number(settlementPosition.pendingRemittance || 0) > 0 || Number(settlementPosition.pendingSettlementRequests || 0) > 0) && (
+          {(hasPendingRemittance || hasPendingSettlementRequests) && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-              Clear {Number(settlementPosition.pendingRemittance || 0) > 0 ? "the pending COD remittance review" : ""}
-              {Number(settlementPosition.pendingRemittance || 0) > 0 && Number(settlementPosition.pendingSettlementRequests || 0) > 0 ? " and " : ""}
-              {Number(settlementPosition.pendingSettlementRequests || 0) > 0 ? "existing distributor settlement request(s)" : ""}
+              Clear {hasPendingRemittance ? "the pending COD remittance review" : ""}
+              {hasPendingRemittance && hasPendingSettlementRequests ? " and " : ""}
+              {hasPendingSettlementRequests ? "existing distributor settlement request(s)" : ""}
               {" "}before issuing a settlement request.
+            </p>
+          )}
+          {hasUnsupportedCollectionSource && (
+            <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">
+              Company collection is blocked because this balance includes a receivable that is not a distributor COD sale. Resolve the source policy before posting a receipt.
+            </p>
+          )}
+          {companyCollects && compareDecimalStrings(maximumNetCash, "0") <= 0 && !hasUnsupportedCollectionSource && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              No request can be issued as company cash collection exceeds verified, unremitted customer COD collections. Pending declarations and uploaded evidence do not increase this limit.
             </p>
           )}
           {settlementPosition.unifiedSettlementBlocked && (
@@ -1397,9 +1473,12 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
               className="grid gap-3 rounded-xl border border-indigo-200 bg-white p-4 sm:grid-cols-2"
             >
               <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-700 sm:col-span-2">
-                <p><b>Net balance:</b> {amountText(maximumNetCash)} {Number(settlementPosition.netBalance || 0) >= 0 ? "owed to the company" : "owed to the distributor"}.</p>
-                {offsetPreview > 0 && <p className="mt-1"><b>Offset preview:</b> {amountText(offsetPreview)} applied to both gross sides when the request is completed.</p>}
-                <p className="mt-1 text-[10px] text-slate-500">The requested amount may be partial, but cannot exceed the current net balance. Transfer evidence is added by the party making the payment.</p>
+                <p><b>Net balance:</b> {amountText(maximumNetBalance)} {companyCollects ? "owed to the company" : "owed to the distributor"}.</p>
+                {compareDecimalStrings(offsetPreview, "0") > 0 && <p className="mt-1"><b>Offset preview:</b> {amountText(offsetPreview)} applied to both gross sides when the request is completed.</p>}
+                <p className="mt-1 text-[10px] text-slate-500">
+                  The request cannot exceed the current net balance. Company-collection requests are additionally capped by verified, unremitted customer COD collections. An uploaded transfer image is not, by itself, proof that funds reached Treasury; Admin must confirm the actual received amount and account.
+                </p>
+                {companyCollects && <p className="mt-1 text-[10px] font-semibold text-slate-700">Maximum cash request: {amountText(maximumNetCash)}</p>}
               </div>
               <label className="space-y-1 text-xs font-semibold text-slate-700">
                 Net request amount (maximum {amountText(maximumNetCash)})
@@ -1414,17 +1493,17 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
                 />
               </label>
               <label className="space-y-1 text-xs font-semibold text-slate-700">
-                Set-off agreement/reference {offsetPreview > 0 ? "(required)" : "(optional)"}
+                Set-off agreement/reference {compareDecimalStrings(offsetPreview, "0") > 0 ? "(required)" : "(optional)"}
                 <input
                   type="text"
                   maxLength={191}
                   value={settlementForm.setoffAgreementReference}
                   onChange={(event) => setSettlementForm((current) => ({ ...current, setoffAgreementReference: event.target.value }))}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  required={offsetPreview > 0}
+                  required={compareDecimalStrings(offsetPreview, "0") > 0}
                 />
               </label>
-              {offsetPreview > 0 && (
+              {compareDecimalStrings(offsetPreview, "0") > 0 && (
                 <label className="flex items-start gap-2 text-xs text-slate-700 sm:col-span-2">
                   <input
                     type="checkbox"
@@ -1506,7 +1585,25 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
                       <p className="text-sky-950">Distributor transfer reference: <b>{request.transferReference || "—"}</b></p>
                       {request.evidenceUrl && <a href={request.evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">View evidence</a>}
                     </div>
+                    <p className="text-[10px] text-sky-950">
+                      Uploaded evidence and transfer references are claims, not proof of receipt. Confirm the amount against the selected Treasury account before posting; partial or mismatched receipts are blocked.
+                    </p>
                     <div className="flex flex-wrap items-end gap-2">
+                      <label className="min-w-52 flex-1 text-[10px] font-semibold text-slate-700">
+                        Actual amount received
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          value={actualReceivedAmountByRequest[request.id] || ""}
+                          onChange={(event) => setActualReceivedAmountByRequest((current) => ({
+                            ...current,
+                            [request.id]: event.target.value,
+                          }))}
+                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                          required
+                        />
+                      </label>
                       <label className="min-w-52 flex-1 text-[10px] font-semibold text-slate-700">
                         Treasury account receiving funds
                         <select
@@ -1522,7 +1619,7 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
                           ).map((account) => <option key={account.id} value={account.id}>{account.accountName}</option>)}
                         </select>
                       </label>
-                      <button type="button" disabled={busyBatchId === request.id} onClick={() => reviewSettlementRequest(request, "VERIFY")} className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Acknowledge &amp; verify</button>
+                      <button type="button" disabled={busyBatchId === request.id} onClick={() => reviewSettlementRequest(request, "VERIFY")} className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Confirm receipt &amp; post</button>
                       <button type="button" disabled={busyBatchId === request.id} onClick={() => reviewSettlementRequest(request, "REJECT")} className="rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Reject evidence</button>
                     </div>
                   </div>
@@ -1561,6 +1658,19 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
                       </select>
                     </label>
                     <label className="text-[10px] font-semibold text-slate-700 sm:col-span-2">
+                      Reason for payout approval *
+                      <textarea
+                        value={payoutFormByRequest[request.id]?.reason || ""}
+                        onChange={(event) => setPayoutFormByRequest((current) => ({
+                          ...current,
+                          [request.id]: { ...current[request.id], reason: event.target.value },
+                        }))}
+                        rows={2}
+                        maxLength={2000}
+                        className="mt-1 block w-full rounded-lg border border-slate-200 bg-white p-2 text-xs"
+                      />
+                    </label>
+                    <label className="text-[10px] font-semibold text-slate-700 sm:col-span-2">
                       Transfer evidence (JPG/PNG)
                       <input
                         type="file"
@@ -1573,7 +1683,7 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
                       />
                     </label>
                     <button type="button" disabled={busyBatchId === request.id} onClick={() => recordPayoutTransfer(request)} className="justify-self-start rounded-lg bg-violet-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50 sm:col-span-2">
-                      {busyBatchId === request.id ? "Recording transfer…" : "Record completed payout"}
+                      {busyBatchId === request.id ? "Submitting…" : "Request payout approval"}
                     </button>
                   </div>
                 )}
@@ -1689,6 +1799,7 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
       ? `${backendUrl}/api/admin/distributors/${distributorId}/finance/activity`
       : `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlements`;
   const historyResponseKey = historyType === "activity" ? "activities" : historyType;
+  const summaryNetBalance = String(summary?.settlementPosition?.netBalance || "0");
 
   return (
     <div className="space-y-4">
@@ -1699,8 +1810,8 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
               ["Company receivable", summary.settlementPosition?.outstandingReceivable],
               ["Company payable", summary.settlementPosition?.outstandingPayable],
               [
-                Number(summary.settlementPosition?.netBalance || 0) > 0 ? "Net due to company" : "Net due to distributor",
-                Math.abs(Number(summary.settlementPosition?.netBalance || 0)),
+                compareDecimalStrings(summaryNetBalance, "0") > 0 ? "Net due to company" : "Net due to distributor",
+                absoluteDecimalString(summaryNetBalance),
               ],
               ["Pending COD remittance", summary.settlementPosition?.pendingRemittance],
             ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p><p className="mt-1 text-lg font-black text-slate-900">{amountText(value)}</p></div>)}
@@ -1732,7 +1843,7 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
         responseKey={historyResponseKey}
         token={token}
         renderRecord={historyType === "transactions"
-          ? (record) => <div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-slate-900">{record.description || record.type}</p><p className="mt-1 text-xs text-slate-500">{record.type} · Ref {record.referenceId || "—"} · {dateText(record.date)}</p><p className="mt-1 text-xs text-slate-500">{record.paymentMethod || record.status || ""}</p></div><p className={`font-bold ${Number(record.netAmount) < 0 ? "text-rose-700" : "text-slate-900"}`}>{amountText(record.netAmount)}</p></div>
+          ? (record) => <div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-slate-900">{record.description || record.type}</p><p className="mt-1 text-xs text-slate-500">{record.type} · Ref {record.referenceId || "—"} · {dateText(record.date)}</p><p className="mt-1 text-xs text-slate-500">{record.paymentMethod || record.status || ""}</p></div><p className={`font-bold ${compareDecimalStrings(record.netAmount || "0", "0") < 0 ? "text-rose-700" : "text-slate-900"}`}>{amountText(record.netAmount)}</p></div>
           : historyType === "activity"
             ? (record) => {
               const isEarningsRequest = record.activityType === "EARNINGS_REQUEST";

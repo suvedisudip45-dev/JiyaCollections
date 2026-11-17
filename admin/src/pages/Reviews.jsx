@@ -1,11 +1,15 @@
 /* eslint-disable react/prop-types */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
 import Pagination from "../components/Pagination";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const Reviews = ({ token }) => {
+  const { can } = usePermissions();
+  const canRead = can("review:admin_list");
+  const canDelete = can("review:admin_delete");
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -14,7 +18,8 @@ const Reviews = ({ token }) => {
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
 
-  const fetchReviews = async () => {
+  const fetchReviews = useCallback(async () => {
+    if (!canRead) return;
     try {
       setLoading(true);
       const res = await axios.get(`${backendUrl}/api/review/admin/list?page=${page}&limit=10`, {
@@ -32,15 +37,19 @@ const Reviews = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [canRead, page, token]);
 
   useEffect(() => {
     fetchReviews();
-  }, [token, page]);
+  }, [fetchReviews]);
 
   const handlePageChange = (nextPage) => setPage(nextPage);
 
   const handleDeleteReview = async (reviewId) => {
+    if (!canDelete) {
+      toast.error("You do not have permission to delete reviews.");
+      return;
+    }
     if (
       !window.confirm(
         "Are you sure you want to permanently remove this review? This action cannot be undone."
@@ -216,7 +225,7 @@ const Reviews = ({ token }) => {
                   <th className="py-3.5 px-4">Rating & Review</th>
                   <th className="py-3.5 px-4 text-center">Helpful Votes</th>
                   <th className="py-3.5 px-4">Date</th>
-                  <th className="py-3.5 px-4 text-center">Actions</th>
+                  {canDelete && <th className="py-3.5 px-4 text-center">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -286,7 +295,7 @@ const Reviews = ({ token }) => {
                     </td>
 
                     {/* Actions */}
-                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                    {canDelete && <td className="py-4 px-4 text-center whitespace-nowrap">
                       <button
                         onClick={() => handleDeleteReview(item._id)}
                         disabled={deletingId === item._id}
@@ -298,7 +307,7 @@ const Reviews = ({ token }) => {
                         </svg>
                         <span>Remove</span>
                       </button>
-                    </td>
+                    </td>}
                   </tr>
                 ))}
               </tbody>

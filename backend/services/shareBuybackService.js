@@ -188,9 +188,11 @@ export const recordShareBuyback = async ({
   };
 
   try {
-    return await client.$transaction(transact, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    });
+    return typeof client.$transaction === "function"
+      ? await client.$transaction(transact, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      })
+      : await transact(client);
   } catch (error) {
     if (error.code === "P2002" || error.code === "P2034") {
       throw conflict("A concurrent request changed the buyback or Treasury state. Retry with the same Idempotency-Key.", "SHARE_BUYBACK_CONCURRENCY_CONFLICT");

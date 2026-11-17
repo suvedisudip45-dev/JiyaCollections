@@ -1,3 +1,4 @@
+import "../utils/requireMaintenanceDatabaseSafety.js";
 import dotenv from "dotenv";
 import { prisma } from "../config/db.js";
 import { buildOperationalExceptionReport } from "../services/operationalExceptionReport.js";

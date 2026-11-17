@@ -46,8 +46,8 @@ on its name, edit an already-deployed migration, or use `db push`, `db:sync`, or
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
 | Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `DistributorStockReturn`, `DistributorStockReturnLine`, `DistributorStockReturnCollection`, `DistributorStockReturnCollectionLine`, `DistributorStockReturnInspection`, `DistributorStockReturnInspectionLine`, `DistributorStockReturnEvent`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; dead-stock retrieval custody and inspection are separate from customer returns and replenishment transfers; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
-| Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled |
-| Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord`, `NepaliCalendarYear` | double-entry accounting and operational finance; admin-defined BS year mappings link month lengths to a Gregorian Baisakh 1 date |
+| Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine`, `CollaborationFeeCreditApplication` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled; verified partner credits can be offset against later invoices |
+| Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `AccountingActionApproval`, `AccountingActionApprovalEvent`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord`, `NepaliCalendarYear` | double-entry accounting, operational finance, and sequenced maker-checker approval records; admin-defined BS year mappings link month lengths to a Gregorian Baisakh 1 date |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `NcmSettlementBatch`, `NcmSettlementBatchItem`, `NcmSettlementVarianceResolution`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, carrier-fee settlement, bulk COD remittances, and evidenced variance resolution |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
 | Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content; optional HTTPS `logoImage` is shared by the storefront header/footer, alongside retained, versioned customer Terms & Conditions acceptance events |
@@ -143,8 +143,9 @@ pricing action.
 
 Admin bulk remittances store a Kathmandu-local date period, expected and actual
 net deposit, signed variance and explanation, selected delivery links, and
-journal/cash references in `NcmSettlementBatch`. Each delivery settlement can
-belong to at most one batch through `NcmSettlementBatchItem`. Apply
+journal/cash references in `NcmSettlementBatch`. A delivery settlement can be
+included in a later batch after its prior batch is corrected; `NcmSettlementBatchItem`
+retains each batch link and the delivery's prior state. Apply
 `20261107100000_ncm_bulk_settlement_batches` and regenerate Prisma Client before
 using this workflow.
 
@@ -152,11 +153,28 @@ The original signed batch variance remains unchanged. Append-only
 `NcmSettlementVarianceResolution` rows record each partial/full shortfall
 collection or overpayment refund/application, including amount, action,
 reference, notes, journal, optional cash movement, and associated documents.
-The batch's resolved and remaining amounts are derived from those rows, not
-stored as replaceable snapshots. Apply
+Corrections add reversal metadata without deleting the original resolution.
+The batch's active resolved and remaining amounts are derived from non-reversed
+rows, not stored as replaceable snapshots. Apply
 `20261107170000_ncm_variance_resolutions` and regenerate Prisma Client before
 using variance resolution. The batch-history API returns the latest 20
 resolution details per batch while deriving totals from all resolution rows.
+`20261109170000_settlement_correction_evidence` adds evidence and reversal
+metadata for financial corrections, records each NCM item's prior delivery
+state, and permits corrected deliveries to retain history across later batches.
+Historical batch items without a recorded prior state fail closed and require
+manual reconciliation. Apply this migration and regenerate Prisma Client before
+using settlement corrections.
+
+The evidence-required NCM correction workflow reverses a batch's posted
+remittance, carrier-fee, and variance-resolution journals and treasury cash
+movements; it reverses source allocation amounts, cancels the batch's fee and
+overpayment-suspense documents, and restores each delivery's captured prior
+settlement state. The additive correction migration also allows a delivery to
+participate in later batches while retaining corrected batch history. Historical
+batch items without a recorded prior settlement state are deliberately rejected
+for automatic correction and require manual reconciliation rather than an
+inferred state.
 
 Admin monitoring lists are paginated and return compact row fields; detail
 routes load bounded event, return, exchange, rating, and settlement sections
@@ -177,6 +195,8 @@ limited to known local NCM order IDs.
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, `deliveryRoute`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, `logisticsSettlementAmount`, refund and inspection fields including `inspectionEvidenceUrl`, `refundPolicySnapshot`, `approvedRefundAmount`, `accountingJournalEntryId`, `inventoryAccountingJournalEntryId`, `taxCreditNoteNumber` | approved RMA lifecycle; snapshots return-charge policy and exact refund at approval; distributor receipt requires a JPG/PNG goods photo; distributor inspection cost entries have a distinct journal reference from refund/credit-note accounting; legacy rows default to `LEGACY_PROCESSED`; completed return analytics use the product/quantity/refund snapshots and `returnDate`, with compound refund/date indexes |
+| `SupplierReturn` | `requestKey`, `requestHash`, optional `shipmentBatchId`, stable `supplierReference`, `supplierInvoiceNumber`, item and VAT snapshots, settlement type, and journal/document/cash transaction references | Admin supplier return is idempotent and commits stock, audit log, source journal, and either a supplier AP credit note or mapped Treasury cash receipt atomically; VAT reversal is explicit and tied to the original invoice reference, not a hardcoded rate |
+| `SupplierReturnCreditApplication` | Supplier return, credit-note/bill documents, existing return journal, amount, idempotency key, actor and notes | audited, serializable offset of a generic VENDOR credit note against a later-issued open bill for the same party/currency; creates paired allocations but no new journal |
 | `CustomerReturnEvent` | `customerReturnId`, event/status transition, actor, reason, metadata, idempotency key | return audit trail |
 | `DeliveryOtpChallenge` | order/distributor binding, hashed OTP, amount, attempt/expiry/status fields, active-order and notification keys | limits repeated delivery attempts and prevents unpaid COD handoff until the customer OTP is verified |
 | `DistributorRemittanceBatch` | distributor, amount, evidence/reference, status, idempotency key, optional company treasury account and review data | distributor-submitted COD remittances remain pending until Admin verifies and posts them |
@@ -201,7 +221,7 @@ limited to known local NCM order IDs.
 | `ManufacturerInventory` | `manufacturerId`, `productId`, `quantity`, `reservedQty`, `variantsStock`, `agreedCostPrice` | warehouse stock by manufacturer |
 | `Manufacturer` | business profile and `taxIdType` (`PAN` or `VAT`), unique 9-digit `taxIdNumber` | New manufacturer registrations require a declared PAN/VAT type and 9-digit number; this is format validation, not live verification against IRD records. Legacy profiles may remain empty until updated. |
 | `ManufacturerProductionRequest` | Admin-assigned manufacturer, product/SKU quantities, fabric/GSM, target date and batch plan; manufacturer proposed/approved unit COGS and batch other cost, VAT treatment/rate and invoice verification; approved supplier tax-ID snapshot; pre/post-production QA | VAT may be quoted only by a manufacturer with a valid VAT identity. Input VAT recovery additionally requires a verified, dated supplier VAT invoice and the buyer's effective VAT registration on that date. Approved supplier identity is snapshotted for the payable bill; otherwise VAT is included in inventory cost. |
-| `AccountingDocument` | AR/AP source, party and amount; optional `partyTaxIdType` and `partyTaxIdNumber` snapshot | The accepted manufacturer production bill records the supplier PAN/VAT identity alongside gross payable. The journal separately debits input VAT receivable (1150) when eligible and credits manufacturer payable (2160) for the gross supplier amount. |
+| `AccountingDocument` | AR/AP source, party and amount; optional `partyTaxIdType` and `partyTaxIdNumber` snapshot | The accepted manufacturer production bill records the supplier PAN/VAT identity alongside gross payable. The journal separately debits input VAT receivable (1150) when eligible and credits manufacturer payable (2160) for the gross supplier amount. Marketing CPA accruals create source-linked partner bills; their evidence-backed cash payouts allocate against the bill and debit control 2170. |
 | `ManufacturerInventoryCostLayer` | produced/available/reserved/consumed quantities, capitalized unit COGS, unit VAT, VAT treatment/rate, invoice-verification state | Verified input VAT is posted at production receipt; unverified VAT remains in capitalized inventory cost |
 | `ManufacturerInventoryMovement` | `manufacturerId`, `productId`, `variantLabel`, `previousQty`, `newQty`, signed `changeQty`, `movementType`, `reason`, `note`, `actorId`, `createdAt` | immutable, per-variant manufacturer stock adjustment history |
 | `DistributorStockReturn` | distributor, status, reason, idempotency key and request hash, hold location, request/review actor and timestamps | admin request and authorization for distributor-held platform stock; no accounting journal is posted at this stage |
@@ -299,6 +319,8 @@ The `Order` row also captures the resolved local-pricing decision in:
 
 These fields lock each order shipment to the backend-resolved local discount and distributor. Pricing uses the distributor selected by checkout from active distributor-ledger stock; it does not depend on `ManufacturerLocation` or `ManufacturerInventory`. The legacy `locationDiscountManufacturerId` field remains for historical records only.
 
+Checkout and direct-order creation also store an additive `pricingSnapshot` object inside the existing `locationPricingSnapshot` JSON column. Version 2 records accepted NPR Decimal values as strings, including line unit prices, quantities, discounts, shipping/adjustments, final payable, calculation time, and pricing-rule version. Historical snapshots are read through a separate legacy compatibility path and are not rewritten. `Product.price`, `Product.costPrice`, `Order.amount`, `Order.deliveryFee`, and `Order.loyaltyDiscount` remain Float-backed; current Float writes are compatibility mirrors, not exact Decimal persistence. No schema migration was added for this snapshot increment. A future Float-to-Decimal migration requires explicit API/portal reader compatibility, historical conversion comparison, and verified isolated-database validation before deployment.
+
 ### 3.8 Marketing cards and campaigns
 
 | Model | Core fields | Notes |
@@ -312,6 +334,8 @@ These fields lock each order shipment to the backend-resolved local discount and
 | `MarketingBenefit` | `campaignId`, `benefitType`, `value`, `maxDiscountAmount`, `percentage`, `quantity` | campaign benefit definitions; Own Store percentage discounts may set an optional maximum rupee discount |
 | `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status`, `claimedAt`, `redeemedAt` | claim and redemption lifecycle |
 
+`MarketingCampaign.cpaRate` is mutable, and `MarketingBenefitRedemption` does not snapshot the rate used when redemption occurs. New partner `BENEFIT_REDEEMED` card events therefore store the CPA-rate snapshot as event metadata and link `referenceId` to the redemption; accounting uses that same captured value. Accounting Health uses these partner events (not customer-claimed checkout rewards) to identify missing new CPA journals or bills. Historical events without the snapshot remain unknown and must not be backfilled from today's campaign rate. This metadata addition uses the existing JSON event field and requires no schema migration.
+
 Own Store campaigns may have no marketing partner. Their cards can be tracked as public-to-everyone, assigned to an existing partner, or assigned to a custom organization name. Physical campaign card stock is assigned to active distributors and received/attached through distributor-scoped APIs; old manufacturer assignment references remain available for historical records. Public, partner, and custom-organization Own Store cards can be scanned by any logged-in customer without an attached/delivered order; card-code entry and QR scan attempts are recorded in `MarketingCardEvent`. The first successful QR scan consumes each physical card. The campaign's configurable `maxScansPerCustomer` cap (default one per account for the campaign lifetime) applies to these assignment types, in addition to the five-per-campaign weekly cap; organization-assigned cards also retain a two-per-campaign, per-organization lifetime cap. Distributor-assigned Own Store cards are attached to a specific order and can be scanned/claimed only by that delivered order's customer. This order-linked path bypasses all scan caps, allowing distinct distributor cards on multiple delivered orders to each grant a claim, while each physical card remains single-use. Customer scans snapshot the assigned organization and a Nepal-time Monday-based calendar-week index when quotas apply. Claimed Own Store discounts, vouchers, and gifts are stored as `CLAIMED` rewards; checkout atomically redeems selected discount/voucher rewards, while gifts create customer entitlements.
 
 Admin partner analytics are scoped to one partner and return campaign card/scan/reward counts, distributor card totals, and separate province/district scan and distributor-assignment aggregates. Scan location fields are copied from the customer's first saved address when the scan is recorded; historical scans without snapshots are reported as `Unknown`. The report does not expose customer identities or street-level addresses.
@@ -323,6 +347,7 @@ The schema includes a full accounting engine with:
 - `Account`
 - `FinancialAccount`
 - `AccountPayable`
+- `ManufacturerSettlementRequest`
 - `DistributorSettlementRequest`
 - `AccountReceivable`
 - `JournalEntry`
@@ -330,6 +355,8 @@ The schema includes a full accounting engine with:
 - `AccountingParty`
 - `AccountingDocument`
 - `AccountingAllocation`
+- `AccountingPeriodCloseEvent`
+- `CollaborationFeeCreditApplication`
 - `DistributorServiceEarning`
 - `AccountingPeriod`
 - `FiscalYear`
@@ -353,6 +380,18 @@ The schema includes a full accounting engine with:
 
 This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
 
+The P4.2 expense/payable pilot adds fixed-precision NPR Decimal fields for `OperatingExpense.amount`, `vatAmount`, `paidAmount`, and `payableAmount`; `AccountPayable.creditAppliedAmount`; supplier-return debit/VAT amounts; and selected settlement-reversion snapshots. `OperatingExpense` is the authoritative source for expenses recorded through `POST /api/finance/record-operating-expense`; its transaction links the source to the upfront payment, payable remainder, supplier BILL/allocation when a registered supplier is selected, and balanced journal. The staged `20261115120000_expense_payable_decimal_pilot` migration was applied only to isolated `clothing_test`; it does not establish deployment status or real historical expense/return conversion. Refer to the accounting precision policy for synthetic drift and the remaining acceptance gates.
+
+Manufacturer settlement request creation uses the existing `ManufacturerSettlementRequest` Decimal amount/paid fields and nullable unique idempotency key; this increment adds no schema migration. The controller checks available payable in a Serializable transaction, creates the request and audit event together, and requires callers to supply the stable key. The key is compared against manufacturer, request type, normalized amount and notes on replay.
+
+`CollaborationFeeCreditApplication` records a source-verified partner credit offset against a later same-partner invoice. It links the original credit-note journal, stores the idempotency key and Admin actor/notes, and is committed with paired `OFFSET` allocations and both document balance updates. It does not create a second journal or represent a cash refund.
+
+`AccountingPeriodCloseEvent` stores append-only close submissions, reviewer decisions, reopen requests/decisions, the cycle sequence, and the submitted checklist snapshot. Close-state changes and `SystemAuditOutbox` entries commit in the same serializable transaction. The close-pack endpoint derives a content-hashed internal JSON snapshot from these events and records each export hash through the audit outbox; it does not fetch or validate the referenced evidence. The additive `20261114184000_accounting_period_close_approvals` migration must be applied and verified in an isolated database before deploying this workflow; existing closed periods without approval events are not automatically treated as approved or reopenable.
+
+`AccountingActionApproval` stores the normalized action payload and hash, maker/reviewer account IDs, status, idempotency key, decision reason, and execution result; `AccountingActionApprovalEvent` stores the sequenced request/review history. Approval execution and its audit-outbox event share a transaction, and the reviewer must be a different active Admin from the maker. Covered code paths include journals/opening balances/reversals, COA and Treasury setup, VAT actions, fixed-asset write-offs, distributor refund payouts/netting, settlement corrections, and NCM remittance/variance actions. The additive `20261114190000_accounting_maker_checker` migration is not evidence of deployment: apply and verify it only on an isolated database before using these endpoints.
+
+P4.2-R19 adds `AccountingAllocation.reversesAllocationId`, a nullable unique self-reference identifying the original CASH allocation for each receipt reversal. Full customer-receipt correction preserves the original receipt and allocations, links REVERSAL allocations to them, and records the separate cash/settlement amounts and approval audit in `SettlementReversion`. The additive `20261116171600_customer_receipt_reversal` migration is unapplied; validate and rehearse it against an independently verified isolated database before deployment. Mocked service tests do not establish persisted transaction or rollback correctness.
+
 `NepaliCalendarYear` stores one BS year, the Gregorian date corresponding to Baisakh 1, and 12 month lengths in Baisakh-to-Chaitra order. The calendar service derives every later AD date (and weekday) from these values. Configure consecutive years with continuous, non-overlapping AD dates. Saved mappings are immutable: creation is serializable and audited, identical retries are idempotent, and changed definitions are rejected so prior reports cannot be silently relabeled. Calendar correction requires a separately approved, audited correction process. Apply `20261107090000_nepali_calendar_years` and regenerate Prisma Client before using the Admin Nepali Calendar or configured BS finance date ranges. Financial and tax APIs accept date-only BS values with `calendar: "BS"` and convert them to Gregorian `DateTime` instants at Asia/Kathmandu day boundaries; persisted transaction dates remain Gregorian instants rather than BS strings.
 
 `ManufacturerProductionRequest.approvedUnitCogs` is the approved base unit COGS. New requests use `costTermsVersion = 2`: `approvedDeliveryCost` stores batch-total production other cost, allocated over actual good units and included in `ManufacturerInventoryCostLayer.unitCogs` (14 decimal places so the batch total is not prematurely rounded); new layers have zero separate delivery overhead. Existing version-1 requests keep their legacy per-unit `approvedDeliveryCost` interpretation, stored as `unitDeliveryCost`. New manufacturer registration requires a 9-digit PAN or VAT number; the production request snapshots this supplier identity at approval so later profile edits do not rewrite the payable bill's tax identity.
@@ -365,7 +404,22 @@ Completed self-delivery and phone orders create immutable `DistributorServiceEar
 
 NCM-delivered COD records receivable `AccountingDocument` rows by source order against control 1170. A confirmed NCM batch accrues the carrier fee to 6430/2180, creates its payable document, then allocates gross COD and fee payable against the remittance journal in one transaction. Accounting Health checks the fee chain across the posted `NCM_CARRIER_FEE_ACCRUAL` 2180 credit, the matching `NCM_CARRIER_FEE` bill, its `AccountingAllocation` amount/journal link, and the linked `PAYMENT` journal's 2180 debit. Distributor-collected COD uses party documents against 1190; distributor-paid refunds and delivery compensation use payable documents against 2190. `AccountingHealth` compares these source-specific open balances to their respective GL controls and checks every stored `Account.currentBalance` against the debit/credit totals of posted and reversed `JournalLine` records. Reversed original journals remain included because their separately posted reversal entry offsets them. An opening balance without a journal is surfaced as a variance; the check does not imply operational subledger coverage. Its control-coverage registry enumerates the 23 configured balance-sheet control accounts and labels each as source-scoped, legacy-partial, treasury-register-only, unreconciled, or missing; source-scoped is not equivalent to fully reconciled. By policy, legacy/opening balances remain flagged and are not automatically converted until Finance reviews and approves a documented cutover. The endpoint intentionally reports partial coverage while historical and other-party documents remain unreconciled.
 
-`SellerTaxProfile` stores the seller's legal identity and PAN. `TaxRegistrationVersion` stores effective PAN-only/VAT-registered history; no matching VAT-registration version means PAN-only. `VatRateVersion` separately stores append-only VAT rates and UTC effective intervals. Delivered sales and returns resolve registration/rate from the source transaction tax point, and approved return snapshots retain their original tax treatment.
+Marketing CPA payouts use the existing `FinancialPayout` lifecycle with target
+`MARKETING_CPA_PAYABLE`; no new database column or migration is required. The
+confirmation transaction creates the 2170 debit / mapped Treasury credit
+journal, an `OUTFLOW` cash transaction, a `CASH` `AccountingAllocation`, and
+the updated bill balance. Returned-funds corrections preserve the original
+allocation, add a linked `REVERSAL` allocation, restore the bill and Treasury,
+reverse the source journal, and mark the payout `REVERSED`. These records
+represent cash only: the flow does not classify or post withholding tax, and a
+net payment leaves the unpaid portion of the bill open. The legacy
+`MarketingPartnerSettlement` table is not migrated or inferred into this path;
+historical settlement reconciliation and full account 2170 reconciliation
+remain open.
+
+`SellerTaxProfile` stores the seller's legal identity and PAN. `TaxRegistrationVersion.taxStatus` stores `UNREGISTERED`, `PAN_ONLY`, or `VAT_REGISTERED`; no effective status record resolves to `UNREGISTERED`. `VatRateVersion` separately stores append-only VAT rates and UTC effective intervals. Output VAT calculation requires both an effective VAT-registration status and an explicit rate for the source transaction tax point; missing rates do not fall back to `TaxConfiguration`. Delivered sales and returns resolve registration/rate from the transaction tax point. Unregistered sales use internal-only records, and statutory paper-bill recording is rejected.
+
+The VAT defaults on tax configuration, manufacturer-production cost records, and new distributor service-fee rate cards are zero, not assumed rates. The migration `20261115060000_remove_unapproved_vat_defaults` changes column defaults only; it does not rewrite existing rows or attest to their validity. Manufacturer quotes applying VAT must provide an explicit positive rate and invoice reference. Distributor rate-card values do not verify invoice evidence or approve input VAT. Apply and validate this migration only against an isolated database before any production rollout.
 
 `CorporateTaxPolicyVersion` stores effective-dated base rates, optional progressive brackets, and JSON context rules for rate overrides, discounts, and penalties. Only future versions can be cancelled; applied policy history is retained. The finance tax projection and financial statement share one calculator and show no tax estimate when no applicable policy exists.
 
@@ -418,7 +472,7 @@ Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Or
 - New manufacturer production payable documents are created at accepted production receipt and payout allocations track production and delivery bill balances. Legacy delivery-recognized costs continue to create payable documents on delivery. A supplier credit note is created on return only when the corresponding delivery bill exists; historical manufacturer payable journals remain a legacy reconciliation balance. Distributor settlement requests without matched earning documents do not create an AP from the request amount and are marked reconciliation-required. Payout eligibility requires an active NPR Treasury account mapped to the type-specific GL cash/bank/wallet account.
 - Admin approval snapshots the configured return charge percentage against returned product value; the original delivery fee is excluded from the refund. A distributor return must be received/inspected, the distributor must submit payment evidence for exactly the approved refund, and Admin must verify it before the payable is posted. Rejected evidence reopens the refund task without posting accounting.
 - Accounting Health source-matches the original AP amount for platform-funded customer returns (`AccountPayable.referenceType = CUSTOMER_REFUND`) to the 2110 credit on the matching `SALES_RETURN` journal. Platform-funded exchange downgrade refunds (`CUSTOMER_EXCHANGE_REFUND`) match to the 2110 credit on the `ORDER_EXCHANGE` journal keyed by `EXCHANGE-<requestId>`. Paid/outstanding AP amounts are displayed, but payment clearing, distributor-funded refund payables, and legacy AP remain outside this source-scoped check.
-- Collaboration fee invoices are source-checked across `CollaborationFeeInvoice.totalAmount`, the `COLLABORATION_FEE` receivable document, posted 1130 `COLLABORATION_FEE_INVOICE` debits, recorded `AccountingAllocation` rows, and linked posted 1130 journal entries. This uses only existing allocation and journal evidence; it does not establish a collaboration collection workflow, cover unlinked or legacy collections, reconcile credits/reversals, or establish the full 1130 control.
+- Collaboration fee invoices are source-checked across `CollaborationFeeInvoice.totalAmount`, the `COLLABORATION_FEE` receivable document, posted 1130 `COLLABORATION_FEE_INVOICE` debits, recorded `AccountingAllocation` rows, and linked posted 1130 journal entries. Verified credit notes can be offset against later same-partner invoices through paired allocations; this does not cover cash refunds, unlinked or legacy collections, historical credit reconciliation, or the full 1130 control.
 - Return/exchange journals use the current period at inspection or replacement completion rather than backdating to the original sale. The case stores its journal reference and generated credit-note number. Exchange price/VAT adjustments use the original order VAT rate for the returned item and the current rate for the replacement; replacement cost and original return cost are separately snapshotted.
 - Exchange upgrades remain distributor COD receivables until collected/remitted; downgrades are distributor-funded customer refunds in the payable subledger, including NCM-delivered exchanges. For NCM exchanges, `settlementDistributorId` points to the original assigned distributor. `DistributorCashEvent` records the distributor-submitted exact-amount payment evidence and Admin review status; verification does not itself settle the receivable/payable. NCM exchange-create remains `pk`-only and carries no price difference.
 - `OrderExchangeRequest.status`: begins at `REQUESTED`; NCM attempts and outcomes are separately audited. Replacement stock is reserved at approval and consumed on confirmed replacement delivery.

@@ -1,4 +1,14 @@
 import { prisma } from "../config/db.js";
+import {
+  addDecimals,
+  compareDecimals,
+  serializeAccountingDecimal,
+  subtractDecimals,
+} from "../services/accountingDecimal.js";
+import {
+  decimalFromStoredFloat,
+  pricingSnapshotAmounts,
+} from "../services/checkoutPricingService.js";
 
 // Default initial loyalty tiers with customizable combination perks
 const DEFAULT_LEVELS = [
@@ -125,6 +135,9 @@ export const buildPublicLoyaltySummary = (loyaltyData = {}) => {
 
   return {
     totalSpend: Number(loyaltyData.totalSpend || 0),
+    totalSpendDecimal: loyaltyData.totalSpendDecimal
+      ? serializeAccountingDecimal(loyaltyData.totalSpendDecimal)
+      : serializeAccountingDecimal(decimalFromStoredFloat(loyaltyData.totalSpend || 0, "Loyalty total spend")),
     totalOrders: Number(loyaltyData.totalOrders || 0),
     currentLevel,
     nextLevel,
@@ -176,7 +189,11 @@ export const calculateUserLoyalty = async (userId) => {
   });
 
   const totalOrders = eligibleOrders.length;
-  const totalSpend = eligibleOrders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
+  const totalSpendDecimal = eligibleOrders.reduce(
+    (total, order) => addDecimals(total, pricingSnapshotAmounts(order).finalPayableTotal),
+    "0",
+  );
+  const totalSpend = Number(totalSpendDecimal.toString());
 
   // Determine highest tier achieved where user meets BOTH minSpend AND minOrders
   let currentLevel = levels[0] || DEFAULT_LEVELS[0];
@@ -184,7 +201,10 @@ export const calculateUserLoyalty = async (userId) => {
 
   for (let i = 0; i < levels.length; i++) {
     const lvl = levels[i];
-    if (totalSpend >= Number(lvl.minSpend) && totalOrders >= Number(lvl.minOrders)) {
+    if (
+      compareDecimals(totalSpendDecimal, decimalFromStoredFloat(lvl.minSpend || 0, "Loyalty minimum spend")) >= 0 &&
+      totalOrders >= Number(lvl.minOrders)
+    ) {
       currentLevel = lvl;
       nextLevel = levels[i + 1] || null;
     }
@@ -192,7 +212,9 @@ export const calculateUserLoyalty = async (userId) => {
 
   if (!nextLevel && levels.length > 0) {
     const firstUnmet = levels.find(
-      (l) => totalSpend < Number(l.minSpend) || totalOrders < Number(l.minOrders)
+      (l) =>
+        compareDecimals(totalSpendDecimal, decimalFromStoredFloat(l.minSpend || 0, "Loyalty minimum spend")) < 0 ||
+        totalOrders < Number(l.minOrders)
     );
     if (firstUnmet && firstUnmet.levelNumber > currentLevel.levelNumber) {
       nextLevel = firstUnmet;
@@ -205,8 +227,13 @@ export const calculateUserLoyalty = async (userId) => {
   let remainingOrders = 0;
 
   if (nextLevel) {
-    const spendGap = Math.max(0, Number(nextLevel.minSpend) - Number(currentLevel.minSpend));
-    const userSpendProgress = Math.max(0, totalSpend - Number(currentLevel.minSpend));
+    const nextMinimumSpend = decimalFromStoredFloat(nextLevel.minSpend || 0, "Loyalty next-level spend");
+    const currentMinimumSpend = decimalFromStoredFloat(currentLevel.minSpend || 0, "Loyalty current-level spend");
+    const remainingSpendDecimal = compareDecimals(totalSpendDecimal, nextMinimumSpend) >= 0
+      ? decimalFromStoredFloat("0")
+      : subtractDecimals(nextMinimumSpend, totalSpendDecimal);
+    const spendGap = Math.max(0, Number(subtractDecimals(nextMinimumSpend, currentMinimumSpend).toString()));
+    const userSpendProgress = Math.max(0, Number(subtractDecimals(totalSpendDecimal, currentMinimumSpend).toString()));
     const spendRatio = spendGap > 0 ? Math.min(1, userSpendProgress / spendGap) : 1;
 
     const ordersGap = Math.max(0, Number(nextLevel.minOrders) - Number(currentLevel.minOrders));
@@ -214,7 +241,7 @@ export const calculateUserLoyalty = async (userId) => {
     const ordersRatio = ordersGap > 0 ? Math.min(1, userOrdersProgress / ordersGap) : 1;
 
     progressPercentage = Math.round(((spendRatio + ordersRatio) / 2) * 100);
-    remainingSpend = Math.max(0, Number(nextLevel.minSpend) - totalSpend);
+    remainingSpend = Number(remainingSpendDecimal.toString());
     remainingOrders = Math.max(0, Number(nextLevel.minOrders) - totalOrders);
   }
 
@@ -284,6 +311,7 @@ export const calculateUserLoyalty = async (userId) => {
 
   return {
     totalSpend,
+    totalSpendDecimal: serializeAccountingDecimal(totalSpendDecimal),
     totalOrders,
     currentLevel,
     nextLevel,
@@ -508,12 +536,16 @@ export const getHubCustomers = async (req, res) => {
           visitCount: 0,
           lastVisit: 0,
           totalSpentAtHub: 0,
+          totalSpentAtHubDecimal: "0",
           orderIds: [],
         });
       }
       const entry = customerMap.get(phone);
       entry.visitCount += 1;
-      entry.totalSpentAtHub += Number(order.amount || 0);
+      entry.totalSpentAtHubDecimal = serializeAccountingDecimal(
+        addDecimals(entry.totalSpentAtHubDecimal, pricingSnapshotAmounts(order).finalPayableTotal),
+      );
+      entry.totalSpentAtHub = Number(entry.totalSpentAtHubDecimal);
       entry.orderIds.push(order.id);
       const orderDate = Number(order.date);
       if (orderDate > entry.lastVisit) entry.lastVisit = orderDate;

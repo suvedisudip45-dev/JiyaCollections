@@ -498,9 +498,12 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
   };
 };
 
-export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =>
-  prisma.$transaction(async (tx) => {
-    await expireCampaignCards({ db: tx });
+export const redeemPartnerBenefit = async (
+  { partnerId, cardCode, benefitId },
+  { client = prisma, postAccounting = postMarketingCpaRedemptionAccounting, expireCards = expireCampaignCards } = {},
+) => {
+  const redeem = async (tx) => {
+    await expireCards({ db: tx });
     const card = await tx.marketingCard.findFirst({
       where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
       include: {
@@ -540,6 +543,7 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       throw new Error(`This card has expired as of ${new Date(card.campaign.cardExpiresAt).toLocaleDateString()}. The offer can no longer be redeemed.`);
     }
     const customerId = customerLink.customerId;
+    const cpaRateSnapshot = String(card.campaign?.cpaRate ?? 0);
 
     const redemption = await tx.marketingBenefitRedemption.create({
       data: { cardId: card.id, benefitId, customerId, status: "REDEEMED" },
@@ -551,18 +555,26 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
         eventType: "BENEFIT_REDEEMED",
         actorRole: "MARKETING_PARTNER",
         actorId: partnerId,
-        metadata: { benefitName: benefit.name, value: benefit.value, redemptionId: redemption.id },
+        referenceId: redemption.id,
+        metadata: {
+          benefitName: benefit.name,
+          value: benefit.value,
+          redemptionId: redemption.id,
+          cpaRateSnapshot,
+        },
       },
     });
 
     // Accrue Marketing CPA Double-Entry Accounting
-    if (card.campaign?.cpaRate > 0) {
-      await postMarketingCpaRedemptionAccounting(
-        { redemption, campaign: card.campaign, partner: card.partner },
-        { client: tx }
-      ).catch((err) => {
-        console.error("Marketing CPA accounting posting error:", err.message);
-      });
+    if (Number(cpaRateSnapshot) > 0) {
+      await postAccounting(
+        {
+          redemption: { ...redemption, cpaRateSnapshot },
+          campaign: card.campaign,
+          partner: card.partner,
+          client: tx,
+        },
+      );
     }
 
     return {
@@ -571,7 +583,9 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       redeemedAt: redemption.redeemedAt,
       benefit: { id: benefit.id, name: benefit.name, benefitType: benefit.benefitType, value: benefit.value },
     };
-  });
+  };
+  return typeof client.$transaction === "function" ? client.$transaction(redeem) : redeem(client);
+};
 
 export const rejectPartnerCard = async ({ partnerId, cardCode, reason }) =>
   prisma.$transaction(async (tx) => {

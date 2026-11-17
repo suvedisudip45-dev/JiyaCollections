@@ -5,6 +5,8 @@ import {
   getManufacturerSettlementRequests,
   listAdminManufacturerSettlements,
 } from "../controllers/manufacturerFinanceController.js";
+import manufacturerRouter from "../routes/manufacturerRoute.js";
+import adminManufacturerSettlementRouter from "../routes/adminManufacturerSettlementRoute.js";
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -26,15 +28,18 @@ const createResponse = () => ({
   },
 });
 
-const withSettlementHistoryStubs = (t) => {
-  const request = {
-    id: "request-1",
-    manufacturerId: "manufacturer-1",
-    amount: "500.00",
-    paidAmount: "250.00",
-    status: "PARTIALLY_PAID",
-  };
-  stubMethod(t, prisma.manufacturerSettlementRequest, "findMany", async () => [request]);
+const withSettlementHistoryStubs = (t, request = {
+  id: "request-1",
+  manufacturerId: "manufacturer-1",
+  amount: "500.00",
+  paidAmount: "250.00",
+  status: "PARTIALLY_PAID",
+}) => {
+  let requestFindManyArgs;
+  stubMethod(t, prisma.manufacturerSettlementRequest, "findMany", async (args) => {
+    requestFindManyArgs = args;
+    return [request];
+  });
   stubMethod(t, prisma.manufacturerSettlementRequest, "count", async () => 1);
   stubMethod(t, prisma.financialPayout, "findMany", async () => [{
     id: "payout-1",
@@ -42,6 +47,8 @@ const withSettlementHistoryStubs = (t) => {
     idempotencyKey: "mfg-payout-1",
     amount: "250.00",
     settlementAmount: "250.00",
+    adjustmentType: "NONE",
+    adjustmentAmount: "0.00",
     status: "SETTLED",
     externalPaymentReference: "BANK-TRANSFER-1",
     bankEvidenceReference: "BANK-SLIP-1",
@@ -60,6 +67,7 @@ const withSettlementHistoryStubs = (t) => {
     journalNumber: "JE-2026-0001",
   }]);
   stubMethod(t, prisma, "$transaction", async (operations) => Promise.all(operations));
+  return { getRequestFindManyArgs: () => requestFindManyArgs };
 };
 
 for (const [label, handler, request] of [
@@ -75,14 +83,38 @@ for (const [label, handler, request] of [
   ],
 ]) {
   test(`${label} settlement history includes linked payout, cash, and journal records`, async (t) => {
-    withSettlementHistoryStubs(t);
+    const stubs = withSettlementHistoryStubs(t);
     const response = createResponse();
     await handler(request, response);
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.settlements[0].payoutHistory.length, 1);
+    assert.equal(response.body.settlements[0].amount, "500");
+    assert.equal(response.body.settlements[0].paidAmount, "250");
+    assert.equal(response.body.settlements[0].remainingAmount, "250");
     assert.equal(response.body.settlements[0].payoutHistory[0].financialAccount.accountName, "Main Bank");
     assert.equal(response.body.settlements[0].payoutHistory[0].cashTransaction.id, "cash-1");
+    assert.equal(response.body.settlements[0].payoutHistory[0].cashTransaction.amount, "250");
+    assert.equal(response.body.settlements[0].payoutHistory[0].amount, "250");
+    assert.equal(response.body.settlements[0].payoutHistory[0].settlementAmount, "250");
+    assert.equal(response.body.settlements[0].payoutHistory[0].adjustmentAmount, "0");
     assert.equal(response.body.settlements[0].payoutHistory[0].journalEntry.journalNumber, "JE-2026-0001");
+    assert.equal(stubs.getRequestFindManyArgs().where.manufacturerId, "manufacturer-1");
   });
 }
+
+test("settlement history routes retain authenticated, scoped handlers", () => {
+  const manufacturerRoute = manufacturerRouter.stack.find(
+    (layer) => layer.route?.path === "/finance/settlement-requests",
+  );
+  const adminRoute = adminManufacturerSettlementRouter.stack.find(
+    (layer) => layer.route?.path === "/settlements",
+  );
+
+  assert.ok(manufacturerRoute);
+  assert.ok(adminRoute);
+  assert.equal(manufacturerRoute.route.stack.length, 4);
+  assert.equal(manufacturerRoute.route.stack.at(-1).handle, getManufacturerSettlementRequests);
+  assert.equal(adminRoute.route.stack.length, 4);
+  assert.equal(adminRoute.route.stack.at(-1).handle, listAdminManufacturerSettlements);
+});

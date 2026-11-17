@@ -1,6 +1,8 @@
+import "../utils/requireMaintenanceDatabaseSafety.js";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import "dotenv/config";
+import { synchronizeSeededAccountRoles } from "../services/rbacSeedService.js";
 
 const prisma = new PrismaClient();
 
@@ -13,7 +15,8 @@ const roleDefinitions = [
 ];
 
 const permissionDefinitions = [
-  ["access:audit_read", "Read and export system audit history."],
+  ["access:audit_read", "Read system audit history."],
+  ["access:audit_export", "Export sensitive system audit history."],
   ["all:function", "Full server-side authorization bypass for administrators."],
   ["access:admin_users_read", "List and view Admin portal accounts."], ["access:admin_users_create", "Create Admin portal accounts."], ["access:admin_users_update", "Update Admin portal account profiles."], ["access:admin_users_deactivate", "Activate or deactivate Admin portal accounts."], ["access:admin_users_assign_roles", "Assign Admin portal roles to Admin accounts."],
   ["access:marketing_users_read", "List and view Marketing Partner accounts."], ["access:marketing_users_update", "Update Marketing Partner account profiles."], ["access:marketing_users_deactivate", "Activate or deactivate Marketing Partner accounts."],
@@ -39,7 +42,7 @@ const permissionDefinitions = [
   ["returns:customer_create", "Request a customer return."], ["returns:customer_read", "Read the customer's return requests."], ["returns:customer_update", "Legacy customer return updates (disabled)."], ["returns:admin_read", "Read customer return requests and history."], ["returns:admin_create", "Create a customer return request administratively."], ["returns:admin_review", "Approve or reject customer return requests."], ["returns:admin_inspect", "Inspect received customer return items."], ["returns:admin_refund", "Complete inspected customer return refunds."], ["returns:supplier_create", "Create supplier returns."], ["returns:supplier_read", "Read supplier returns."],
   ["order:customer_cancel", "Cancel a customer order before NCM handoff."],
   ["exchange:customer_request", "Request an exchange for an eligible delivered order."], ["exchange:customer_read", "Read the customer's own exchange requests."], ["exchange:admin_read", "Read customer exchange requests."], ["exchange:admin_create", "Create exchange requests administratively."], ["exchange:admin_review", "Approve or reject customer exchange requests."], ["exchange:admin_reconcile", "Reconcile NCM exchange order status."],
-  ["accounting:coa_read", "Read the chart of accounts."], ["accounting:coa_create", "Create chart of accounts entries."], ["accounting:coa_update", "Update chart of accounts entries."], ["accounting:journal_read", "Read journal entries."], ["accounting:journal_create", "Create journal entries."], ["accounting:journal_reverse", "Reverse journal entries."], ["accounting:ledger_read", "Read the general ledger."], ["accounting:trial_balance_read", "Read trial balances."], ["accounting:statements_read", "Read accounting statements."], ["accounting:subledger_read", "Read subledger reconciliation."], ["accounting:fiscal_years_read", "Read fiscal years."], ["accounting:fiscal_year_create", "Create fiscal years."], ["accounting:period_toggle", "Toggle accounting periods."],
+  ["accounting:coa_read", "Read the chart of accounts."], ["accounting:coa_create", "Submit chart-of-accounts creation requests."], ["accounting:coa_update", "Submit chart-of-accounts change requests."], ["accounting:journal_read", "Read journal entries."], ["accounting:journal_create", "Submit manual and opening-balance journal requests."], ["accounting:journal_reverse", "Submit journal reversal requests."], ["accounting:approval_read", "Read accounting maker-checker requests."], ["accounting:approval_review", "Approve or reject accounting maker-checker requests; the maker cannot review their own request."], ["accounting:ledger_read", "Read the general ledger."], ["accounting:trial_balance_read", "Read trial balances."], ["accounting:statements_read", "Read accounting statements."], ["accounting:subledger_read", "Read subledger reconciliation."], ["accounting:fiscal_years_read", "Read fiscal years."], ["accounting:fiscal_year_create", "Create fiscal years."], ["accounting:period_toggle", "Legacy period toggle permission; direct period status changes are disabled."], ["accounting:period_close_submit", "Submit an evidence-backed monthly period close for independent review."], ["accounting:period_close_review", "Approve or reject a submitted monthly period close."], ["accounting:period_reopen_request", "Request reopening an approved closed period with a reason."], ["accounting:period_reopen_review", "Approve or reject a period reopen request."],
   ["manufacturer:branches_sync", "Synchronize manufacturer branches."], ["manufacturer:profile_read", "Read manufacturer profile."], ["manufacturer:availability_update", "Update manufacturer availability."], ["manufacturer:stats_read", "Read manufacturer statistics."], ["manufacturer:pickup_update", "Update pickup profile."], ["manufacturer:admin_list", "List manufacturers administratively."], ["manufacturer:admin_detail", "Read manufacturer details administratively."], ["manufacturer:admin_inventory_read", "Read manufacturer location-ledger inventory administratively."], ["manufacturer:admin_production_read", "Read paginated manufacturer production history administratively."], ["manufacturer:admin_transfers_read", "Read manufacturer-to-distributor transfer history administratively."], ["manufacturer:admin_finance_read", "Read manufacturer payables, receivables, and financial transactions administratively."], ["manufacturer:admin_settlements_read", "Read manufacturer settlement requests administratively."], ["manufacturer:admin_sync_ratings", "Synchronize manufacturer ratings."], ["manufacturer:admin_register", "Register manufacturers administratively."], ["manufacturer:admin_quality_update", "Update manufacturer quality ratings."], ["manufacturer:admin_contract_update", "Update manufacturer contract status."], ["manufacturer:admin_contract_upload", "Upload manufacturer contracts."], ["manufacturer:admin_update", "Update manufacturers administratively."], ["manufacturer:production_manage", "Request and manage manufacturer production."], ["manufacturer:production_admin", "Review manufacturer production requests and create production orders."], ["manufacturer:finance_dashboard", "Read the manufacturer's financial dashboard."], ["manufacturer:settlement_request", "Request a manufacturer financial settlement."], ["manufacturer:distributor_request", "Request distributor capability for a manufacturer account."], ["manufacturer:inventory_read", "Read manufacturer inventory."], ["manufacturer:inventory_update", "Update manufacturer inventory."], ["inventory:admin_read_all", "Read all inventory."], ["inventory:admin_low_stock", "Read low-stock inventory."], ["inventory:ledger_read", "Read inventory ledger and reconciliation reports."], ["manufacturer:direct_order_create", "Create direct manufacturer orders."], ["manufacturer:direct_order_read", "Read direct manufacturer orders."], ["manufacturer:direct_order_status_update", "Update direct manufacturer order status."],
   ["distributor:profile_read", "Read the active distributor profile."], ["distributor:availability_update", "Update distributor online/offline availability."], ["distributor:pickup_update", "Update distributor pickup setup and NCM branch coordinates."], ["distributor:admin_list", "List distributor applications administratively."], ["distributor:admin_detail", "Read distributor profile details administratively."], ["distributor:admin_sessions_read", "Read distributor login session history administratively."], ["distributor:admin_inventory_read", "Read distributor inventory and valuation administratively."], ["distributor:admin_transfers_read", "Read distributor stock transfer history administratively."], ["distributor:admin_fulfillment_read", "Read distributor order fulfillment history administratively."], ["distributor:admin_returns_read", "Read distributor customer return history administratively."], ["distributor:admin_exchanges_read", "Read distributor customer exchange history administratively."], ["distributor:admin_finance_read", "Read distributor settlement and financial history administratively."], ["distributor:admin_review", "Approve, reject, or suspend distributor access."],
   ["distributor:admin_stock_return", "Create, approve, or reject distributor stock return authorizations."],
@@ -83,7 +86,7 @@ const rolePermissionCodes = {
   MARKETING_PARTNER: permissionDefinitions.map(([code]) => code).filter((code) => code.startsWith("partner:") || code.startsWith("marketing_card:partner")),
 };
 
-async function seedRbac() {
+async function seedRbac(ownerEmail) {
   const roles = {};
   for (const roleDefinition of roleDefinitions) {
     roles[roleDefinition.code] = await prisma.role.upsert({
@@ -120,23 +123,20 @@ async function seedRbac() {
     }
   }
 
-  const accounts = await prisma.authAccount.findMany({ select: { id: true, role: true } });
-  for (const account of accounts) {
-    const role = roles[account.role];
-    if (!role) {
-      throw new Error(`Cannot seed RBAC mapping: unknown AuthAccount role "${account.role}" for account ${account.id}.`);
-    }
-    await prisma.authAccountRoleMapping.upsert({
-      where: { accountId_roleId: { accountId: account.id, roleId: role.id } },
-      update: { isActive: true },
-      create: { accountId: account.id, roleId: role.id, isActive: true },
-    });
-  }
-
-  console.log(`✅ RBAC seeded: ${roleDefinitions.length} roles, ${permissionDefinitions.length} permissions, ${accounts.length} account mappings`);
+  const roleSync = await synchronizeSeededAccountRoles({
+    client: prisma,
+    roles,
+    ownerEmail,
+  });
+  console.log(`✅ RBAC seeded: ${roleDefinitions.length} roles, ${permissionDefinitions.length} permissions, ${roleSync.accountCount} account mappings; ${roleSync.changedAdminRoleCount} full Admin role assignments synchronized`);
 }
 
 async function main() {
+  const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (!adminEmail) {
+    throw new Error("ADMIN_EMAIL is required to seed the designated owner Admin account.");
+  }
+
   await prisma.platformFeatureConfig.upsert({
     where: { id: "default" },
     update: {},
@@ -148,7 +148,6 @@ async function main() {
     },
   });
 
-  const adminEmail = (process.env.ADMIN_EMAIL || "sudeepsubedi72@gmail.com").toLowerCase().trim();
   const adminPhone = (process.env.ADMIN_SEED_PHONE || "9846008536").trim();
   const rawPassword = process.env.ADMIN_SEED_PASSWORD || "Admin@1234";
 
@@ -275,7 +274,7 @@ async function main() {
 
   console.log(`✅ Marketing Partner seeded: ${partner.email} (Code: ${partner.code})`);
 
-  await seedRbac();
+  await seedRbac(adminEmail);
 
   // Seed Nepal Location Mappings (Provinces & 77 Districts with 4-char unique codes)
   const { NEPAL_LOCATION_MAP } = await import("../utils/nepalLocationData.js");

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
+import { pricingSnapshotAmounts } from "./checkoutPricingService.js";
+import { resolveSellerTaxTreatment } from "./sellerTaxProfileService.js";
 
 const fail = (message, statusCode = 400, code = "PAPER_BILL_ERROR") =>
   Object.assign(new Error(message), { statusCode, code });
@@ -54,7 +56,18 @@ export const validatePaperBillChoice = async ({
   billNumber,
   assignmentId,
   exchangeRequestId,
+  taxPoint = new Date(),
 } = {}) => {
+  const sellerTaxTreatment = await resolveSellerTaxTreatment(taxPoint, { client });
+  if (sellerTaxTreatment.taxStatus === "UNREGISTERED") {
+    throw fail("A statutory paper bill cannot be issued while the business is unregistered.", 409, "STATUTORY_BILLING_UNAVAILABLE");
+  }
+  const expectedDocumentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+    ? "VAT_TAX_INVOICE"
+    : "PAN_BILL";
+  if (documentType !== expectedDocumentType) {
+    throw fail("The paper bill type does not match the tax registration effective on its issue date.", 409, "PAPER_BILL_TAX_STATUS_MISMATCH");
+  }
   const externalNumber = String(billNumber || "").trim();
   if (!externalNumber || externalNumber.length > 191) {
     throw fail("Enter the physical bill number from the book allocated to this distributor.", 400, "PAPER_BILL_NUMBER_REQUIRED");
@@ -444,6 +457,7 @@ export const listPaperBillOrderReport = async ({
           orderStatus: order.status,
           orderType: order.orderType || null,
           amount: Number(order.amount || 0),
+          amountDecimal: pricingSnapshotAmounts(order).finalPayableTotal,
           customerName: String(order.address?.name || `${order.address?.firstName || ""} ${order.address?.lastName || ""}`).trim(),
           distributor: assignment?.distributor || null,
           assignmentStatus: assignment?.status || null,

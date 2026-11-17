@@ -6,11 +6,11 @@ const VALID_VAT_TREATMENTS = new Set(["EXEMPT", "VAT_INCLUSIVE", "VAT_EXCLUSIVE"
 
 export const normalizeProductionVatTerms = ({
   vatTreatment = "EXEMPT",
-  vatRate = 13,
+  vatRate = 0,
   vatInvoiceReference = "",
 } = {}) => {
   const treatment = String(vatTreatment || "EXEMPT").trim().toUpperCase();
-  const rate = new Prisma.Decimal(String(vatRate));
+  const rate = new Prisma.Decimal(String(vatRate ?? 0));
   const invoiceReference = String(vatInvoiceReference || "").trim();
   if (!VALID_VAT_TREATMENTS.has(treatment)) {
     throw new Error("Choose VAT inclusive, VAT exclusive, or no VAT.");
@@ -35,7 +35,7 @@ export const normalizeProductionVatTerms = ({
 export const calculateProductionUnitCost = ({
   unitAmount,
   vatTreatment = "EXEMPT",
-  vatRate = 13,
+  vatRate = 0,
   vatInvoiceVerified = false,
   buyerVatRegistered = true,
   vatInvoiceReference = "",

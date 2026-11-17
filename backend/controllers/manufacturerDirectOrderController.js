@@ -7,6 +7,24 @@ import { accrueCollaborationSalesForOrder } from "../services/collaborationSales
 import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
 import { allocateProductionLayersForOrderItem, transitionOrderProductionAllocations } from "../services/manufacturerProductionService.js";
 import { createOrderIdentity } from "../utils/orderReference.js";
+import { directOrderReceiptRequiredError } from "../utils/directOrderReceiptPolicy.js";
+import {
+  addDecimals,
+  quantizeCurrencyAmount,
+  serializeAccountingDecimal,
+  subtractDecimals,
+} from "../services/accountingDecimal.js";
+import {
+  calculatePricedLine,
+  createOrderPricingSnapshotV3,
+  decimalFromStoredFloat,
+  exactPricingApiFields,
+  hasNoOverDiscount,
+  requirePricingDecimal,
+  toLegacyFloatMirror,
+  wholeOrderQuantity,
+  withOrderPricingSnapshot,
+} from "../services/checkoutPricingService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -34,11 +52,20 @@ export const createDirectOrder = async (req, res) => {
       street,
       city,
       paymentMethod = "CASH",
-      isPaid = true,
-      discountAmount = 0,
+      isPaid = false,
+      discountAmount = "0",
       notes = "",
       applyLoyaltyDiscount = false, // Whether to apply the customer's active loyalty reward
     } = req.body;
+
+    const receiptDeclarationError = directOrderReceiptRequiredError(isPaid);
+    if (receiptDeclarationError) {
+      return res.status(receiptDeclarationError.statusCode).json({
+        success: false,
+        message: receiptDeclarationError.message,
+        code: receiptDeclarationError.code,
+      });
+    }
 
     if (!["HUB_VISIT", "PHONE_ORDER"].includes(directOrderType)) {
       return res.status(400).json({ success: false, message: "directOrderType must be HUB_VISIT or PHONE_ORDER." });
@@ -50,6 +77,9 @@ export const createDirectOrder = async (req, res) => {
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.json({ success: false, message: "Please select at least 1 item." });
+    }
+    if (typeof discountAmount !== "string") {
+      return res.status(400).json({ success: false, message: "Discount must be provided as a decimal string.", code: "INVALID_DECIMAL_INPUT" });
     }
 
     if (!customerName || !customerPhone) {
@@ -74,7 +104,7 @@ export const createDirectOrder = async (req, res) => {
     });
 
     const frozenItems = [];
-    let itemsTotal = 0;
+    let itemsTotal = decimalFromStoredFloat("0");
 
     for (const item of items) {
       const pId = item.productId || item._id;
@@ -94,7 +124,8 @@ export const createDirectOrder = async (req, res) => {
       const variantList = parseJSON(inv.variantsStock, []);
       const size = item.size || "Standard";
       const color = item.color || "Standard";
-      const orderQty = Math.max(1, Number(item.quantity || 1));
+      const quantityDecimal = wholeOrderQuantity(item.quantity ?? 1);
+      const orderQty = Number(quantityDecimal.toString());
 
       const matchedVariant = variantList.find(
         (v) => (v.size || "Standard") === size && (v.color || "Standard") === color
@@ -111,9 +142,16 @@ export const createDirectOrder = async (req, res) => {
         });
       }
 
-      const unitPrice = Number(item.price !== undefined ? item.price : product.price);
-      const lineTotal = unitPrice * orderQty;
-      itemsTotal += lineTotal;
+      const unitPriceDecimal = item.price !== undefined
+        ? requirePricingDecimal(item.price, "Direct-order unit price")
+        : decimalFromStoredFloat(product.price, "Product price");
+      const line = calculatePricedLine({
+        unitPrice: serializeAccountingDecimal(unitPriceDecimal),
+        quantity: serializeAccountingDecimal(quantityDecimal),
+      });
+      itemsTotal = addDecimals(itemsTotal, line.lineTotal);
+      const unitPrice = toLegacyFloatMirror(line.unitPrice, "Legacy direct-order unit price");
+      const lineTotal = toLegacyFloatMirror(line.lineTotal, "Legacy direct-order line total");
 
       let imgArr = [];
       if (Array.isArray(product.image)) imgArr = product.image;
@@ -136,8 +174,17 @@ export const createDirectOrder = async (req, res) => {
         color,
         quantity: orderQty,
         price: unitPrice,
-        originalUnitPrice: Number(product.price),
+        originalUnitPrice: toLegacyFloatMirror(decimalFromStoredFloat(product.price, "Product price"), "Legacy product price"),
         lineTotal,
+        _pricingDecimal: {
+          unitPrice: serializeAccountingDecimal(line.unitPrice),
+          catalogUnitPrice: serializeAccountingDecimal(decimalFromStoredFloat(product.price, "Product price")),
+          catalogPriceSource: "PRODUCT_FLOAT_COMPATIBILITY",
+          quantity: serializeAccountingDecimal(line.quantity),
+          lineTotal: serializeAccountingDecimal(line.lineTotal),
+          discountSource: "DIRECT_ORDER_PRICE",
+          discountSourceId: product.id,
+        },
       });
     }
 
@@ -150,7 +197,7 @@ export const createDirectOrder = async (req, res) => {
 
     // ─── Loyalty Integration ──────────────────────────────────────────────
     let loyaltyRewardApplied = null;
-    let loyaltyDiscountAmt = 0;
+    let loyaltyDiscountAmt = decimalFromStoredFloat("0");
 
     if (customerPhone) {
       try {
@@ -162,14 +209,14 @@ export const createDirectOrder = async (req, res) => {
           const loyaltyStatus = await calculateUserLoyalty(linkedUser.id);
           if (loyaltyStatus && loyaltyStatus.activeReward?.isEligible && applyLoyaltyDiscount) {
             const reward = loyaltyStatus.activeReward;
-            loyaltyDiscountAmt = Number(reward.discountAmount || 0);
+            loyaltyDiscountAmt = decimalFromStoredFloat(reward.discountAmount || 0, "Loyalty discount");
             loyaltyRewardApplied = {
               applied: true,
               adminCreated: false,
               source: `Direct Hub (${directOrderType})`,
               levelName: loyaltyStatus.currentLevel.name,
               levelIcon: loyaltyStatus.currentLevel.badgeIcon,
-              discountAmount: loyaltyDiscountAmt,
+              discountAmount: Number(loyaltyDiscountAmt.toString()),
               freeShipping: reward.freeShipping || false,
               giftAmount: reward.giftAmount || 0,
               giftDescription: reward.giftDescription || "",
@@ -195,12 +242,46 @@ export const createDirectOrder = async (req, res) => {
       }
     }
 
-    const totalDiscount = Math.max(0, Number(discountAmount || 0)) + loyaltyDiscountAmt;
-    const netAmount = Math.max(0, itemsTotal - totalDiscount);
+    const manualDiscount = requirePricingDecimal(discountAmount, "Direct-order discount");
+    hasNoOverDiscount(manualDiscount, itemsTotal, "Direct-order discount");
+    const totalDiscount = addDecimals(manualDiscount, loyaltyDiscountAmt);
+    hasNoOverDiscount(totalDiscount, itemsTotal, "Combined direct-order discount");
+    const netBeforeRounding = subtractDecimals(itemsTotal, totalDiscount);
+    const netAmount = quantizeCurrencyAmount(netBeforeRounding, "NPR");
+    const pricingSnapshot = createOrderPricingSnapshotV3({
+      lines: frozenItems.map((item) => ({
+        productId: item.productId,
+        size: item.size,
+        color: item.color,
+        unitPrice: item._pricingDecimal.unitPrice,
+        quantity: item._pricingDecimal.quantity,
+        lineTotal: item._pricingDecimal.lineTotal,
+        catalogUnitPrice: item._pricingDecimal.catalogUnitPrice,
+        catalogPriceSource: item._pricingDecimal.catalogPriceSource,
+        discountSource: item._pricingDecimal.discountSource,
+        discountSourceId: item._pricingDecimal.discountSourceId,
+      })),
+      subtotal: itemsTotal.toString(),
+      discountTotal: totalDiscount.toString(),
+      preCommercialRoundingTotal: netBeforeRounding.toString(),
+      finalPayableTotal: netAmount.toString(),
+      source: "MANUFACTURER_DIRECT",
+      orderDiscountComponents: [
+        ...(manualDiscount.greaterThan(0) ? [{
+          source: "MANUFACTURER_MANUAL",
+          amount: manualDiscount.toString(),
+        }] : []),
+        ...(loyaltyDiscountAmt.greaterThan(0) ? [{
+          source: "LOYALTY",
+          amount: loyaltyDiscountAmt.toString(),
+        }] : []),
+      ],
+      calculatedAt: acceptedAt,
+    });
     const isWalkIn = directOrderType === "HUB_VISIT";
     const orderStatus = isWalkIn ? "Delivered" : "Order Placed";
     const fulfillmentStatus = isWalkIn ? "delivered" : "accepted";
-    const paymentStatus = Boolean(isPaid);
+    const paymentStatus = false;
 
     const addressObject = {
       firstName: customerName.split(" ")[0] || customerName,
@@ -229,7 +310,8 @@ export const createDirectOrder = async (req, res) => {
         ...createOrderIdentity(),
         userId: loyaltyRewardApplied?.userId || (isWalkIn ? "GUEST_WALK_IN" : "GUEST_PHONE_ORDER"),
         items: acceptedItems,
-        amount: netAmount,
+        amount: toLegacyFloatMirror(netAmount, "Legacy order amount mirror"),
+        locationPricingSnapshot: withOrderPricingSnapshot(null, pricingSnapshot),
         address: addressObject,
         status: orderStatus,
         paymentMethod,
@@ -239,7 +321,7 @@ export const createDirectOrder = async (req, res) => {
         orderType: "DIRECT_MANUFACTURER",
         directOrderType,
         manufacturerId,
-        loyaltyDiscount: loyaltyDiscountAmt,
+        loyaltyDiscount: toLegacyFloatMirror(loyaltyDiscountAmt, "Legacy loyalty discount mirror"),
         rewardApplied: loyaltyRewardApplied ? JSON.stringify(loyaltyRewardApplied) : null,
         directNotes:
           notes ||
@@ -383,9 +465,10 @@ export const createDirectOrder = async (req, res) => {
         items: acceptedItems,
         address: addressObject,
         assignmentId: assignment.id,
+        ...exactPricingApiFields(order),
       },
       loyaltyApplied: loyaltyRewardApplied,
-      loyaltyDiscountAmt,
+      loyaltyDiscountAmt: Number(loyaltyDiscountAmt.toString()),
     });
   } catch (error) {
     console.error("createDirectOrder error:", error);
@@ -413,6 +496,7 @@ export const getMyDirectOrders = async (req, res) => {
       items: parseJSON(o.items, []),
       address: parseJSON(o.address, {}),
       date: Number(o.date),
+      ...exactPricingApiFields(o),
     }));
 
     res.json(paginatedResponse("orders", formatted, pagination, total));
@@ -427,6 +511,14 @@ export const updateDirectOrderStatus = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const { orderId, status, payment } = req.body;
+    const receiptDeclarationError = directOrderReceiptRequiredError(payment);
+    if (receiptDeclarationError) {
+      return res.status(receiptDeclarationError.statusCode).json({
+        success: false,
+        message: receiptDeclarationError.message,
+        code: receiptDeclarationError.code,
+      });
+    }
 
     const order = await prisma.order.findFirst({
       where: { id: orderId, manufacturerId },
@@ -439,9 +531,6 @@ export const updateDirectOrderStatus = async (req, res) => {
     if (status) {
       updateData.status = status;
       updateData.fulfillmentStatus = status.toLowerCase();
-    }
-    if (payment !== undefined) {
-      updateData.payment = Boolean(payment);
     }
 
     const shouldPostDelivery = status && status.toLowerCase() === "delivered" && order.status !== "Delivered";
@@ -482,7 +571,11 @@ export const updateDirectOrderStatus = async (req, res) => {
       });
     }
 
-    res.json({ success: true, message: "Order status updated successfully!", order: updated });
+    res.json({
+      success: true,
+      message: "Order status updated successfully!",
+      order: { ...updated, ...exactPricingApiFields(updated) },
+    });
   } catch (error) {
     console.error("updateDirectOrderStatus error:", error);
     res.json({ success: false, message: error.message });

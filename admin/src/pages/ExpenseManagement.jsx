@@ -31,6 +31,11 @@ import {
   getNepaliDateForAdDate,
   getNepaliDateRangeForDate,
 } from "../utils/nepaliDate";
+import {
+  compareDecimalStrings,
+  formatNprAmount,
+  subtractDecimalStrings,
+} from "../utils/decimalDisplay";
 
 const ExpenseManagement = ({ token }) => {
   const initialBsDate = formatNepaliDate(new Date());
@@ -39,6 +44,7 @@ const ExpenseManagement = ({ token }) => {
   const [incomes, setIncomes] = useState([]);
   const [categories, setCategories] = useState({ expense: [], income: [], custom: [] });
   const [treasuryAccounts, setTreasuryAccounts] = useState([]);
+  const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [calendarYears, setCalendarYears] = useState([]);
   const [todayInputDate, setTodayInputDate] = useState(initialBsDate);
@@ -69,7 +75,15 @@ const ExpenseManagement = ({ token }) => {
   // Expense Modal State
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [expenseIdempotencyKey, setExpenseIdempotencyKey] = useState(
+    () => sessionStorage.getItem("operating-expense-idempotency-key") || "",
+  );
+  const [supplierPartyId, setSupplierPartyId] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [vendorModalOpen, setVendorModalOpen] = useState(false);
+  const [vendorDisplayName, setVendorDisplayName] = useState("");
+  const [vendorLegalName, setVendorLegalName] = useState("");
+  const [vendorCreateKey, setVendorCreateKey] = useState("");
 
   // Expense Form State
   const [title, setTitle] = useState("");
@@ -77,7 +91,7 @@ const ExpenseManagement = ({ token }) => {
   const [amount, setAmount] = useState("");
   const [isVatBill, setIsVatBill] = useState(false);
   const [vatAmount, setVatAmount] = useState("");
-  const [purchaseVatRate, setPurchaseVatRate] = useState("13");
+  const [purchaseVatRate, setPurchaseVatRate] = useState("");
   const [supplierVatNumber, setSupplierVatNumber] = useState("");
   const [invoiceEvidenceUrl, setInvoiceEvidenceUrl] = useState("");
   const [date, setDate] = useState(initialBsDate);
@@ -112,21 +126,24 @@ const ExpenseManagement = ({ token }) => {
 
   // Solvency helper for selected account
   const selectedAccount = treasuryAccounts.find((a) => a.id === paymentAccountId);
-  const numAmount = parseFloat(amount) || 0;
+  const validExpenseAmount = /^\d+(?:\.\d+)?$/.test(amount.trim());
   const isInsufficient =
     paymentStatus === "PAID" &&
     selectedAccount &&
-    numAmount > 0 &&
-    Number(selectedAccount.currentBalance || 0) < numAmount;
-  const shortfall = isInsufficient ? numAmount - Number(selectedAccount.currentBalance || 0) : 0;
+    validExpenseAmount &&
+    compareDecimalStrings(amount, selectedAccount.currentBalance || "0") > 0;
+  const shortfall = isInsufficient
+    ? subtractDecimalStrings(amount, selectedAccount.currentBalance || "0")
+    : "0";
 
   // 1. Fetch Categories & Treasury Accounts
   const fetchMetadata = useCallback(async () => {
     if (!token) return;
     try {
-      const [catRes, accRes] = await Promise.all([
+      const [catRes, accRes, vendorRes] = await Promise.all([
         axios.get(`${backendUrl}/api/expense/categories`, { headers: { token } }),
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/expense/vendors`, { headers: { token } }),
       ]);
       if (catRes.data.success) {
         setCategories(catRes.data.categories || { expense: [], income: [], custom: [] });
@@ -138,6 +155,7 @@ const ExpenseManagement = ({ token }) => {
           setPaymentAccountId(accs[0].id);
           setIncomeToAccountId(accs[0].id);
         }
+        if (vendorRes.data.success) setVendors(vendorRes.data.vendors || []);
       }
     } catch {
       console.error("Failed to load metadata");
@@ -257,31 +275,19 @@ const ExpenseManagement = ({ token }) => {
 
   const handlePageChange = (nextPage) => setPage(nextPage);
 
-  // Auto-compute VAT amount
-  useEffect(() => {
-    if (isVatBill && amount && !isNaN(parseFloat(amount))) {
-      const numAmt = parseFloat(amount);
-      const rate = Number(purchaseVatRate);
-      if (Number.isFinite(rate) && rate > 0 && rate <= 100) {
-        const computedVat = (numAmt - numAmt / (1 + rate / 100)).toFixed(2);
-        setVatAmount(computedVat);
-      } else {
-        setVatAmount("");
-      }
-    } else if (!isVatBill) {
-      setVatAmount("0");
-    }
-  }, [amount, isVatBill, purchaseVatRate]);
-
   const handleOpenAddModal = () => {
     setEditingId(null);
+    const requestKey = expenseIdempotencyKey || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-idempotency-key", requestKey);
+    setExpenseIdempotencyKey(requestKey);
     setTitle("");
     setCategory(categories.expense[0]?.code || "PRINTING");
     setAmount("");
     setIsVatBill(false);
     setVatAmount("");
-    setPurchaseVatRate("13");
+    setPurchaseVatRate("");
     setSupplierVatNumber("");
+    setSupplierPartyId("");
     setInvoiceEvidenceUrl("");
     setDate(todayInputDate);
     setPaymentStatus("PAID");
@@ -302,8 +308,9 @@ const ExpenseManagement = ({ token }) => {
     setAmount(exp.amount?.toString() || "");
     setIsVatBill(exp.isVatBill ?? false);
     setVatAmount(exp.vatAmount?.toString() || "");
-    setPurchaseVatRate(exp.purchaseVatRate?.toString() || "13");
+    setPurchaseVatRate(exp.purchaseVatRate?.toString() || "");
     setSupplierVatNumber(exp.supplierVatNumber || "");
+    setSupplierPartyId(exp.accountingPartyId || "");
     setInvoiceEvidenceUrl(exp.invoiceEvidenceUrl || "");
     setDate(exp.date ? getNepaliDateForAdDate(exp.date, calendarYears) : todayInputDate);
     setPaymentStatus(exp.paymentStatus || "PAID");
@@ -313,6 +320,48 @@ const ExpenseManagement = ({ token }) => {
     setInvoiceNumber(exp.invoiceNumber || "");
     setNotes(exp.notes || "");
     setModalOpen(true);
+  };
+
+  const handleOpenVendorModal = () => {
+    const storedKey = sessionStorage.getItem("operating-expense-vendor-idempotency-key") || "";
+    const requestKey = storedKey || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-vendor-idempotency-key", requestKey);
+    setVendorCreateKey(requestKey);
+    setVendorDisplayName("");
+    setVendorLegalName("");
+    setVendorModalOpen(true);
+  };
+
+  const handleSubmitVendor = async (e) => {
+    e.preventDefault();
+    const requestKey = vendorCreateKey
+      || sessionStorage.getItem("operating-expense-vendor-idempotency-key")
+      || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-vendor-idempotency-key", requestKey);
+    setVendorCreateKey(requestKey);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/expense/vendors/add`,
+        { displayName: vendorDisplayName.trim(), legalName: vendorLegalName.trim() || undefined },
+        { headers: { token, "Idempotency-Key": requestKey } },
+      );
+      if (!response.data?.success || !response.data.vendor) {
+        throw new Error(response.data?.message || "Supplier could not be saved.");
+      }
+      const vendor = response.data.vendor;
+      setVendors((current) => [
+        ...current.filter((item) => item.id !== vendor.id),
+        vendor,
+      ].sort((left, right) => left.displayName.localeCompare(right.displayName)));
+      setSupplierPartyId(vendor.id);
+      setVendorName(vendor.displayName);
+      setVendorModalOpen(false);
+      sessionStorage.removeItem("operating-expense-vendor-idempotency-key");
+      setVendorCreateKey("");
+      toast.success(response.data.replayed ? "Supplier already registered." : "Supplier registered.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Supplier could not be saved.");
+    }
   };
 
   // Convert to Payable 1-Click Action
@@ -337,8 +386,7 @@ const ExpenseManagement = ({ token }) => {
       return;
     }
 
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    if (!/^\d+(?:\.\d+)?$/.test(amount.trim()) || compareDecimalStrings(amount, "0") <= 0) {
       toast.error("Expense amount must be a positive number.");
       return;
     }
@@ -353,30 +401,37 @@ const ExpenseManagement = ({ token }) => {
       const payload = {
         title: title.trim(),
         category,
-        amount: parsedAmount,
+        amount: amount.trim(),
         isVatBill,
-        vatAmount: parseFloat(vatAmount) || 0,
-        purchaseVatRate: parseFloat(purchaseVatRate) || 13,
-        supplierVatNumber: supplierVatNumber.trim() || undefined,
-        invoiceEvidenceUrl: invoiceEvidenceUrl.trim() || undefined,
+        vatAmount: isVatBill && vatAmount.trim() ? vatAmount.trim() : undefined,
+        purchaseVatRate: isVatBill ? purchaseVatRate.trim() : undefined,
+        accountingPartyId: supplierPartyId || undefined,
+        supplierVatNumber: String(supplierVatNumber || "").trim() || undefined,
+        invoiceEvidenceUrl: String(invoiceEvidenceUrl || "").trim() || undefined,
         date,
         paymentStatus,
         paymentAccountId: paymentStatus === "PAID" ? paymentAccountId : null,
         paymentMethod: paymentStatus === "PAID" ? paymentMethod : "CREDIT",
-        vendorName: vendorName.trim() || undefined,
-        invoiceNumber: invoiceNumber.trim() || undefined,
+        vendorName: String(vendorName || "").trim() || undefined,
+        invoiceNumber: String(invoiceNumber || "").trim() || undefined,
         dueDate: paymentStatus === "PAYABLE" ? dueDate : undefined,
         priority: paymentStatus === "PAYABLE" ? priority : undefined,
-        notes: notes.trim() || undefined,
+        notes: String(notes || "").trim() || undefined,
         calendar: "BS",
       };
 
       const url = editingId ? `${backendUrl}/api/expense/update` : `${backendUrl}/api/expense/add`;
       const reqBody = editingId ? { id: editingId, ...payload } : payload;
 
-      const res = await axios.post(url, reqBody, { headers: { token } });
+      const headers = { token };
+      if (!editingId) headers["Idempotency-Key"] = expenseIdempotencyKey;
+      const res = await axios.post(url, reqBody, { headers });
 
       if (res.data.success) {
+        if (!editingId) {
+          sessionStorage.removeItem("operating-expense-idempotency-key");
+          setExpenseIdempotencyKey("");
+        }
         toast.success(res.data.message || "Expense recorded successfully!");
         setModalOpen(false);
         fetchExpenses();
@@ -634,10 +689,10 @@ const ExpenseManagement = ({ token }) => {
               Total Expenses
             </span>
             <p className="text-2xl font-black text-slate-900 mt-1">
-              Rs {Number(summaryMetrics.totalAmount || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.totalAmount || "0")}
             </p>
             <span className="text-[10px] text-slate-500 mt-1 block">
-              Paid: Rs {Number(summaryMetrics.totalPaid || 0).toLocaleString()} | Due: Rs {Number(summaryMetrics.totalPayable || 0).toLocaleString()}
+              Paid: Rs {formatNprAmount(summaryMetrics.totalPaid || "0")} | Due: Rs {formatNprAmount(summaryMetrics.totalPayable || "0")}
             </span>
           </div>
 
@@ -646,7 +701,7 @@ const ExpenseManagement = ({ token }) => {
               Printing &amp; Packaging
             </span>
             <p className="text-2xl font-black text-blue-700 mt-1">
-              Rs {Number(summaryMetrics.byCategory?.PRINTING || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.byCategory?.PRINTING || "0")}
             </p>
             <span className="text-[10px] text-blue-600 mt-1 block">Branded Tags, Bags &amp; Cartons</span>
           </div>
@@ -656,7 +711,7 @@ const ExpenseManagement = ({ token }) => {
               Staff Salaries &amp; Wages
             </span>
             <p className="text-2xl font-black text-emerald-700 mt-1">
-              Rs {Number(summaryMetrics.byCategory?.SALARIES || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.byCategory?.SALARIES || "0")}
             </p>
             <span className="text-[10px] text-emerald-600 mt-1 block">Payroll &amp; Contract Labor</span>
           </div>
@@ -666,11 +721,11 @@ const ExpenseManagement = ({ token }) => {
               Input VAT Claimable
             </span>
             <p className="text-2xl font-black text-purple-700 mt-1">
-              Rs {Number(summaryMetrics.totalVatClaimable || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.totalVatClaimable || "0")}
             </p>
             <span className="text-[10px] text-purple-600 mt-1 block">
               Verified supplier invoices only
-              {Number(summaryMetrics.pendingVatReview || 0) > 0 && ` · Rs ${Number(summaryMetrics.pendingVatReview).toLocaleString()} pending review`}
+              {compareDecimalStrings(summaryMetrics.pendingVatReview || "0", "0") > 0 && ` · Rs ${formatNprAmount(summaryMetrics.pendingVatReview)} pending review`}
             </span>
           </div>
         </div>
@@ -855,7 +910,7 @@ const ExpenseManagement = ({ token }) => {
                                   {exp.purchaseVatStatus === "VERIFIED" ? <ShieldCheck className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
                                   {exp.purchaseVatStatus === "VERIFIED" ? "Verified" : exp.purchaseVatStatus === "REJECTED" ? "Rejected" : "Pending review"}
                                 </span>
-                                <span className="text-[10px] text-slate-500">{Number(exp.purchaseVatRate || 13)}% · Rs {Number(exp.vatAmount || 0).toFixed(2)}</span>
+                                <span className="text-[10px] text-slate-500">{exp.purchaseVatRate == null ? "Rate not recorded" : `${exp.purchaseVatRate}%`} · Rs {formatNprAmount(exp.vatAmount || "0")}</span>
                                 {exp.invoiceEvidenceUrl && <a href={exp.invoiceEvidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-indigo-600 underline">Invoice evidence</a>}
                               </div>
                             ) : (
@@ -865,7 +920,7 @@ const ExpenseManagement = ({ token }) => {
 
                           <td className="py-3.5 px-4 text-right align-top">
                             <span className="font-bold text-slate-900 text-sm block">
-                              Rs {Number(exp.amount || 0).toLocaleString()}
+                              Rs {formatNprAmount(exp.amount || "0")}
                             </span>
                           </td>
 
@@ -879,15 +934,17 @@ const ExpenseManagement = ({ token }) => {
                               )}
                               <button
                                 onClick={() => handleOpenEditModal(exp)}
-                                disabled={exp.purchaseVatStatus === "VERIFIED"}
-                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                                disabled={exp.hasPostedJournal || exp.purchaseVatStatus === "VERIFIED"}
+                                title={exp.hasPostedJournal ? "Posted expenses require a linked correction workflow." : undefined}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteExpense(exp.id)}
-                                disabled={exp.purchaseVatStatus === "VERIFIED"}
-                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 cursor-pointer"
+                                disabled={exp.hasPostedJournal || exp.purchaseVatStatus === "VERIFIED"}
+                                title={exp.hasPostedJournal ? "Posted expenses require a linked correction workflow." : undefined}
+                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1117,7 +1174,7 @@ const ExpenseManagement = ({ token }) => {
                     >
                       {treasuryAccounts.map((acc) => (
                         <option key={acc.id} value={acc.id}>
-                          {acc.accountName} ({acc.accountType}) — Available: Rs {Number(acc.currentBalance || 0).toLocaleString()}
+                          {acc.accountName} ({acc.accountType}) — Available: Rs {formatNprAmount(acc.currentBalance || "0")}
                         </option>
                       ))}
                     </select>
@@ -1130,7 +1187,7 @@ const ExpenseManagement = ({ token }) => {
                           <div>
                             <p className="font-bold">Insufficient Liquid Balance</p>
                             <p className="text-[11px] text-red-700">
-                              <b>{selectedAccount?.accountName}</b> has only Rs {Number(selectedAccount?.currentBalance || 0).toLocaleString()} available (Shortfall: Rs {shortfall.toLocaleString()}).
+                              <b>{selectedAccount?.accountName}</b> has only Rs {formatNprAmount(selectedAccount?.currentBalance || "0")} available (Shortfall: Rs {formatNprAmount(shortfall)}).
                             </p>
                           </div>
                         </div>
@@ -1186,15 +1243,18 @@ const ExpenseManagement = ({ token }) => {
                   <input
                     type="checkbox"
                     checked={isVatBill}
-                    onChange={(e) => setIsVatBill(e.target.checked)}
+                    onChange={(e) => {
+                      setIsVatBill(e.target.checked);
+                      setVatAmount("");
+                    }}
                     className="w-4 h-4 text-purple-600 rounded cursor-pointer"
                   />
                   Supplier says this is a VAT tax invoice
                 </label>
                 {isVatBill && (
                   <div className="flex items-center justify-between text-purple-800 text-[11px] pt-1">
-                    <span>VAT amount (must match invoice; pending finance review):</span>
-                    <strong className="font-bold">Rs {vatAmount || "0.00"}</strong>
+                    <span>Invoice VAT (blank uses an internal estimate; pending review):</span>
+                    <strong className="font-bold">{vatAmount ? `Rs ${vatAmount}` : "Estimate on save"}</strong>
                   </div>
                 )}
                 {isVatBill && (
@@ -1204,14 +1264,34 @@ const ExpenseManagement = ({ token }) => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Vendor / Payee Name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Printing Press, Landlord, Employee"
-                    value={vendorName}
-                    onChange={(e) => setVendorName(e.target.value)}
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Registered supplier {(paymentStatus === "PAYABLE" || isVatBill || String(invoiceNumber || "").trim()) ? "*" : ""}
+                  </label>
+                  <select
+                    value={supplierPartyId}
+                    required={paymentStatus === "PAYABLE" || isVatBill || Boolean(String(invoiceNumber || "").trim())}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSupplierPartyId(nextId);
+                      const selectedVendor = vendors.find((vendor) => vendor.id === nextId);
+                      setVendorName(selectedVendor?.displayName || "");
+                    }}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
-                  />
+                  >
+                    <option value="">Select a supplier when recording a bill</option>
+                    {vendors.map((vendor) => (
+                      <option key={vendor.id} value={vendor.id}>
+                        {vendor.displayName}{vendor.legalName ? ` · ${vendor.legalName}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleOpenVendorModal}
+                    className="mt-1 text-[10px] font-semibold text-emerald-700 underline"
+                  >
+                    + Register supplier
+                  </button>
                 </div>
 
                 <div>
@@ -1225,6 +1305,17 @@ const ExpenseManagement = ({ token }) => {
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Vendor / Payee Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Landlord or Employee for non-bill expenses"
+                  value={vendorName}
+                  readOnly={Boolean(supplierPartyId)}
+                  onChange={(e) => setVendorName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900 read-only:opacity-70"
+                />
               </div>
               {isVatBill && (
                 <div className="grid grid-cols-2 gap-3">
@@ -1255,10 +1346,11 @@ const ExpenseManagement = ({ token }) => {
                   <div>
                     <label className="block font-bold text-slate-700 mb-1">Invoice VAT rate (%)</label>
                     <input type="number" min="0.01" max="100" step="0.01" required value={purchaseVatRate} onChange={(e) => setPurchaseVatRate(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                    <span className="mt-1 block text-[10px] font-normal text-slate-500">Enter the rate shown on this supplier invoice; no default rate is applied.</span>
                   </div>
                   <div>
-                    <label className="block font-bold text-slate-700 mb-1">VAT amount printed on invoice</label>
-                    <input type="number" min="0.01" step="0.01" required value={vatAmount} onChange={(e) => setVatAmount(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                    <label className="block font-bold text-slate-700 mb-1">VAT amount printed on invoice (optional)</label>
+                    <input type="number" min="0" step="0.01" value={vatAmount} onChange={(e) => setVatAmount(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
                   </div>
                 </div>
               )}
@@ -1288,6 +1380,57 @@ const ExpenseManagement = ({ token }) => {
                   className="px-5 py-2 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 cursor-pointer shadow-xs disabled:opacity-50"
                 >
                   {submitting ? "Saving..." : "Save Expense"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {vendorModalOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl">
+            <div className="mb-4">
+              <h3 className="text-base font-bold text-slate-900">Register supplier</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                This creates a persistent accounting identity. Duplicate-looking names remain separate until Finance verifies they are the same supplier.
+              </p>
+            </div>
+            <form onSubmit={handleSubmitVendor} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Display name *</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={255}
+                  value={vendorDisplayName}
+                  onChange={(e) => setVendorDisplayName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Legal name (optional)</label>
+                <input
+                  type="text"
+                  maxLength={255}
+                  value={vendorLegalName}
+                  onChange={(e) => setVendorLegalName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900"
+                />
+              </div>
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setVendorModalOpen(false)}
+                  className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white"
+                >
+                  Save supplier
                 </button>
               </div>
             </form>
@@ -1362,7 +1505,7 @@ const ExpenseManagement = ({ token }) => {
                 >
                   {treasuryAccounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
-                      {acc.accountName} ({acc.accountType}) — Balance: Rs {Number(acc.currentBalance || 0).toLocaleString()}
+                      {acc.accountName} ({acc.accountType}) — Balance: Rs {formatNprAmount(acc.currentBalance || "0")}
                     </option>
                   ))}
                 </select>

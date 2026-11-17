@@ -810,7 +810,7 @@ model CustomerLevel {
   id                String   @id @default(uuid())
   levelNumber       Int      @unique
   name              String
-  badgeIcon         String   @default("🥉")
+  badgeIcon         String   @default(dbgenerated("(convert(0xf09fa589 using utf8mb4))"))
   color             String   @default("#CD7F32")
   minSpend          Float    @default(0)
   minOrders         Int      @default(0)
@@ -975,7 +975,7 @@ model SpecialOffer {
   id          String   @id @default(uuid())
   title       String
   subtitle    String?  @default("Exclusive festive deals and limited-time discounts")
-  badgeText   String   @default("🎉 FESTIVE OFFER")
+  badgeText   String   @default(dbgenerated("(convert(0xf09f8e892046455354495645204f46464552 using utf8mb4))"))
   themeColor  String   @default("#7c3aed") @db.VarChar(7)
   themeColorSecondary String @default("#f59e0b") @db.VarChar(7)
   bannerImage String?  @default("")
@@ -1087,10 +1087,15 @@ model CashTransaction {
   externalPaymentReference String? @db.VarChar(191)
   date           DateTime          @default(now())
   amount         Decimal           @db.Decimal(20, 2)
+  settlementAmount Decimal?         @db.Decimal(20, 2)
+  currency       String            @default("NPR") @db.VarChar(3)
+  tenderMethod   String?           @db.VarChar(32)
+  receivedByAccountId String?      @db.VarChar(191)
+  receiptPayloadHash String?       @db.Char(64)
   type           String // INFLOW, OUTFLOW, TRANSFER
   fromAccountId  String?
   toAccountId    String?
-  category       String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, SHARE_BUYBACK, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
+  category       String // SALES, SUPPLIER_PAYMENT, MARKETING_CPA_PAYOUT, EXPENSE, CAPITAL_INJECTION, SHARE_BUYBACK, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
   partyName      String?           @default("") // Whom paid to / Whom received from
   invoiceNumber  String?           @default("")
   referenceId    String?           @default("")
@@ -1100,6 +1105,7 @@ model CashTransaction {
   toAccount      FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
   distributorBalanceSettlement DistributorBalanceSettlement?
   ncmVarianceResolutions NcmSettlementVarianceResolution[]
+  receiptAllocations AccountingAllocation[]
   createdAt      DateTime          @default(now())
 
   @@index([date])
@@ -1111,7 +1117,7 @@ model CashTransaction {
 model FinancialPayout {
   id                    String          @id @default(uuid())
   idempotencyKey        String          @unique @db.VarChar(191)
-  targetType            String          @db.VarChar(32) // MANUFACTURER_SETTLEMENT | MANUFACTURER_PAYABLE | DISTRIBUTOR_SETTLEMENT | ACCOUNT_PAYABLE
+  targetType            String          @db.VarChar(32) // MANUFACTURER_SETTLEMENT | MANUFACTURER_PAYABLE | DISTRIBUTOR_SETTLEMENT | ACCOUNT_PAYABLE | MARKETING_CPA_PAYABLE
   targetId              String          @db.VarChar(191)
   financialAccountId    String
   financialAccount      FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
@@ -1119,7 +1125,7 @@ model FinancialPayout {
   settlementAmount      Decimal         @db.Decimal(20, 2)
   adjustmentType        String          @default("NONE") @db.VarChar(16)
   adjustmentAmount      Decimal         @default(0) @db.Decimal(20, 2)
-  status                String          @default("INITIATED") @db.VarChar(24) // INITIATED | SETTLED | FAILED
+  status                String          @default("INITIATED") @db.VarChar(24) // INITIATED | SETTLED | FAILED | REVERSED
   externalPaymentReference String?      @db.VarChar(191)
   bankEvidenceReference String?         @db.VarChar(191)
   initiatedByAccountId  String?
@@ -1464,16 +1470,24 @@ model ReturnExchangeNcmAttempt {
 
 model SupplierReturn {
   id               String   @id @default(uuid())
+  requestKey       String?  @unique @db.VarChar(128)
+  requestHash      String?  @db.Char(64)
   shipmentBatchId  String?
   supplierName     String
+  supplierReference String? @db.VarChar(191)
+  supplierInvoiceNumber String? @db.VarChar(191)
   returnDate       DateTime @default(now())
   items            Json     @default("[]") // [{ productId, name, quantity, unitCostPrice, totalDebitCost }]
-  totalDebitAmount Float    @default(0)
-  vatReversal      Float    @default(0) // 13% Input VAT reversal
+  totalDebitAmount Decimal  @default(0) @db.Decimal(20, 2)
+  vatReversal      Decimal  @default(0) @db.Decimal(20, 2) // Internal input-VAT reversal supported by original supplier invoice evidence
   settlementType   String   @default("CREDIT_NOTE_OFFSET_PAYABLE") // CASH_REFUND, CREDIT_NOTE_OFFSET_PAYABLE
   status           String   @default("COMPLETED") // PENDING, COMPLETED, CANCELLED
   reason           String
   notes            String?  @db.Text
+  accountingJournalEntryId String? @db.VarChar(191)
+  accountingDocumentId String? @db.VarChar(191)
+  cashTransactionId String? @db.VarChar(191)
+  creditApplications SupplierReturnCreditApplication[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
@@ -1481,7 +1495,7 @@ model SupplierReturn {
 model TaxConfiguration {
   id                   String   @id @default("default")
   fiscalYear           String   @default("2082/2083")
-  vatRate              Float    @default(13.0)
+  vatRate              Float    @default(0)
   taxSlabs             Json     @default("[]")
   autoDeductAdvanceTax Boolean  @default(false)
   updatedAt            DateTime @updatedAt
@@ -1498,7 +1512,7 @@ model SellerTaxProfile {
 
 model TaxRegistrationVersion {
   id            String   @id @default(uuid())
-  taxStatus     String   @db.VarChar(24) // PAN_ONLY | VAT_REGISTERED
+  taxStatus     String   @db.VarChar(24) // UNREGISTERED | PAN_ONLY | VAT_REGISTERED
   vatNumber     String?  @db.VarChar(32)
   effectiveFrom DateTime
   effectiveUntil DateTime?
@@ -1722,6 +1736,8 @@ model TaxFilingPayment {
 
 model AccountPayable {
   id                String    @id @default(uuid())
+  accountingPartyId String?
+  accountingParty   AccountingParty? @relation(fields: [accountingPartyId], references: [id], onDelete: Restrict)
   title             String
   payeeName         String
   category          String    @default("OPERATING_EXPENSE") // SUPPLIER_INVOICE, OPERATING_EXPENSE, ASSET_PURCHASE, PARTNER_DISTRIBUTION, TAX_DUE, LOAN_NOTE, OTHER
@@ -1729,6 +1745,7 @@ model AccountPayable {
   referenceId       String?   @default("")
   totalAmount       Decimal   @db.Decimal(20, 2)
   paidAmount        Decimal   @default(0) @db.Decimal(20, 2)
+  creditAppliedAmount Decimal @default(0) @db.Decimal(20, 2)
   remainingBalance  Decimal   @db.Decimal(20, 2)
   dueDate           DateTime?
   invoiceNumber     String?   @default("")
@@ -1742,6 +1759,7 @@ model AccountPayable {
   @@index([status])
   @@index([dueDate])
   @@index([category])
+  @@index([accountingPartyId])
 }
 
 model AccountReceivable {
@@ -1824,8 +1842,67 @@ model AccountingPeriod {
   status       String     @default("OPEN") // OPEN, CLOSED
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+  closeEvents  AccountingPeriodCloseEvent[]
 
   @@unique([fiscalYearId, periodName])
+}
+
+model AccountingPeriodCloseEvent {
+  id                 String          @id @default(uuid())
+  accountingPeriodId String
+  accountingPeriod   AccountingPeriod @relation(fields: [accountingPeriodId], references: [id], onDelete: Restrict)
+  sequence           Int
+  cycle              Int
+  eventType          String          @db.VarChar(32)
+  requestKey         String          @unique @db.VarChar(191)
+  payloadHash        String          @db.Char(64)
+  actorAccountId     String          @db.VarChar(191)
+  actorRole          String          @db.VarChar(32)
+  subjectSequence    Int?
+  checklistSnapshot Json?
+  reason             String?         @db.Text
+  createdAt          DateTime        @default(now())
+
+  @@unique([accountingPeriodId, sequence])
+  @@index([accountingPeriodId, cycle, sequence])
+}
+
+model AccountingActionApproval {
+  id                   String                         @id @default(uuid())
+  actionType           String                         @db.VarChar(48)
+  status               String                         @default("PENDING") @db.VarChar(24)
+  requestKey           String                         @unique @db.VarChar(191)
+  payloadHash          String                         @db.Char(64)
+  payload              Json
+  makerAccountId       String                         @db.VarChar(191)
+  makerRole            String                         @db.VarChar(32)
+  reviewerAccountId    String?                        @db.VarChar(191)
+  reviewerRole         String?                        @db.VarChar(32)
+  reviewedAt           DateTime?
+  reviewDecision       String?                        @db.VarChar(16)
+  reviewReason         String?                        @db.Text
+  resultSnapshot       Json?
+  createdAt            DateTime                       @default(now())
+  events               AccountingActionApprovalEvent[]
+
+  @@index([status, createdAt])
+  @@index([actionType, createdAt])
+}
+
+model AccountingActionApprovalEvent {
+  id             String                  @id @default(uuid())
+  approvalId     String
+  approval       AccountingActionApproval @relation(fields: [approvalId], references: [id], onDelete: Restrict)
+  sequence       Int
+  eventType      String                  @db.VarChar(32)
+  actorAccountId String                  @db.VarChar(191)
+  actorRole      String                  @db.VarChar(32)
+  reason         String?                 @db.Text
+  snapshot       Json?
+  createdAt      DateTime                @default(now())
+
+  @@unique([approvalId, sequence])
+  @@index([approvalId, createdAt])
 }
 
 model JournalEntry {
@@ -1854,6 +1931,8 @@ model JournalEntry {
   settlementOffset  DistributorSettlementOffset?
   distributorBalanceSettlement DistributorBalanceSettlement?
   supplierCreditApplications SupplierCreditApplication[]
+  supplierReturnCreditApplications SupplierReturnCreditApplication[]
+  collaborationFeeCreditApplications CollaborationFeeCreditApplication[]
   ncmVarianceResolutions NcmSettlementVarianceResolution[]
 
   @@index([transactionDate])
@@ -1906,6 +1985,8 @@ model AccountingParty {
   updatedAt      DateTime             @updatedAt
   journalLines   JournalLine[]
   documents      AccountingDocument[]
+  operatingExpenses OperatingExpense[]
+  accountPayables AccountPayable[]
 
   @@unique([partyType, sourceEntityId])
   @@index([partyType, status])
@@ -1974,6 +2055,10 @@ model AccountingDocument {
   allocations     AccountingAllocation[]
   supplierCreditApplicationsAsCredit SupplierCreditApplication[] @relation("SupplierCreditApplicationCredit")
   supplierCreditApplicationsAsBill   SupplierCreditApplication[] @relation("SupplierCreditApplicationBill")
+  supplierReturnCreditApplicationsAsCredit SupplierReturnCreditApplication[] @relation("SupplierReturnCreditApplicationCredit")
+  supplierReturnCreditApplicationsAsBill SupplierReturnCreditApplication[] @relation("SupplierReturnCreditApplicationBill")
+  collaborationFeeCreditApplicationsAsCredit CollaborationFeeCreditApplication[] @relation("CollaborationFeeCreditApplicationCredit")
+  collaborationFeeCreditApplicationsAsInvoice CollaborationFeeCreditApplication[] @relation("CollaborationFeeCreditApplicationInvoice")
   distributorCashEvents DistributorCashEvent[]
   ncmVarianceResolutionsAsVariance NcmSettlementVarianceResolution[] @relation("NcmVarianceSourceDocument")
   ncmVarianceResolutionsAsTarget NcmSettlementVarianceResolution[] @relation("NcmVarianceTargetDocument")
@@ -1987,16 +2072,22 @@ model AccountingAllocation {
   id             String             @id @default(uuid())
   documentId     String
   document       AccountingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  cashTransactionId String?
+  cashTransaction CashTransaction? @relation(fields: [cashTransactionId], references: [id], onDelete: Restrict)
   journalEntryId String?
   settlementBatchId String?
-  allocationType String? @db.VarChar(16) // CASH | OFFSET
+  allocationType String? @db.VarChar(16) // CASH | OFFSET | REVERSAL
   amount         Decimal            @db.Decimal(20, 2)
   allocatedAt    DateTime           @default(now())
   notes          String?            @db.Text
   idempotencyKey String?            @unique @db.VarChar(191)
+  reversesAllocationId String?      @unique @db.VarChar(191)
+  reversesAllocation AccountingAllocation? @relation("AccountingAllocationReversal", fields: [reversesAllocationId], references: [id], onDelete: Restrict)
+  reversedByAllocation AccountingAllocation? @relation("AccountingAllocationReversal")
   settlementBatch DistributorBalanceSettlement? @relation(fields: [settlementBatchId], references: [id], onDelete: Restrict)
 
   @@index([documentId, allocatedAt])
+  @@index([cashTransactionId])
   @@index([journalEntryId])
   @@index([settlementBatchId, allocationType])
 }
@@ -2018,6 +2109,49 @@ model SupplierCreditApplication {
 
   @@index([creditDocumentId, appliedAt])
   @@index([billDocumentId, appliedAt])
+  @@index([journalEntryId])
+}
+
+model SupplierReturnCreditApplication {
+  id                 String             @id @default(uuid())
+  idempotencyKey     String             @unique @db.VarChar(191)
+  supplierReturnId   String
+  creditDocumentId   String
+  billDocumentId     String
+  journalEntryId     String
+  amount             Decimal            @db.Decimal(20, 2)
+  appliedByAccountId String?
+  notes              String?            @db.Text
+  appliedAt          DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+  supplierReturn     SupplierReturn     @relation(fields: [supplierReturnId], references: [id], onDelete: Restrict)
+  creditDocument     AccountingDocument @relation("SupplierReturnCreditApplicationCredit", fields: [creditDocumentId], references: [id], onDelete: Restrict)
+  billDocument       AccountingDocument @relation("SupplierReturnCreditApplicationBill", fields: [billDocumentId], references: [id], onDelete: Restrict)
+  journalEntry       JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@index([supplierReturnId, appliedAt])
+  @@index([creditDocumentId, appliedAt])
+  @@index([billDocumentId, appliedAt])
+  @@index([journalEntryId])
+}
+
+model CollaborationFeeCreditApplication {
+  id                 String             @id @default(uuid())
+  idempotencyKey     String             @unique @db.VarChar(191)
+  creditDocumentId   String
+  invoiceDocumentId  String
+  journalEntryId     String
+  amount             Decimal            @db.Decimal(20, 2)
+  appliedByAccountId String?
+  notes              String?            @db.Text
+  appliedAt          DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+  creditDocument     AccountingDocument @relation("CollaborationFeeCreditApplicationCredit", fields: [creditDocumentId], references: [id], onDelete: Restrict)
+  invoiceDocument    AccountingDocument @relation("CollaborationFeeCreditApplicationInvoice", fields: [invoiceDocumentId], references: [id], onDelete: Restrict)
+  journalEntry       JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@index([creditDocumentId, appliedAt])
+  @@index([invoiceDocumentId, appliedAt], map: "CollabFeeCreditApp_invoiceAppliedAt_idx")
   @@index([journalEntryId])
 }
 
@@ -2352,7 +2486,7 @@ model DistributorDeliveryChargeNegotiation {
   commissionRate      Decimal  @default(0) @db.Decimal(20, 2)
   bonusRate           Decimal  @default(0) @db.Decimal(20, 2)
   incentiveRate       Decimal  @default(0) @db.Decimal(20, 2)
-  vatRate             Decimal  @default(13) @db.Decimal(5, 2)
+  vatRate             Decimal  @default(0) @db.Decimal(5, 2)
   vatInclusive        Boolean  @default(false)
   status              String   @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED
   proposedByRole      String   @db.VarChar(32) // ADMIN | DISTRIBUTOR
@@ -3427,13 +3561,13 @@ model ManufacturerProductionRequest {
   minimumOrderQuantity        Int
   proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Batch-total production other cost for costTermsVersion 2
   vatTreatment                String   @default("EXEMPT") @db.VarChar(24) // EXEMPT | VAT_INCLUSIVE | VAT_EXCLUSIVE
-  vatRate                     Decimal  @default(13) @db.Decimal(5, 2)
+  vatRate                     Decimal  @default(0) @db.Decimal(5, 2)
   vatInvoiceReference         String?  @db.VarChar(120)
   approvedUnitCogs            Decimal? @db.Decimal(20, 2)
   approvedMinimumOrderQuantity Int?
   approvedDeliveryCost       Decimal? @db.Decimal(20, 2)
   approvedVatTreatment        String   @default("EXEMPT") @db.VarChar(24)
-  approvedVatRate             Decimal  @default(13) @db.Decimal(5, 2)
+  approvedVatRate             Decimal  @default(0) @db.Decimal(5, 2)
   approvedVatInvoiceReference String?  @db.VarChar(120)
   approvedVatInvoiceDate      DateTime?
   approvedVatInvoiceEvidenceUrl String? @db.Text
@@ -3525,7 +3659,7 @@ model ManufacturerInventoryCostLayer {
   unitVatAmount     Decimal  @default(0) @db.Decimal(30, 14)
   manufacturerPayableRecognizedAtProduction Boolean @default(false)
   vatTreatment      String   @default("EXEMPT") @db.VarChar(24)
-  vatRate           Decimal  @default(13) @db.Decimal(5, 2)
+  vatRate           Decimal  @default(0) @db.Decimal(5, 2)
   vatInvoiceVerified Boolean @default(false)
   inputVatRecoverable Boolean @default(false)
   unitDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2)
@@ -3789,7 +3923,7 @@ model DeliveryFinancialSettlement {
   settledAt           DateTime?
   journalEntryId      String?
   varianceReason      String?   @db.Text
-  ncmSettlementBatchItem NcmSettlementBatchItem?
+  ncmSettlementBatchItems NcmSettlementBatchItem[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -3802,7 +3936,7 @@ model NcmSettlementBatch {
   idempotencyKey        String   @unique @db.VarChar(191)
   periodStart           DateTime?
   periodEnd             DateTime?
-  status                String   @default("SETTLED") @db.VarChar(32) // SETTLED | VARIANCE_OPEN | VARIANCE_PARTIALLY_RESOLVED | VARIANCE_RESOLVED
+  status                String   @default("SETTLED") @db.VarChar(32) // SETTLED | VARIANCE_OPEN | VARIANCE_PARTIALLY_RESOLVED | VARIANCE_RESOLVED | REVERSED
   ncmTicketId           Int?
   totalCod              Decimal  @db.Decimal(20, 2)
   totalCarrierFee       Decimal  @db.Decimal(20, 2)
@@ -3828,14 +3962,17 @@ model NcmSettlementBatch {
 }
 
 model NcmSettlementBatchItem {
-  id           String                  @id @default(uuid())
-  batchId      String
-  settlementId String                  @unique
-  batch        NcmSettlementBatch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  settlement   DeliveryFinancialSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
-  createdAt    DateTime                @default(now())
+  id                   String                     @id @default(uuid())
+  batchId              String
+  settlementId         String
+  priorSettlementState String?                    @db.VarChar(24)
+  batch                NcmSettlementBatch         @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  settlement           DeliveryFinancialSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  createdAt            DateTime                   @default(now())
 
+  @@unique([batchId, settlementId])
   @@index([batchId])
+  @@index([settlementId])
 }
 
 model NcmSettlementVarianceResolution {
@@ -3852,6 +3989,10 @@ model NcmSettlementVarianceResolution {
   reference          String?            @db.VarChar(191)
   notes              String             @db.Text
   createdBy          String?            @db.VarChar(191)
+  reversedAt         DateTime?
+  reversedByAccountId String?           @db.VarChar(191)
+  reversalJournalEntryId String?         @db.VarChar(191)
+  reversalCashTransactionId String?      @db.VarChar(191)
   createdAt          DateTime           @default(now())
   batch              NcmSettlementBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
   sourceDocument     AccountingDocument? @relation("NcmVarianceSourceDocument", fields: [sourceDocumentId], references: [id], onDelete: Restrict)
@@ -3897,11 +4038,13 @@ model NcmSupportTicket {
 // Operating, Marketing & Overhead Expenses Model
 model OperatingExpense {
   id                 String   @id @default(uuid())
+  accountingPartyId  String?
+  accountingParty    AccountingParty? @relation(fields: [accountingPartyId], references: [id], onDelete: Restrict)
   title              String
   category           String // MARKETING | RENT | ELECTRICITY | SALARIES | UTILITIES | MISCELLANEOUS | MAINTENANCE | PRINTING | CUSTOM
-  amount             Float // Total expense amount
+  amount             Decimal  @db.Decimal(20, 2) // Total expense amount
   isVatBill          Boolean  @default(false)
-  vatAmount          Float    @default(0) // Input VAT embedded if 13% VAT bill provided
+  vatAmount          Decimal  @default(0) @db.Decimal(20, 2) // Internal invoice VAT amount, when entered or estimated
   supplierVatNumber  String?  @db.VarChar(9)
   invoiceEvidenceUrl String?  @db.Text
   purchaseTaxableAmount Decimal? @db.Decimal(20, 2)
@@ -3913,11 +4056,15 @@ model OperatingExpense {
   purchaseVatJournalEntryId String? @unique @db.VarChar(191)
   date               DateTime @default(now())
   paymentMethod      String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
-  paymentStatus      String   @default("PAID") // PAID | PAYABLE
+  paymentStatus      String   @default("PAID") // PAID | PARTIALLY_PAID | PAYABLE
+  paidAmount         Decimal  @default(0) @db.Decimal(20, 2)
+  payableAmount      Decimal  @default(0) @db.Decimal(20, 2)
   financialAccountId String?
   payableId          String?
   vendorName         String? // Vendor / landlord / service provider / employee
   invoiceNumber      String? // Bill reference
+  idempotencyKey     String?  @unique @db.VarChar(191)
+  requestPayloadHash String?  @db.Char(64)
   notes              String?  @db.Text
   createdBy          String   @default("ADMIN")
   createdAt          DateTime @default(now())
@@ -3930,6 +4077,7 @@ model OperatingExpense {
   @@index([financialAccountId])
   @@index([payableId])
   @@index([purchaseVatStatus, date])
+  @@index([accountingPartyId])
   @@unique([supplierVatNumber, invoiceNumber])
 }
 
@@ -3985,18 +4133,17 @@ model LocationMapping {
 
 // ============================================================
 // SETTLEMENT REVERSION AUDIT MODEL
-// Tracks every admin-initiated reversal of a settled payable,
-// receivable, or manufacturer net payout.
+// Tracks evidence-backed, source-aware corrections to payable and receivable settlements.
 // ============================================================
 model SettlementReversion {
   id                  String   @id @default(uuid())
   // What was reversed
-  reversionType       String   @db.VarChar(48) // PAYABLE | RECEIVABLE | MANUFACTURER_PAYMENT | NCM_COD
-  originalRecordId    String   @db.VarChar(191) // AccountPayable.id | AccountReceivable.id | CashTransaction.id
+  reversionType       String   @db.VarChar(48) // PAYABLE | RECEIVABLE | MANUFACTURER_PAYMENT | MARKETING_CPA_PAYABLE | NCM_COD
+  originalRecordId    String   @db.VarChar(191) // AccountPayable.id | AccountReceivable.id | AccountingDocument.id | CashTransaction.id
   cashTransactionId   String?  @db.VarChar(191) // The original CashTransaction being reversed
   reversalTransactionId String? @db.VarChar(191) // New CashTransaction created for the reversal (INFLOW for payable reversal, OUTFLOW for receivable reversal)
   // Settlement snapshot at time of reversal
-  originalAmount      Float    // Amount that was paid/collected in the original settlement
+  originalAmount      Decimal  @db.Decimal(20, 2) // Amount that was paid/collected in the original settlement
   offsetAmount        Float    @default(0) // Bilateral netting offset that was applied (manufacturer only)
   partyName           String?  @db.VarChar(255) // Manufacturer / payee name
   accountId           String?  @db.VarChar(191) // FinancialAccount used in original settlement
@@ -4004,18 +4151,45 @@ model SettlementReversion {
   // Post-reversion state
   priorStatus         String   @db.VarChar(32)  // Status before reversion (SETTLED | PARTIALLY_PAID | etc.)
   restoredStatus      String   @db.VarChar(32)  // Status after reversion (UNPAID | PARTIALLY_PAID)
-  priorPaidAmount     Float    @default(0)
-  priorRemainingBalance Float  @default(0)
+  priorPaidAmount     Decimal  @default(0) @db.Decimal(20, 2)
+  priorRemainingBalance Decimal @default(0) @db.Decimal(20, 2)
   // Admin audit
   revertedByAdminId   String?  @db.VarChar(191)
   revertedByEmail     String?  @db.VarChar(255)
   revertReason        String   @db.Text
+  correctionMode      String?  @db.VarChar(24) // VOID_NOT_EXECUTED | RETURNED_FUNDS
+  evidenceReference   String?  @db.VarChar(191)
+  reversalJournalEntryId String? @db.VarChar(191)
   revertedAt          DateTime @default(now())
   createdAt           DateTime @default(now())
 
   @@index([reversionType, originalRecordId])
   @@index([revertedAt])
   @@index([revertedByAdminId])
+}
+
+model AccountingDecimalConversionEvidence {
+  migrationKey  String   @db.VarChar(64)
+  tableName     String   @db.VarChar(64)
+  recordId      String   @db.VarChar(191)
+  fieldName     String   @db.VarChar(64)
+  originalValue String   @db.VarChar(128)
+  convertedValue Decimal @db.Decimal(20, 2)
+  drift         Decimal  @db.Decimal(65, 30)
+  capturedAt    DateTime @default(now()) @db.DateTime(3)
+
+  @@id([migrationKey, tableName, recordId, fieldName])
+  @@index([tableName, fieldName])
+}
+
+model AccountingDecimalJsonConversionEvidence {
+  migrationKey  String   @db.VarChar(64)
+  sourceRecordId String  @db.VarChar(191)
+  originalItems Json
+  convertedItems Json
+  capturedAt    DateTime @default(now()) @db.DateTime(3)
+
+  @@id([migrationKey, sourceRecordId])
 }
 
 // ============================================================

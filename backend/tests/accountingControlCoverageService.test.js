@@ -9,6 +9,8 @@ test("control coverage explicitly lists operational, legacy, treasury-only, and 
       { id: "ar", accountCode: "1130", currentBalance: "50.00" },
       { id: "cash", accountCode: "1110", currentBalance: "25.00" },
       { id: "inventory", accountCode: "1140", currentBalance: "300.00" },
+      { id: "marketing-partner-ap", accountCode: "2170", currentBalance: "75.00" },
+      { id: "fixed-assets", accountCode: "1510", currentBalance: "0.00" },
     ],
   });
 
@@ -18,7 +20,10 @@ test("control coverage explicitly lists operational, legacy, treasury-only, and 
   assert.equal(result.controls.find((row) => row.accountCode === "1170").status, "SOURCE_SCOPED");
   assert.equal(result.controls.find((row) => row.accountCode === "1130").status, "LEGACY_PARTIAL");
   assert.equal(result.controls.find((row) => row.accountCode === "1110").status, "TREASURY_REGISTER_ONLY");
-  assert.equal(result.controls.find((row) => row.accountCode === "1140").status, "NOT_RECONCILED");
+  assert.equal(result.controls.find((row) => row.accountCode === "1140").status, "SOURCE_SCOPED");
+  assert.equal(result.controls.find((row) => row.accountCode === "1510").status, "SOURCE_SCOPED");
+  assert.equal(result.controls.find((row) => row.accountCode === "2170").status, "NOT_RECONCILED");
+  assert.match(result.controls.find((row) => row.accountCode === "2170").gap, /full control balance remain unreconciled/);
   assert.equal(result.controls.find((row) => row.accountCode === "1170").glBalance, 150);
 });
 

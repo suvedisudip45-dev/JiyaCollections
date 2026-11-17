@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { resolveSellerTaxTreatment } from "./sellerTaxProfileService.js";
 
 const fail = (message, statusCode = 400, code = "SALES_INVOICE_ERROR") =>
   Object.assign(new Error(message), { statusCode, code });
@@ -43,6 +44,16 @@ export const recordPaperSalesInvoice = async ({
       }
       if (current.status !== "PENDING_PAPER_DETAILS") {
         throw fail("Only a pending paper bill can be recorded as issued.", 409, "SALES_INVOICE_NOT_PENDING");
+      }
+      const sellerTaxTreatment = await resolveSellerTaxTreatment(current.taxPoint, { client: tx });
+      if (sellerTaxTreatment.taxStatus === "UNREGISTERED") {
+        throw fail("A statutory paper bill cannot be recorded while the business is unregistered.", 409, "STATUTORY_BILLING_UNAVAILABLE");
+      }
+      const expectedDocumentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+        ? "VAT_TAX_INVOICE"
+        : "PAN_BILL";
+      if (current.documentType !== expectedDocumentType) {
+        throw fail("The paper bill type does not match the tax registration effective on the transaction date.", 409, "PAPER_BILL_TAX_STATUS_MISMATCH");
       }
       const updated = await tx.salesInvoice.update({
         where: { id: current.id },

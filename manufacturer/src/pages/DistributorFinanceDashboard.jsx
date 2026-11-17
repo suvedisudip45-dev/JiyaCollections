@@ -11,6 +11,11 @@ import {
   RotateCw,
 } from "lucide-react";
 import { backendUrl, useManufacturer, currency } from "../context/ManufacturerContext";
+import {
+  absoluteDecimalString,
+  compareDecimalStrings,
+  formatNprAmount,
+} from "../utils/decimalDisplay";
 
 const DistributorFinanceDashboard = () => {
   const { token, manufacturer: distributor } = useManufacturer();
@@ -286,15 +291,15 @@ const DistributorFinanceDashboard = () => {
             ["Company payable to you", settlementPosition.outstandingPayable],
             ["Receivable owed to company", settlementPosition.outstandingReceivable],
             [
-              Number(settlementPosition.netBalance || 0) > 0 ? "Net you owe company" : "Net company owes you",
-              Math.abs(Number(settlementPosition.netBalance || 0)),
+              compareDecimalStrings(settlementPosition.netBalance || "0", "0") > 0 ? "Net you owe company" : "Net company owes you",
+              absoluteDecimalString(settlementPosition.netBalance || "0"),
             ],
             ["Remittance awaiting Admin review", cashPosition.pendingRemittance],
           ].map(([label, amount]) => (
             <div key={label} className="rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-3">
               <p className="text-[10px] font-bold uppercase tracking-wide text-[#575757]">{label}</p>
               <p className="mt-1 text-base font-black text-[#171717]">
-                {currency}{Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                {currency}{formatNprAmount(amount || "0")}
               </p>
             </div>
           ))}
@@ -347,7 +352,7 @@ const DistributorFinanceDashboard = () => {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-bold text-[#171717]">
-                    {request.direction === "COMPANY_COLLECTS" ? "Pay company" : "Receive from company"} · {currency}{Number(request.requestedAmount || 0).toFixed(2)}
+                    {request.direction === "COMPANY_COLLECTS" ? "Pay company" : "Receive from company"} · {currency}{formatNprAmount(request.requestedAmount ?? "0")}
                   </p>
                   <p className="mt-1 text-[10px] text-[#575757]">
                     {new Date(request.createdAt).toLocaleString()} · {request.status.replaceAll("_", " ")}

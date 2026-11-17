@@ -40,6 +40,7 @@ const PartnershipEquity = ({ token }) => {
   const [showRepayLoanModal, setShowRepayLoanModal] = useState(false);
   const [showAmortizationModal, setShowAmortizationModal] = useState(false);
   const [showDistributeModal, setShowDistributeModal] = useState(false);
+  const [distributionEstimate, setDistributionEstimate] = useState(null);
 
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [selectedLoanSchedule, setSelectedLoanSchedule] = useState([]);
@@ -124,8 +125,6 @@ const PartnershipEquity = ({ token }) => {
     periodEnd: "",
     fiscalYear: "2082/2083",
     retainedEarningsPercentage: 20,
-    executePayout: false,
-    fromAccountId: "",
   });
 
   const fetchData = useCallback(async () => {
@@ -279,6 +278,9 @@ const PartnershipEquity = ({ token }) => {
       if (isBuyback && !transferForm.fromTreasuryAccountId) {
         return toast.warn("Select the mapped Treasury account funding the share buyback");
       }
+      if (isBuyback && !transferForm.notes.trim()) {
+        return toast.warn("Enter a reason for the company share buyback");
+      }
       const idempotencyKey = isBuyback
         ? getStableIdempotencyKey(shareBuybackIdempotencyKey, "SHARE-BUYBACK", {
             sellerPartnerId: transferForm.sellerPartnerId,
@@ -306,7 +308,8 @@ const PartnershipEquity = ({ token }) => {
         },
       });
       if (res.data.success) {
-        toast.success(res.data.message);
+        if (isBuyback) toast.info(res.data.message);
+        else toast.success(res.data.message);
         if (isBuyback) shareBuybackIdempotencyKey.current = null;
         else peerShareTransferIdempotencyKey.current = null;
         setShowTransferSharesModal(false);
@@ -418,6 +421,7 @@ const PartnershipEquity = ({ token }) => {
   const handleRepayLoan = async (e) => {
     e.preventDefault();
     if (!selectedLoan || !repayForm.repaymentAmount) return;
+    if (!repayForm.notes.trim()) return toast.warn("Enter a reason for the loan repayment request");
 
     try {
       const request = { liabilityId: selectedLoan.id, ...repayForm };
@@ -437,7 +441,7 @@ const PartnershipEquity = ({ token }) => {
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success(res.data.message);
+        toast.info(res.data.message);
         loanRepaymentIdempotencyKey.current = null;
         setShowRepayLoanModal(false);
         setSelectedLoan(null);
@@ -478,9 +482,8 @@ const PartnershipEquity = ({ token }) => {
         headers: { token },
       });
       if (res.data.success) {
+        setDistributionEstimate(res.data.estimate);
         toast.success(res.data.message);
-        setShowDistributeModal(false);
-        fetchData();
       } else {
         toast.error(res.data.message);
       }
@@ -556,10 +559,13 @@ const PartnershipEquity = ({ token }) => {
         {/* TOP ACTION BUTTONS */}
         <div className="flex flex-wrap items-center gap-2.5">
           <button
-            onClick={() => setShowDistributeModal(true)}
+            onClick={() => {
+              setDistributionEstimate(null);
+              setShowDistributeModal(true);
+            }}
             className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-xs"
           >
-            <span>💸 Distribute Profits</span>
+            <span>💸 Estimate Profit Share</span>
           </button>
 
           <button
@@ -2128,9 +2134,13 @@ const PartnershipEquity = ({ token }) => {
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-black text-slate-900">Run Profit Dividend Engine</h3>
+              <h3 className="text-base font-black text-slate-900">Profit Share Estimate</h3>
               <button onClick={() => setShowDistributeModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
+
+            <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-950">
+              Estimate only—not a distribution approval or statutory profit calculation. This preview does not create a payable, move Treasury funds, or post a journal. Source completeness, tax/return treatment, and distribution policy still require review.
+            </p>
 
             <form onSubmit={handleProfitDistribution} className="space-y-4 mt-4 text-xs">
               <NepaliDatePicker
@@ -2157,7 +2167,7 @@ const PartnershipEquity = ({ token }) => {
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Retained Earnings (% Reinvested)</label>
+                  <label className="font-bold text-slate-700 block mb-1">Illustrative Retained Earnings (%)</label>
                   <input
                     type="number"
                     value={distForm.retainedEarningsPercentage}
@@ -2167,37 +2177,26 @@ const PartnershipEquity = ({ token }) => {
                 </div>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="execPayout"
-                  checked={distForm.executePayout}
-                  onChange={(e) => setDistForm({ ...distForm, executePayout: e.target.checked })}
-                  className="w-4 h-4 rounded-md accent-emerald-600 cursor-pointer"
-                />
-                <label htmlFor="execPayout" className="cursor-pointer">
-                  <span className="font-bold text-slate-900 block">Execute Instant Bank/Cash Dividend Payout</span>
-                  <span className="text-[10px] text-slate-400">Deducts funds directly from liquid treasury account.</span>
-                </label>
-              </div>
-
-              {distForm.executePayout && (
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Disburse From Treasury Account *</label>
-                  <select
-                    value={distForm.fromAccountId}
-                    onChange={(e) => setDistForm({ ...distForm, fromAccountId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
-                    required
-                  >
-                    <option value="">Select Treasury account...</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.accountName} ({currency}{Number(a.currentBalance).toLocaleString()})
-                      </option>
+              {distributionEstimate && (
+                <section className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-live="polite">
+                  <h4 className="text-xs font-black text-slate-900">Estimate results (not posted)</h4>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
+                    <div><dt className="text-slate-500">Gross revenue</dt><dd className="font-bold">{currency}{Number(distributionEstimate.grossRevenue || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">COGS</dt><dd className="font-bold">{currency}{Number(distributionEstimate.cogs || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Operating expenses</dt><dd className="font-bold">{currency}{Number(distributionEstimate.operatingExpenses || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Estimated net profit</dt><dd className="font-bold">{currency}{Number(distributionEstimate.netProfit || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Retained amount</dt><dd className="font-bold">{currency}{Number(distributionEstimate.retainedAmount || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Illustrative distributable</dt><dd className="font-bold">{currency}{Number(distributionEstimate.distributableAmount || 0).toLocaleString()}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-[10px] text-slate-600">
+                    Data basis: revenue {distributionEstimate.calculationBasis?.revenue}, COGS {distributionEstimate.calculationBasis?.cogs}, expenses {distributionEstimate.calculationBasis?.operatingExpenses}.
+                  </p>
+                  <ul className="mt-2 space-y-1 text-[10px] text-slate-600">
+                    {(distributionEstimate.partnerBreakdown || []).map((partner) => (
+                      <li key={partner.partnerId}>{partner.name}: {currency}{Number(partner.amount || 0).toLocaleString()} ({partner.percentage}%)</li>
                     ))}
-                  </select>
-                </div>
+                  </ul>
+                </section>
               )}
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
@@ -2213,7 +2212,7 @@ const PartnershipEquity = ({ token }) => {
                   disabled={!calendarReady}
                   className="px-5 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700"
                 >
-                  Calculate &amp; Execute
+                  Preview Estimate
                 </button>
               </div>
             </form>

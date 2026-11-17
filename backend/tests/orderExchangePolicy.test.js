@@ -495,6 +495,12 @@ test("NCM exchange approval requires an allocated replacement bill for unequal-v
     order: { status: "Delivered", deliveryOrder: { ncmOrderId: 123 } },
   };
   stubMethod(t, prisma, "$transaction", (callback) => callback({
+    taxRegistrationVersion: {
+      findFirst: async () => ({ taxStatus: "VAT_REGISTERED", vatNumber: "123456789" }),
+    },
+    vatRateVersion: {
+      findFirst: async () => ({ vatRate: "13.00" }),
+    },
     orderExchangeRequest: {
       findUnique: async () => current,
     },

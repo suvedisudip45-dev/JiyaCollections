@@ -168,7 +168,7 @@ const Customer360Panel = ({ data, token, onStatusChange, hideProfile = false, hi
                     </div>
                   </div>
                   <div className="mt-2 grid gap-1 text-xs sm:grid-cols-2">
-                    <p><b>Payment:</b> {order.payment ? "Paid" : "Unpaid"} · {order.paymentMethod}</p>
+                    <p><b>Payment recorded:</b> {order.payment ? "Yes" : "No"} · {order.paymentMethod}</p>
                     <p><b>Fulfillment:</b> {order.fulfillmentStatus || "—"}</p>
                     <p><b>Delivered:</b> {dateText(delivery?.deliveredAt || assignment?.deliveredAt)}</p>
                     <p><b>Delivery:</b> {assignment
@@ -176,7 +176,7 @@ const Customer360Panel = ({ data, token, onStatusChange, hideProfile = false, hi
                       : delivery
                         ? `${delivery.deliveryType} · ${delivery.state} · NCM ${delivery.ncmStatus || "—"}`
                         : "No delivery record"}</p>
-                    <p><b>COD:</b> {amountText(delivery?.codAmount)} · NCM payment {delivery?.ncmPaymentStatus || (order.payment ? "Received/paid" : "Not received/unpaid")}</p>
+                    <p><b>COD:</b> {amountText(delivery?.codAmount)} · NCM collection {delivery?.ncmPaymentStatus || "Not separately reconciled"}</p>
                     <p><b>Delivery fee:</b> {amountText(order.deliveryFee)} · NCM fee {amountText(delivery?.ncmDeliveryCharge)}</p>
                   </div>
                   <div className="mt-2 border-t border-slate-100 pt-2">

@@ -22,7 +22,7 @@ const emptyQuote = {
   unitCogs: "",
   otherCost: "0",
   vatTreatment: "EXEMPT",
-  vatRate: "13",
+  vatRate: "",
   vatInvoiceReference: "",
   manufacturerNote: "",
 };

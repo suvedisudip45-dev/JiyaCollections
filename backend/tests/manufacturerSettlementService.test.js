@@ -49,32 +49,32 @@ test("manufacturer settlement summary uses recognized payable journals and all s
     journalLine: {
       findMany: async () => [
         {
-          debit: 0,
-          credit: 100,
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("100"),
           supplierId: "mfg-1",
           supplierName: "Textile Co",
           accountingParty: null,
           journalEntry: { sourceType: "MANUFACTURER_PRODUCTION" },
         },
         {
-          debit: 0,
-          credit: 5,
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("5"),
           supplierId: "mfg-1",
           supplierName: "Textile Co",
           accountingParty: null,
           journalEntry: { sourceType: "MANUFACTURER_LOGISTICS" },
         },
         {
-          debit: 12,
-          credit: 0,
+          debit: new Prisma.Decimal("12"),
+          credit: new Prisma.Decimal("0"),
           supplierId: "mfg-1",
           supplierName: "Textile Co",
           accountingParty: null,
           journalEntry: { sourceType: "SUPPLIER_PAYMENT" },
         },
         {
-          debit: 500,
-          credit: 0,
+          debit: new Prisma.Decimal("500"),
+          credit: new Prisma.Decimal("0"),
           supplierId: "mfg-2",
           supplierName: "Textile Co",
           accountingParty: null,
@@ -86,14 +86,14 @@ test("manufacturer settlement summary uses recognized payable journals and all s
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 100);
-  assert.equal(summary.pendingSettlementAmount, 50);
-  assert.equal(summary.completedPayments, 12);
-  assert.equal(summary.productionOutstanding, 90);
-  assert.equal(summary.logisticsOutstanding, 3);
-  assert.equal(summary.productionPayableAvailable, 45);
+  assert.equal(summary.totalManufacturedGoodsValue, "100.00");
+  assert.equal(summary.pendingSettlementAmount, "50.00");
+  assert.equal(summary.completedPayments, "12.00");
+  assert.equal(summary.productionOutstanding, "90.00");
+  assert.equal(summary.logisticsOutstanding, "3.00");
+  assert.equal(summary.productionPayableAvailable, "45.00");
   assert.equal(summary.attributionReconciliationRequired, false);
-  assert.equal(summary.logisticsPayableAvailable, 0);
+  assert.equal(summary.logisticsPayableAvailable, "0.00");
 });
 
 test("manufacturer settlement summary reports supplier credits separately from gross open bills", async () => {
@@ -167,11 +167,75 @@ test("manufacturer settlement summary reports supplier credits separately from g
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 150);
-  assert.equal(summary.productionOutstanding, 110);
-  assert.equal(summary.supplierCreditOutstanding, 10);
+  assert.equal(summary.totalManufacturedGoodsValue, "150.00");
+  assert.equal(summary.productionOutstanding, "110.00");
+  assert.equal(summary.supplierCreditOutstanding, "10.00");
   assert.equal(summary.supplierCreditsRequireExplicitApplication, true);
-  assert.equal(summary.productionPayableAvailable, 110);
+  assert.equal(summary.productionPayableAvailable, "110.00");
+});
+
+test("manufacturer settlement summary preserves fractional totals and a positive one-paisa balance", async () => {
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    manufacturerSettlementRequest: {
+      findMany: async () => [],
+      groupBy: async () => [],
+    },
+    account: { findUnique: async () => null },
+    accountingDocument: {
+      findMany: async () => [
+        {
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_PRODUCTION",
+          sourceId: "production-1",
+          originalAmount: new Prisma.Decimal("0.10"),
+          allocatedAmount: new Prisma.Decimal("0.09"),
+          remainingAmount: new Prisma.Decimal("0.01"),
+        },
+        {
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: "order-1",
+          originalAmount: new Prisma.Decimal("0.20"),
+          allocatedAmount: new Prisma.Decimal("0.20"),
+          remainingAmount: new Prisma.Decimal("0.00"),
+        },
+      ],
+    },
+  };
+
+  const summary = await getManufacturerSettlementSummary("mfg-1", { client });
+
+  assert.equal(summary.totalManufacturedGoodsValue, "0.30");
+  assert.equal(summary.productionOutstanding, "0.01");
+  assert.equal(summary.productionPayableAvailable, "0.01");
+  assert.equal(typeof summary.productionPayableAvailable, "string");
+});
+
+test("manufacturer settlement summary serializes large valid aggregate amounts exactly", async () => {
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    manufacturerSettlementRequest: {
+      findMany: async () => [],
+      groupBy: async () => [],
+    },
+    account: { findUnique: async () => null },
+    accountingDocument: {
+      findMany: async () => [{
+        side: "PAYABLE",
+        sourceType: "MANUFACTURER_PRODUCTION",
+        sourceId: "production-large",
+        originalAmount: new Prisma.Decimal("999999999999999999.99"),
+        allocatedAmount: new Prisma.Decimal("0.00"),
+        remainingAmount: new Prisma.Decimal("999999999999999999.99"),
+      }],
+    },
+  };
+
+  const summary = await getManufacturerSettlementSummary("mfg-1", { client });
+
+  assert.equal(summary.totalManufacturedGoodsValue, "999999999999999999.99");
+  assert.equal(summary.productionPayableAvailable, "999999999999999999.99");
 });
 
 test("manufacturer settlement summary does not attribute another manufacturer by matching name", async () => {
@@ -206,8 +270,8 @@ test("manufacturer settlement summary does not attribute another manufacturer by
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 0);
-  assert.equal(summary.productionOutstanding, 0);
+  assert.equal(summary.totalManufacturedGoodsValue, "0.00");
+  assert.equal(summary.productionOutstanding, "0.00");
   assert.equal(summary.unattributedLegacyLineCount, 1);
   assert.equal(summary.attributionReconciliationRequired, true);
 });
@@ -244,8 +308,8 @@ test("manufacturer settlement summary reduces legacy delivery payables for retur
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 75);
-  assert.equal(summary.productionOutstanding, 75);
+  assert.equal(summary.totalManufacturedGoodsValue, "75.00");
+  assert.equal(summary.productionOutstanding, "75.00");
 });
 
 test("manufacturer payout allocations apply to open production and delivery bills", async () => {
@@ -410,9 +474,9 @@ test("paid manufacturer logistics settlement clears recognized freight payable",
   };
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
-  assert.equal(summary.logisticsReimbursements, 1200);
-  assert.equal(summary.logisticsOutstanding, 0);
-  assert.equal(summary.outstandingPayable, 0);
+  assert.equal(summary.logisticsReimbursements, "1200.00");
+  assert.equal(summary.logisticsOutstanding, "0.00");
+  assert.equal(summary.outstandingPayable, "0.00");
 });
 
 test("manufacturer settlement requests accept only positive typed amounts", () => {
@@ -424,6 +488,27 @@ test("manufacturer settlement requests accept only positive typed amounts", () =
   assert.equal(normalized.requestType, "LOGISTICS");
   assert.equal(normalized.amount.toFixed(2), "125.46");
   assert.equal(normalized.notes, "Local delivery");
-  assert.throws(() => normalizeSettlementRequest({ requestType: "OTHER", amount: 1 }), /PRODUCTION or LOGISTICS/);
-  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: 0 }), /positive valid amount/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "OTHER", amount: "1" }), /PRODUCTION or LOGISTICS/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "0" }), /positive valid amount/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: 1 }), /positive valid amount/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "1e2" }), /positive valid amount/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "0.004" }), /positive valid amount/);
+  assert.throws(() => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "-0.01" }), /positive valid amount/);
+});
+
+test("manufacturer settlement request normalization applies NPR HALF_EVEN and the Decimal field boundary", () => {
+  const evenDown = normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "1.005" });
+  const evenUp = normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "1.015" });
+  const maximum = normalizeSettlementRequest({
+    requestType: "PRODUCTION",
+    amount: "999999999999999999.99",
+  });
+
+  assert.equal(evenDown.amount.toFixed(2), "1.00");
+  assert.equal(evenUp.amount.toFixed(2), "1.02");
+  assert.equal(maximum.amount.toFixed(2), "999999999999999999.99");
+  assert.throws(
+    () => normalizeSettlementRequest({ requestType: "PRODUCTION", amount: "1000000000000000000.00" }),
+    /positive valid amount/,
+  );
 });

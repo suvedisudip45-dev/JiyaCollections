@@ -48,7 +48,7 @@ const makeClient = (versions = []) => {
   return { client, state };
 };
 
-test("effective VAT resolver selects the rate effective for a transaction timestamp", async () => {
+test("effective VAT resolver selects scheduled rates and rejects dates without an explicit rate", async () => {
   const start = new Date("2027-01-01T00:00:00.000Z");
   const harness = makeClient([
     {
@@ -59,10 +59,12 @@ test("effective VAT resolver selects the rate effective for a transaction timest
       status: "ACTIVE",
     },
   ]);
-  const before = await resolveVatRatePercent(new Date("2026-12-31T23:59:59.999Z"), { client: harness.client });
+  await assert.rejects(
+    resolveVatRatePercent(new Date("2026-12-31T23:59:59.999Z"), { client: harness.client }),
+    { code: "VAT_RATE_NOT_CONFIGURED" },
+  );
   const active = await resolveVatRatePercent(start, { client: harness.client });
 
-  assert.equal(before.toString(), "13");
   assert.equal(active.toString(), "20");
 });
 

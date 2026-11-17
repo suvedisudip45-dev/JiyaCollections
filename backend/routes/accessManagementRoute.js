@@ -63,7 +63,7 @@ accessManagementRouter.patch("/roles/:roleId", ...protectedBy("access:roles_upda
 accessManagementRouter.patch("/roles/:roleId/status", ...protectedBy("access:roles_deactivate"), setRoleStatus);
 accessManagementRouter.put("/roles/:roleId/permissions", ...protectedBy("access:roles_assign_permissions"), assignPermissions);
 accessManagementRouter.get("/permissions", ...protectedBy("access:permissions_read"), getPermissions);
-accessManagementRouter.get("/audit-logs/export", ...protectedBy("access:audit_read"), downloadAuditLogs);
+accessManagementRouter.get("/audit-logs/export", ...protectedBy("access:audit_export"), downloadAuditLogs);
 accessManagementRouter.get("/audit-logs", ...protectedBy("access:audit_read"), getAuditLogs);
 
 export default accessManagementRouter;

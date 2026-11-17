@@ -2,12 +2,25 @@ import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { logger } from "../utils/logger.js";
 import { postDeliveredOrderAccounting } from "./accountingPostingEngine.js";
+import { readOrderPricingSnapshot } from "./checkoutPricingService.js";
 
 const DELIVERY_SALE_SOURCE = "DELIVERY_SALE";
 const SNAPSHOT_VERSION = 1;
 const BATCH_SIZE = 25;
 const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_RETRY_DELAY_MS = 60 * 60 * 1000;
+const NON_RETRYABLE_POSTING_CODES = new Set([
+  "ACCOUNTING_POSTING_EMPTY",
+  "DECIMAL_OUT_OF_RANGE",
+  "DELIVERED_SALE_AMOUNT_INVALID",
+  "DELIVERED_SALE_COST_INVALID",
+  "DELIVERED_SALE_QUANTITY_INVALID",
+  "DELIVERED_SALE_TAX_RATE_INVALID",
+  "DELIVERED_SALE_TENDER_UNVERIFIED",
+  "INVALID_ACCOUNTING_EVENT",
+  "INVALID_DECIMAL_INPUT",
+  "UNSUPPORTED_DECIMAL_PRECISION",
+]);
 
 const canonicalize = (value) => {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -37,11 +50,14 @@ const buildDeliverySaleSnapshot = ({ order, deliveryOrder }) => {
   if (!order?.id) throw new Error("Delivered-sale accounting event requires an order ID.");
   const now = new Date();
   const effectiveAt = toIsoDate(deliveryOrder?.deliveredAt || order.deliveredAt, now);
-  const deliveryCharge = order.deliveryCharge || order.deliveryFee || deliveryOrder?.customerDeliveryCharge || 0;
+  const pricingSnapshot = readOrderPricingSnapshot(order.locationPricingSnapshot ?? order.pricingSnapshot);
+  const deliveryCharge = pricingSnapshot?.totals.deliveryFee ??
+    String(order.deliveryCharge || order.deliveryFee || deliveryOrder?.customerDeliveryCharge || 0);
   const orderSnapshot = {
     id: String(order.id),
-    amount: String(order.amount ?? 0),
+    amount: pricingSnapshot?.totals.finalPayableTotal ?? String(order.amount ?? 0),
     deliveryCharge: String(deliveryCharge),
+    ...(pricingSnapshot ? { pricingSnapshot } : {}),
     items: snapshotItems(order.items),
     paymentMethod: String(order.paymentMethod || "COD"),
     collectionDistributorId: order.collectionDistributorId ? String(order.collectionDistributorId) : null,
@@ -164,7 +180,7 @@ const processEvent = async (eventId, { client, poster, now }) => {
     });
     return "posted";
   } catch (error) {
-    const blocked = error.code === "INVALID_ACCOUNTING_EVENT" || error.code === "ACCOUNTING_POSTING_EMPTY";
+    const blocked = NON_RETRYABLE_POSTING_CODES.has(error.code);
     const retryAt = new Date(now.getTime() + retryDelay(event.attemptCount));
     await client.accountingEvent.updateMany({
       where: { id: event.id, status: "PROCESSING" },

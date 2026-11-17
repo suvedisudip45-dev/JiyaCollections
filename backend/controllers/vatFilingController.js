@@ -2,11 +2,9 @@ import { recordSystemAudit } from "../services/auditService.js";
 import { prisma } from "../config/db.js";
 import {
   createVatFilingDraft,
-  amendVatReturn,
-  fileVatReturn,
   listVatFilingRecords,
-  recordVatFilingPayment,
 } from "../services/vatFilingService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import {
   resolveCalendarDateInput,
   resolveCalendarDateRangeInput,
@@ -22,6 +20,30 @@ const responseError = (res, error, fallbackMessage) => {
 };
 
 const getActor = (req) => req.auth?.accountId || req.auth?.userId || null;
+const getRequestKey = (req) => req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "";
+const requestVatActionApproval = async (req, res, actionType, payload) => {
+  const result = await requestAccountingActionApproval({
+    actionType,
+    requestKey: getRequestKey(req),
+    payload,
+    actor: { accountId: getActor(req), role: req.auth?.role },
+    auditContext: {
+      ipAddress: req.ip || null,
+      userAgent: req.get?.("user-agent") || null,
+      correlationId: req.correlationId || null,
+    },
+  });
+  const messages = {
+    VAT_RETURN_FILE: "VAT return filing submitted for independent Admin approval.",
+    VAT_RETURN_PAYMENT: "VAT payment submitted for independent Admin approval.",
+    VAT_RETURN_AMENDMENT: "VAT return amendment submitted for independent Admin approval.",
+  };
+  return res.status(result.isReplay ? 200 : 202).json({
+    success: true,
+    message: result.isReplay ? "This VAT action request already exists." : messages[actionType],
+    approvalRequest: result.approvalRequest,
+  });
+};
 
 export const getVatFilingRecordsAdmin = async (_req, res) => {
   try {
@@ -93,38 +115,18 @@ export const createVatFilingDraftAdmin = async (req, res) => {
 
 export const fileVatReturnAdmin = async (req, res) => {
   try {
-    const actorId = getActor(req);
     const filedDate = await resolveCalendarDateInput(req.body?.filedDate, req.body?.calendar);
-    const record = await fileVatReturn({
+    return await requestVatActionApproval(req, res, "VAT_RETURN_FILE", {
       id: req.params.id,
       assessedAmount: req.body?.assessedAmount,
       paymentCreditApplied: req.body?.paymentCreditApplied,
       assessmentAdjustmentAccountId: req.body?.assessmentAdjustmentAccountId,
-      filedDate,
+      filedDate: filedDate.toISOString(),
       filedReference: req.body?.filedReference,
       filingEvidenceUrl: req.body?.filingEvidenceUrl,
       adjustmentReason: req.body?.adjustmentReason,
-      filedBy: actorId,
-      afterFile: (updated, tx) => recordSystemAudit(
-        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
-        {
-          action: "VAT_RETURN_MARKED_FILED",
-          entityType: "TaxFilingRecord",
-          entityId: updated.id,
-          afterState: {
-            status: updated.status,
-            assessedAmount: updated.assessedAmount?.toString() || "0",
-            paymentCreditApplied: updated.paymentCreditApplied?.toString() || "0",
-            assessmentAdjustmentJournalId: updated.assessmentAdjustmentJournalId,
-            assessmentAdjustmentAccountId: updated.assessmentAdjustmentAccountId,
-            filedReference: updated.filedReference,
-            filedDate: updated.filedDate,
-          },
-        },
-        { client: tx },
-      ),
+      reason: req.body?.approvalReason,
     });
-    return res.status(200).json({ success: true, message: "VAT return filing recorded.", record });
   } catch (error) {
     return responseError(res, error, "Failed to record VAT return filing.");
   }
@@ -132,41 +134,17 @@ export const fileVatReturnAdmin = async (req, res) => {
 
 export const createVatFilingPaymentAdmin = async (req, res) => {
   try {
-    const actorId = getActor(req);
     const paymentDate = await resolveCalendarDateInput(req.body?.paymentDate, req.body?.calendar);
-    const record = await recordVatFilingPayment({
+    return await requestVatActionApproval(req, res, "VAT_RETURN_PAYMENT", {
       filingRecordId: req.params.id,
       amount: req.body?.amount,
-      paymentDate,
+      paymentDate: paymentDate.toISOString(),
       paymentReference: req.body?.paymentReference,
       treasuryAccountId: req.body?.treasuryAccountId,
-      idempotencyKey: req.body?.idempotencyKey,
       evidenceUrl: req.body?.evidenceUrl,
       adjustmentReason: req.body?.adjustmentReason,
-      recordedBy: actorId,
-      afterPayment: (updated, tx) => recordSystemAudit(
-        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
-        {
-          action: "VAT_RETURN_PAYMENT_RECORDED",
-          entityType: "TaxFilingRecord",
-          entityId: updated.id,
-          afterState: {
-            periodKey: updated.periodKey,
-            taxPaid: updated.taxPaid.toString(),
-            paymentCreditApplied: updated.paymentCreditApplied?.toString() || "0",
-            status: updated.status,
-            latestPayment: updated.payments?.at(-1)
-              ? {
-                  amount: updated.payments.at(-1).amount.toString(),
-                  adjustmentReason: updated.payments.at(-1).adjustmentReason,
-                }
-              : null,
-          },
-        },
-        { client: tx },
-      ),
+      reason: req.body?.approvalReason,
     });
-    return res.status(201).json({ success: true, message: "VAT payment recorded and posted to accounting.", record });
   } catch (error) {
     return responseError(res, error, "Failed to record VAT payment.");
   }
@@ -174,41 +152,16 @@ export const createVatFilingPaymentAdmin = async (req, res) => {
 
 export const amendVatReturnAdmin = async (req, res) => {
   try {
-    const actorId = getActor(req);
-    const amendedReference = String(req.body?.amendedReference ?? "").trim();
     const amendedDate = await resolveCalendarDateInput(req.body?.amendedDate, req.body?.calendar);
-    const record = await amendVatReturn({
+    return await requestVatActionApproval(req, res, "VAT_RETURN_AMENDMENT", {
       id: req.params.id,
       amendedAssessedAmount: req.body?.amendedAssessedAmount,
-      amendedDate,
-      amendedReference,
+      amendedDate: amendedDate.toISOString(),
+      amendedReference: String(req.body?.amendedReference ?? "").trim(),
       adjustmentAccountId: req.body?.adjustmentAccountId,
       reason: req.body?.reason,
       evidenceUrl: req.body?.evidenceUrl,
-      idempotencyKey: req.body?.idempotencyKey,
-      recordedBy: actorId,
-      afterAmendment: (updated, amendment, tx) => recordSystemAudit(
-        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
-        {
-          action: "VAT_RETURN_AMENDED",
-          entityType: "TaxFilingRecord",
-          entityId: updated.id,
-          afterState: {
-            status: updated.status,
-            periodKey: updated.periodKey,
-            previousAssessedAmount: amendment.previousAssessedAmount.toString(),
-            amendedAssessedAmount: amendment.amendedAssessedAmount.toString(),
-            amendedReference: amendment.amendedReference,
-            adjustmentReason: amendment.reason,
-            adjustmentAccountId: amendment.adjustmentAccountId,
-            journalEntryId: amendment.journalEntryId,
-            paymentCreditJournalEntryId: amendment.paymentCreditJournalEntryId,
-          },
-        },
-        { client: tx },
-      ),
     });
-    return res.status(200).json({ success: true, message: "VAT return amendment recorded and posted to accounting.", record });
   } catch (error) {
     return responseError(res, error, "Failed to amend VAT return.");
   }

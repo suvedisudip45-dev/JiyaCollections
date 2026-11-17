@@ -36,6 +36,7 @@ const AssetManagement = ({ token }) => {
   const [damageForm, setDamageForm] = useState({
     status: "DAMAGED",
     damageNotes: "",
+    reason: "",
   });
 
   const fetchData = async () => {
@@ -152,10 +153,10 @@ const AssetManagement = ({ token }) => {
       );
       if (res.data.success) {
         disposalRequest.current = null;
-        toast.success(res.data.message);
+        toast.info(res.data.message);
         setShowDamageModal(false);
         setSelectedAsset(null);
-        setDamageForm({ status: "DAMAGED", damageNotes: "" });
+        setDamageForm({ status: "DAMAGED", damageNotes: "", reason: "" });
         fetchData();
       } else {
         toast.error(res.data.message);
@@ -614,6 +615,20 @@ const AssetManagement = ({ token }) => {
                   value={damageForm.damageNotes}
                   onChange={(e) => setDamageForm({ ...damageForm, damageNotes: e.target.value })}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Reason for approval *</label>
+                <textarea
+                  rows="3"
+                  placeholder="Explain why this asset should be written off"
+                  value={damageForm.reason}
+                  onChange={(e) => setDamageForm({ ...damageForm, reason: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                  required
+                  minLength={3}
+                  maxLength={2000}
                 />
               </div>
 

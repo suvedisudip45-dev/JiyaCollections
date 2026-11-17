@@ -278,29 +278,32 @@ export const applyManufacturerCreditToBill = async ({
     };
   };
 
-  try {
-    return typeof client.$transaction === "function"
-      ? await client.$transaction(execute, { isolationLevel: "Serializable" })
-      : await execute(client);
-  } catch (error) {
-    if (error.code !== "P2002") throw error;
-    const existing = await client.supplierCreditApplication.findUnique({ where: { idempotencyKey: key } });
-    const [credit, bill] = existing
-      ? await Promise.all([
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return typeof client.$transaction === "function"
+        ? await client.$transaction(execute, { isolationLevel: "Serializable" })
+        : await execute(client);
+    } catch (error) {
+      if (!["P2002", "P2034"].includes(error?.code)) throw error;
+      const existing = await client.supplierCreditApplication.findUnique({ where: { idempotencyKey: key } });
+      if (existing) {
+        const [credit, bill] = await Promise.all([
           client.accountingDocument.findUnique({ where: { id: creditDocumentId }, include: { party: true } }),
           client.accountingDocument.findUnique({ where: { id: billDocumentId }, include: { party: true } }),
-        ])
-      : [null, null];
-    if (
-      !existing ||
-      existing.creditDocumentId !== creditDocumentId ||
-      existing.billDocumentId !== billDocumentId ||
-      !new Prisma.Decimal(String(existing.amount)).equals(applicationAmount) ||
-      credit?.party?.sourceEntityId !== manufacturerId ||
-      bill?.party?.sourceEntityId !== manufacturerId
-    ) {
-      throw error;
+        ]);
+        if (
+          existing.creditDocumentId === creditDocumentId &&
+          existing.billDocumentId === billDocumentId &&
+          new Prisma.Decimal(String(existing.amount)).equals(applicationAmount) &&
+          credit?.party?.sourceEntityId === manufacturerId &&
+          bill?.party?.sourceEntityId === manufacturerId
+        ) {
+          return { success: true, application: existing, isReplay: true };
+        }
+        throw error;
+      }
+      if (error.code !== "P2034" || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
     }
-    return { success: true, application: existing, isReplay: true };
   }
 };

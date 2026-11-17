@@ -95,6 +95,7 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 - The carrier booking step is now treated as a real external handoff: an assignment only advances to `ready_for_pickup` after the NCM create request succeeds.
 - If the delivery partner API fails, the system surfaces a clear manufacturer message such as "Failed to book courier" and keeps the order retryable without falsely marking it as booked.
 - The manufacturer can retry the courier booking flow after the external partner issue is resolved without reworking the order status manually.
+- Admin NCM remittance corrections require a correction mode, bank/provider evidence, and a reason. The batch, treasury, related journals and subledger allocations are corrected transactionally; historical batches without captured prior delivery state require manual reconciliation.
 
 ### 4. 🎁 Gift & Retention Promotions
 - Admin gift entries generate their SKU from the gift name and use General, Partner Product, or Other categories.
@@ -177,7 +178,7 @@ CLOUDINARY_NAME="your_cloud_name"
 CLOUDINARY_API_KEY="your_api_key"
 CLOUDINARY_SECRET_KEY="your_secret_key"
 ADMIN_EMAIL="admin@aama.com"
-ADMIN_PASSWORD="adminpassword"
+ADMIN_SEED_PASSWORD="change-this-before-seeding"
 ```
 
 ### Portals (`.env` in `frontend/`, `admin/`, `manufacturer/`, `delivery/`)
@@ -198,6 +199,8 @@ npm run seed
 npx prisma generate
 ```
 On Windows, stop the running backend before `prisma generate` if its native query-engine DLL is locked.
+
+`ADMIN_EMAIL` is required when seeding and identifies the configured owner Admin account. RBAC seeding grants the built-in broad `ADMIN` role only to that active account and deactivates that built-in role mapping for other Admin accounts while preserving their custom role mappings. Review the existing Admin role assignments and take a database backup before running the updated seed in an existing environment; do not treat seed execution as a substitute for reviewing who should retain privileged access. Never assign the `all:function` authorization bypass to a user or custom role.
 
 ---
 

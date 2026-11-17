@@ -6,6 +6,7 @@ import { toast } from "react-toastify";
 import Pagination from "../components/Pagination";
 import { backendUrl } from "../App";
 import { getAuditHistoryCache, setAuditHistoryCache, clearAuditHistoryCache } from "../utils/auditHistoryCache";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const EMPTY_FILTERS = {
   search: "",
@@ -24,6 +25,8 @@ const formatDate = (value) => {
 };
 
 const AuditHistory = ({ token }) => {
+  const { can } = usePermissions();
+  const canExport = can("access:audit_export");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
@@ -114,9 +117,9 @@ const AuditHistory = ({ token }) => {
           <button type="button" onClick={refresh} disabled={loading} className="inline-flex items-center gap-2 rounded-lg border border-[#dedbd3] bg-white px-3 py-2 text-sm font-semibold text-[#171717] disabled:opacity-50">
             <RefreshCw size={15} /> Refresh
           </button>
-          <button type="button" onClick={exportLogs} className="inline-flex items-center gap-2 rounded-lg bg-[#171717] px-3 py-2 text-sm font-semibold text-white hover:bg-[#333]">
+          {canExport && <button type="button" onClick={exportLogs} className="inline-flex items-center gap-2 rounded-lg bg-[#171717] px-3 py-2 text-sm font-semibold text-white hover:bg-[#333]">
             <Download size={15} /> Export CSV
-          </button>
+          </button>}
         </div>
       </header>
 

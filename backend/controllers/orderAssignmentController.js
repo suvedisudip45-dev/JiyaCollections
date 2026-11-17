@@ -1597,11 +1597,13 @@ const updateAssignmentStatus = async (req, res) => {
           );
           const documentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
             ? "VAT_TAX_INVOICE"
-            : "PAN_BILL";
+            : sellerTaxTreatment.taxStatus === "PAN_ONLY"
+              ? "PAN_BILL"
+              : "INTERNAL_SALES_RECORD";
           const normalizedPaperNumber = String(paperBillNumber || "").trim();
           if (currentAssignment.paperBillStatus !== "NOT_SELECTED") {
             const sameChoice = currentAssignment.paperBillRequested === paperBillRequested &&
-              currentAssignment.paperBillDocumentType === documentType &&
+              Boolean(currentAssignment.paperBillDocumentType) &&
               (paperBillRequested
                 ? currentAssignment.paperBillNumber === normalizedPaperNumber
                 : !currentAssignment.paperBillNumber);
@@ -1619,6 +1621,7 @@ const updateAssignmentStatus = async (req, res) => {
                 documentType,
                 billNumber: normalizedPaperNumber,
                 assignmentId,
+                taxPoint: new Date(Number(orderBefore.date)),
               })
               : { paperBillAllocationId: null, paperBillNumber: null, paperBillDocumentType: documentType };
             const issuedAt = paperBillRequested ? new Date() : null;

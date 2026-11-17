@@ -2,6 +2,12 @@ import { prisma } from "../config/db.js";
 import { postCustomerReturnAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { applyCollaborationReturnAdjustments } from "../services/collaborationSalesService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
+import {
+  applySupplierReturnCreditToBill,
+  getSupplierReturnApplicableBills as getSupplierReturnApplicableBillsService,
+  getSupplierReturnReconciliation as getSupplierReturnReconciliationService,
+} from "../services/supplierReturnCreditApplicationService.js";
 
 // ==========================================
 // 1. CUSTOMER RETURNS (RMA & REFUNDS)
@@ -280,127 +286,39 @@ export const updateCustomerReturnStatus = async (req, res) => {
 // ==========================================
 export const createSupplierReturn = async (req, res) => {
   try {
-    const {
-      shipmentBatchId,
-      supplierName,
-      items,
-      settlementType = "CREDIT_NOTE_OFFSET_PAYABLE", // CASH_REFUND, CREDIT_NOTE_OFFSET_PAYABLE
-      depositAccountId,
-      reason,
-      notes,
-    } = req.body;
-
-    if (!supplierName || !items || !Array.isArray(items) || items.length === 0) {
-      return res.json({ success: false, message: "Supplier Name and valid items are required" });
-    }
-
-    let totalDebit = 0;
-    const processedItems = [];
-
-    for (const item of items) {
-      const unitCost = Number(item.unitCostPrice || 0);
-      const qty = Number(item.quantity || 1);
-      const lineDebit = unitCost * qty;
-      totalDebit += lineDebit;
-
-      processedItems.push({
-        productId: item.productId || item._id || item.id,
-        name: item.name || "Returned Product",
-        quantity: qty,
-        unitCostPrice: unitCost,
-        totalDebitCost: lineDebit,
-      });
-    }
-
-    const vatReversal = Number((totalDebit - (totalDebit / 1.13)).toFixed(2));
-
-    // 1. Create Supplier Return Record (Debit Note)
-    const supplierReturnRecord = await prisma.supplierReturn.create({
-      data: {
-        shipmentBatchId: shipmentBatchId || null,
-        supplierName: supplierName.trim(),
-        items: processedItems,
-        totalDebitAmount: totalDebit,
-        vatReversal,
-        settlementType,
-        status: "COMPLETED",
-        reason: reason || "Defective batch / Supplier Return",
-        notes: notes || null,
+    const result = await requestAccountingActionApproval({
+      actionType: "SUPPLIER_RETURN_CREATE",
+      requestKey: req.body.requestKey,
+      payload: req.body,
+      actor: { accountId: req.auth?.accountId, role: req.auth?.role || "ADMIN" },
+      auditContext: {
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+        correlationId: req.id,
       },
     });
-
-    // 2. Reduce product inventory
-    for (const item of processedItems) {
-      if (item.productId) {
-        const product = await prisma.product.findUnique({ where: { id: item.productId } });
-        if (product) {
-          const newQty = Math.max(0, product.stockQuantity - item.quantity);
-          await prisma.product.update({
-            where: { id: product.id },
-            data: { stockQuantity: newQty },
-          });
-
-          await prisma.stockLog.create({
-            data: {
-              productId: product.id,
-              productName: product.name,
-              previousQty: product.stockQuantity,
-              newQty,
-              changeQty: -item.quantity,
-              reason: `Supplier Return / Debit Note #${supplierReturnRecord.id.slice(0, 8)} (${supplierName})`,
-              source: "supplier_return",
-            },
-          });
-        }
-      }
-    }
-
-    // 3. Deposit to Treasury OR Record in Accounts Receivable
-    if (settlementType === "CASH_REFUND" && depositAccountId && totalDebit > 0) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: depositAccountId },
-          data: { currentBalance: { increment: totalDebit } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: totalDebit,
-            type: "INFLOW",
-            toAccountId: depositAccountId,
-            category: "SUPPLIER_PAYMENT",
-            referenceId: supplierReturnRecord.id,
-            description: `Supplier Cash Refund for Debit Note #${supplierReturnRecord.id.slice(0, 8)} (${supplierName})`,
-          },
-        }),
-      ]);
-    } else if (totalDebit > 0) {
-      // Record as Accounts Receivable asset
-      await prisma.accountReceivable.create({
-        data: {
-          title: `Supplier Credit Note: Debit Note #${supplierReturnRecord.id.slice(0, 8)} (${supplierName})`,
-          payerName: supplierName.trim(),
-          category: "SUPPLIER_DEBIT_REFUND",
-          referenceType: "SUPPLIER_RETURN",
-          referenceId: supplierReturnRecord.id,
-          totalAmount: totalDebit,
-          receivedAmount: 0,
-          remainingBalance: totalDebit,
-          status: "UNPAID",
-          notes: `Credit note receivable from supplier ${supplierName}. Offset against next inventory invoice or collect into liquid cash.`,
-        },
-      });
-    }
-
-    res.json({
+    const approvalStatus = result.approvalRequest.status;
+    const message = approvalStatus === "PENDING"
+      ? result.isReplay
+        ? "Supplier return is already awaiting independent Admin approval."
+        : "Supplier return submitted for independent Admin approval. Inventory and accounting will not change until approval."
+      : approvalStatus === "APPROVED"
+        ? "Supplier return approval was already completed and posted."
+        : "Supplier return request was previously rejected.";
+    res.status(approvalStatus === "PENDING" ? 202 : 200).json({
       success: true,
-      message: settlementType === "CASH_REFUND" && depositAccountId
-        ? "Supplier return processed and cash refunded into treasury"
-        : "Supplier return processed and registered under Accounts Receivable (Credit Note)",
-      supplierReturnRecord,
+      code: approvalStatus === "PENDING" ? "ACCOUNTING_ACTION_PENDING" : "ACCOUNTING_ACTION_ALREADY_REVIEWED",
+      message,
+      approvalRequest: result.approvalRequest,
+      isReplay: result.isReplay,
     });
   } catch (error) {
     console.error("Create Supplier Return Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
@@ -415,5 +333,51 @@ export const getSupplierReturns = async (req, res) => {
   } catch (error) {
     console.error("Get Supplier Returns Error:", error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+export const getSupplierReturnApplicableBills = async (req, res) => {
+  try {
+    const result = await getSupplierReturnApplicableBillsService({ supplierReturnId: req.params.id });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to load bills for this supplier credit.",
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+export const applySupplierReturnCredit = async (req, res) => {
+  try {
+    const result = await applySupplierReturnCreditToBill({
+      supplierReturnId: req.params.id,
+      billDocumentId: req.body?.billDocumentId,
+      amount: req.body?.amount,
+      idempotencyKey: req.headers["idempotency-key"] || req.body?.idempotencyKey,
+      appliedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+      notes: req.body?.notes,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to apply supplier return credit.",
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+export const getSupplierReturnReconciliation = async (_req, res) => {
+  try {
+    const result = await getSupplierReturnReconciliationService();
+    return res.json({ success: true, ...result, readOnly: true });
+  } catch (error) {
+    console.error("Get Supplier Return Reconciliation Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Unable to reconcile supplier return accounting evidence.",
+    });
   }
 };

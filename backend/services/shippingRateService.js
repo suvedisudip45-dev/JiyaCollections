@@ -1,4 +1,10 @@
 import { canonicalizeNepalLocation } from "./locationPricingService.js";
+import {
+  compareDecimals,
+  quantizeCurrencyAmount,
+  serializeAccountingDecimal,
+} from "./accountingDecimal.js";
+import { decimalFromStoredFloat } from "./checkoutPricingService.js";
 
 const normalizeDistrict = (district = "") => String(district || "")
   .trim()
@@ -41,27 +47,33 @@ export const resolveRouteShippingRate = ({
   let tier;
   let label;
   if (override) {
-    fee = Number(override.fee);
+    fee = decimalFromStoredFloat(override.fee, "Route shipping fee");
     tier = "ROUTE_OVERRIDE";
     label = `${origin.district} to ${destination.district}`;
   } else if (isSameDistrict(origin, destination)) {
-    fee = Number(config.sameDistrictFee ?? 50);
+    fee = decimalFromStoredFloat(config.sameDistrictFee ?? 50, "Same-district shipping fee");
     tier = "SAME_DISTRICT";
     label = "Within District";
   } else if (origin.province === destination.province) {
-    fee = Number(config.sameProvinceFee ?? config.differentDistrictFee ?? 120);
+    fee = decimalFromStoredFloat(config.sameProvinceFee ?? config.differentDistrictFee ?? 120, "Same-province shipping fee");
     tier = "SAME_PROVINCE";
     label = "Within Province";
   } else {
-    fee = Number(config.differentProvinceFee ?? config.differentDistrictFee ?? 120);
+    fee = decimalFromStoredFloat(config.differentProvinceFee ?? config.differentDistrictFee ?? 120, "Different-province shipping fee");
     tier = "DIFFERENT_PROVINCE";
     label = "Outside Province";
   }
 
-  const freeShippingMin = Math.max(0, Number(config.freeShippingMin || 0));
-  const isFreeShipping = freeShippingMin > 0 && Math.max(0, Number(subtotal) || 0) >= freeShippingMin;
+  const freeShippingMin = decimalFromStoredFloat(config.freeShippingMin || 0, "Free-shipping minimum");
+  const exactSubtotal = decimalFromStoredFloat(subtotal, "Order subtotal");
+  const isFreeShipping = freeShippingMin.greaterThan(0) && compareDecimals(exactSubtotal, freeShippingMin) >= 0;
+  const exactFee = quantizeCurrencyAmount(
+    isFreeShipping || fee.isNegative() ? "0" : fee,
+    "NPR",
+  );
   return {
-    fee: isFreeShipping ? 0 : Math.max(0, fee),
+    fee: Number(exactFee.toString()),
+    feeDecimal: serializeAccountingDecimal(exactFee),
     tier: isFreeShipping ? "FREE_SHIPPING" : tier,
     label: isFreeShipping ? "Free Delivery" : label,
     rateTier: tier,
@@ -71,11 +83,11 @@ export const resolveRouteShippingRate = ({
     } : null,
     origin,
     destination,
-    freeShippingMin,
-    sameDistrictFee: Number(config.sameDistrictFee ?? 50),
-    differentDistrictFee: Number(config.differentDistrictFee ?? 120),
-    sameProvinceFee: Number(config.sameProvinceFee ?? config.differentDistrictFee ?? 120),
-    differentProvinceFee: Number(config.differentProvinceFee ?? config.differentDistrictFee ?? 120),
+    freeShippingMin: Number(freeShippingMin.toString()),
+    sameDistrictFee: Number(decimalFromStoredFloat(config.sameDistrictFee ?? 50).toString()),
+    differentDistrictFee: Number(decimalFromStoredFloat(config.differentDistrictFee ?? 120).toString()),
+    sameProvinceFee: Number(decimalFromStoredFloat(config.sameProvinceFee ?? config.differentDistrictFee ?? 120).toString()),
+    differentProvinceFee: Number(decimalFromStoredFloat(config.differentProvinceFee ?? config.differentDistrictFee ?? 120).toString()),
     hasLocalHub: isSameDistrict(origin, destination),
   };
 };

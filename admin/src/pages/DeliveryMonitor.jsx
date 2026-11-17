@@ -21,6 +21,7 @@ import {
 import { backendUrl } from "../App";
 import NcmWebhookMockPanel from "../components/NcmWebhookMockPanel";
 import Pagination from "../components/Pagination";
+import { formatNprAmount } from "../utils/decimalDisplay";
 
 const DELIVERY_PAGE_SIZE = 10;
 
@@ -72,8 +73,7 @@ const statusLabel = (value) => {
 };
 
 const toMoney = (value) => {
-  const amount = Number(value || 0);
-  return Number.isFinite(amount) ? amount.toLocaleString("en-US") : "0";
+  return formatNprAmount(value ?? "0");
 };
 
 // Click-to-copy mini component
@@ -112,13 +112,14 @@ const DeliveryMonitor = ({ token }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filter, setFilter] = useState("all");
   const [settlementSummary, setSettlementSummary] = useState({
-    totalDeliveryChargeExpected: 0,
-    totalCarrierDiscounts: 0,
-    totalDeliveryChargePaid: 0,
-    deliveryChargeToPay: 0,
-    codExpected: 0,
-    codReceived: 0,
-    codToReceive: 0,
+    totalDeliveryChargeExpected: "0.00",
+    totalCarrierDiscounts: "0.00",
+    totalDeliveryChargePaid: "0.00",
+    deliveryChargeToPay: "0.00",
+    codExpected: "0.00",
+    codSettledGross: "0.00",
+    codOpenExpected: "0.00",
+    codToReceive: "0.00",
     pendingSettlements: 0,
     settledCount: 0,
   });
@@ -249,8 +250,8 @@ const DeliveryMonitor = ({ token }) => {
           ["Delivery charges paid", settlementSummary.totalDeliveryChargePaid, "Settled carrier fees"],
           ["Delivery charges to pay", settlementSummary.deliveryChargeToPay, "Unsettled carrier fees"],
           ["NCM discounts", settlementSummary.totalCarrierDiscounts, "Reduced carrier cost"],
-          ["COD received to date", settlementSummary.codReceived, "Confirmed by NCM"],
-          ["COD to be received", settlementSummary.codToReceive, `${settlementSummary.pendingSettlements || 0} open settlement(s)`],
+          ["Gross COD in settled batches", settlementSummary.codSettledGross ?? settlementSummary.codReceived, "Admin-recorded remittance batch totals"],
+          ["COD expected in open settlements", settlementSummary.codOpenExpected ?? settlementSummary.codToReceive, `${settlementSummary.pendingSettlements || 0} open settlement(s)`],
         ].map(([label, value, note]) => (
           <div key={label} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
             <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>

@@ -121,6 +121,60 @@ const parseGregorianDate = (value, label = "adStartDate") => {
   return date;
 };
 
+export const getKathmanduDateRange = (startDate, endDate) => {
+  const parseDate = (value, label) => {
+    const date = parseGregorianDate(value, label);
+    return new Date(date.getTime() - KATHMANDU_OFFSET_MINUTES * 60_000);
+  };
+  const start = parseDate(startDate, "startDate");
+  const endDateExclusive = new Date(
+    parseDate(endDate, "endDate").getTime() + DAY_MS,
+  );
+  if (start >= endDateExclusive) {
+    const error = new Error("startDate must be on or before endDate.");
+    error.statusCode = 400;
+    error.code = "INVALID_AD_DATE_RANGE";
+    throw error;
+  }
+
+  return { startDate: start, endDateExclusive };
+};
+
+const parseGregorianInput = (value, label) => {
+  if (value instanceof Date) {
+    if (!Number.isNaN(value.getTime())) return value;
+    const error = new Error(`${label} must be a valid AD date.`);
+    error.statusCode = 400;
+    error.code = "INVALID_AD_DATE";
+    throw error;
+  }
+
+  const text = String(value ?? "");
+  const match = /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/.exec(text);
+  if (!match) return parseGregorianDate(text, label);
+
+  const dateOnly = parseGregorianDate(match[1], label);
+  if (text.length === 10) return dateOnly;
+
+  const dateTime = new Date(text);
+  if (Number.isNaN(dateTime.getTime())) {
+    const error = new Error(`${label} must be a valid AD date.`);
+    error.statusCode = 400;
+    error.code = "INVALID_AD_DATE";
+    throw error;
+  }
+  return dateTime;
+};
+
+const parseGregorianRangeBoundary = (value, label, inclusiveEnd) => {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const date = parseGregorianDate(value, label);
+    const startOfDay = new Date(date.getTime() - KATHMANDU_OFFSET_MINUTES * 60_000);
+    return inclusiveEnd ? new Date(startOfDay.getTime() + DAY_MS - 1) : startOfDay;
+  }
+  return parseGregorianInput(value, label);
+};
+
 const asDateOnly = (value) => {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value || "").slice(0, 10);
@@ -310,7 +364,10 @@ export const getConfiguredAdDateForNepaliDate = async (year, month, day, calenda
 export const resolveCalendarDateInput = async (value, calendar, calendars) => {
   if (calendar == null || calendar === "") return value;
   const normalizedCalendar = String(calendar).trim().toUpperCase();
-  if (normalizedCalendar === "AD") return value;
+  if (normalizedCalendar === "AD") {
+    parseGregorianInput(value, "date");
+    return value;
+  }
   if (normalizedCalendar !== "BS") {
     const error = new Error("calendar must be either BS or AD.");
     error.statusCode = 400;
@@ -361,7 +418,9 @@ export const getConfiguredNepaliDateRange = async (startDate, endDate, calendars
   }
   const startYear = Number(startMatch[1]);
   const endYear = Number(endMatch[1]);
-  const rangeYears = Array.from({ length: endYear - startYear + 1 }, (_, index) => startYear + index);
+  const rangeYears = startYear <= endYear
+    ? Array.from({ length: endYear - startYear + 1 }, (_, index) => startYear + index)
+    : [];
   const hasConfiguredYear = rangeYears.some((year) =>
     configuredYears.some((calendar) => calendar.year === year),
   );
@@ -387,7 +446,20 @@ export const getConfiguredNepaliDateRange = async (startDate, endDate, calendars
 export const resolveCalendarDateRangeInput = async (startDate, endDate, calendar, calendars) => {
   if (calendar == null || calendar === "") return { startDate, endDate };
   const normalizedCalendar = String(calendar).trim().toUpperCase();
-  if (normalizedCalendar === "AD") return { startDate, endDate };
+  if (normalizedCalendar === "AD") {
+    const start = startDate ? parseGregorianRangeBoundary(startDate, "startDate", false) : null;
+    const end = endDate ? parseGregorianRangeBoundary(endDate, "endDate", true) : null;
+    if (start && end && start > end) {
+      const error = new Error("startDate must be on or before endDate.");
+      error.statusCode = 400;
+      error.code = "INVALID_AD_DATE_RANGE";
+      throw error;
+    }
+    return {
+      startDate: startDate ? start : startDate,
+      endDate: endDate ? end : endDate,
+    };
+  }
   if (normalizedCalendar === "BS") {
     return getConfiguredNepaliDateRange(startDate, endDate, calendars);
   }
@@ -399,9 +471,21 @@ export const resolveCalendarDateRangeInput = async (startDate, endDate, calendar
 
 export const resolveCalendarDateFilterInput = async (startDate, endDate, calendar, calendars) => {
   if (!calendar || String(calendar).trim().toUpperCase() === "AD") {
+    const isExplicitAdCalendar = Boolean(calendar);
+    const parseFilterBoundary = calendar
+      ? parseGregorianRangeBoundary
+      : (value) => new Date(value);
+    const resolvedStart = startDate ? parseFilterBoundary(startDate, "startDate", false) : null;
+    const resolvedEnd = endDate ? parseFilterBoundary(endDate, "endDate", true) : null;
+    if (isExplicitAdCalendar && resolvedStart && resolvedEnd && resolvedStart > resolvedEnd) {
+      const error = new Error("startDate must be on or before endDate.");
+      error.statusCode = 400;
+      error.code = "INVALID_AD_DATE_RANGE";
+      throw error;
+    }
     return {
-      startDate: startDate ? new Date(startDate) : null,
-      endDate: endDate ? new Date(endDate) : null,
+      startDate: resolvedStart,
+      endDate: resolvedEnd,
     };
   }
   if (String(calendar).trim().toUpperCase() !== "BS") {

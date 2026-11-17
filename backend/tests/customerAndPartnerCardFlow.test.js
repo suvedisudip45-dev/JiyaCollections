@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import assert from "node:assert/strict";
 import { prisma } from "../config/db.js";
 import { createOrderIdentity } from "../utils/orderReference.js";

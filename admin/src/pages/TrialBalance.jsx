@@ -5,6 +5,7 @@ import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 import { getCurrentNepaliDateRange } from "../utils/nepaliDate";
+import { compareDecimalStrings, formatNprAmount, subtractDecimalStrings } from "../utils/decimalDisplay";
 
 const CATEGORY_COLORS = {
   ASSET: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -71,18 +72,22 @@ const TrialBalance = ({ token }) => {
   const rows = data?.rows || data?.trialBalance || [];
   const totals = data?.totals || {};
   const isBalanced = Boolean(data?.isBalanced ?? totals.isBalanced);
-  const variance = Math.abs(Number(totals.totalClosingDebit || 0) - Number(totals.totalClosingCredit || 0));
+  const signedVariance = subtractDecimalStrings(
+    totals.totalClosingDebit ?? "0",
+    totals.totalClosingCredit ?? "0",
+  );
+  const variance = signedVariance.startsWith("-") ? signedVariance.slice(1) : signedVariance;
 
   const filteredRows = rows.filter((r) => {
     const matchCat = filterCategory === "ALL" || r.accountType === filterCategory || r.category === filterCategory;
     const hasActivity =
       !hideZeroBalances ||
-      r.closingDebit > 0 ||
-      r.closingCredit > 0 ||
-      r.periodDebit > 0 ||
-      r.periodCredit > 0 ||
-      r.openingDebit > 0 ||
-      r.openingCredit > 0;
+      compareDecimalStrings(r.closingDebit ?? "0", "0") > 0 ||
+      compareDecimalStrings(r.closingCredit ?? "0", "0") > 0 ||
+      compareDecimalStrings(r.periodDebit ?? "0", "0") > 0 ||
+      compareDecimalStrings(r.periodCredit ?? "0", "0") > 0 ||
+      compareDecimalStrings(r.openingDebit ?? "0", "0") > 0 ||
+      compareDecimalStrings(r.openingCredit ?? "0", "0") > 0;
     return matchCat && hasActivity;
   });
 
@@ -98,14 +103,14 @@ const TrialBalance = ({ token }) => {
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
                 </svg>
-                BALANCED &bull; Diff: Rs {variance.toFixed(2)}
+                BALANCED &bull; Diff: Rs {formatNprAmount(variance)}
               </span>
             ) : (
               <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-200 flex items-center gap-1">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
-                OUT OF BALANCE (Variance: Rs {variance.toFixed(2)})
+                OUT OF BALANCE (Variance: Rs {formatNprAmount(variance)})
               </span>
             )}
           </div>
@@ -156,7 +161,7 @@ const TrialBalance = ({ token }) => {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Closing Debits</div>
           <div className="text-2xl font-mono font-bold text-slate-900 mt-1">
-            Rs {Number(totals.totalClosingDebit || 0).toLocaleString()}
+            Rs {formatNprAmount(totals.totalClosingDebit ?? "0")}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">Total active debit closing balances</div>
         </div>
@@ -164,7 +169,7 @@ const TrialBalance = ({ token }) => {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Closing Credits</div>
           <div className="text-2xl font-mono font-bold text-slate-900 mt-1">
-            Rs {Number(totals.totalClosingCredit || 0).toLocaleString()}
+            Rs {formatNprAmount(totals.totalClosingCredit ?? "0")}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">Total active credit closing balances</div>
         </div>
@@ -173,10 +178,10 @@ const TrialBalance = ({ token }) => {
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Imbalance Variance</div>
           <div
             className={`text-2xl font-mono font-bold mt-1 ${
-              variance <= 0.05 ? "text-emerald-600" : "text-rose-600"
+              isBalanced ? "text-emerald-600" : "text-rose-600"
             }`}
           >
-            Rs {variance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            Rs {formatNprAmount(variance)}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">|Sum(Dr) - Sum(Cr)|</div>
         </div>
@@ -289,22 +294,22 @@ const TrialBalance = ({ token }) => {
                       </span>
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-600 border-r border-slate-100">
-                      {r.openingDebit > 0 ? Number(r.openingDebit).toLocaleString() : "—"}
+                      {compareDecimalStrings(r.openingDebit ?? "0", "0") > 0 ? formatNprAmount(r.openingDebit) : "—"}
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-600 border-r border-slate-100">
-                      {r.openingCredit > 0 ? Number(r.openingCredit).toLocaleString() : "—"}
+                      {compareDecimalStrings(r.openingCredit ?? "0", "0") > 0 ? formatNprAmount(r.openingCredit) : "—"}
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-600 border-r border-slate-100">
-                      {r.periodDebit > 0 ? Number(r.periodDebit).toLocaleString() : "—"}
+                      {compareDecimalStrings(r.periodDebit ?? "0", "0") > 0 ? formatNprAmount(r.periodDebit) : "—"}
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-600 border-r border-slate-100">
-                      {r.periodCredit > 0 ? Number(r.periodCredit).toLocaleString() : "—"}
+                      {compareDecimalStrings(r.periodCredit ?? "0", "0") > 0 ? formatNprAmount(r.periodCredit) : "—"}
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-slate-900 border-r border-slate-100 bg-slate-50/40">
-                      {r.closingDebit > 0 ? `Rs ${Number(r.closingDebit).toLocaleString()}` : "—"}
+                      {compareDecimalStrings(r.closingDebit ?? "0", "0") > 0 ? `Rs ${formatNprAmount(r.closingDebit)}` : "—"}
                     </td>
                     <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-slate-900 bg-slate-50/40">
-                      {r.closingCredit > 0 ? `Rs ${Number(r.closingCredit).toLocaleString()}` : "—"}
+                      {compareDecimalStrings(r.closingCredit ?? "0", "0") > 0 ? `Rs ${formatNprAmount(r.closingCredit)}` : "—"}
                     </td>
                   </tr>
                 ))
@@ -317,22 +322,22 @@ const TrialBalance = ({ token }) => {
                     Grand Totals:
                   </td>
                   <td className="py-3 px-3 text-right text-slate-700 border-r border-slate-300">
-                    Rs {Number(totals.totalOpeningDebit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalOpeningDebit ?? "0")}
                   </td>
                   <td className="py-3 px-3 text-right text-slate-700 border-r border-slate-300">
-                    Rs {Number(totals.totalOpeningCredit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalOpeningCredit ?? "0")}
                   </td>
                   <td className="py-3 px-3 text-right text-slate-700 border-r border-slate-300">
-                    Rs {Number(totals.totalPeriodDebit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalPeriodDebit ?? "0")}
                   </td>
                   <td className="py-3 px-3 text-right text-slate-700 border-r border-slate-300">
-                    Rs {Number(totals.totalPeriodCredit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalPeriodCredit ?? "0")}
                   </td>
                   <td className="py-3 px-3 text-right text-emerald-800 border-r border-slate-300 bg-emerald-50/50">
-                    Rs {Number(totals.totalClosingDebit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalClosingDebit ?? "0")}
                   </td>
                   <td className="py-3 px-3 text-right text-emerald-800 bg-emerald-50/50">
-                    Rs {Number(totals.totalClosingCredit || 0).toLocaleString()}
+                    Rs {formatNprAmount(totals.totalClosingCredit ?? "0")}
                   </td>
                 </tr>
               </tfoot>

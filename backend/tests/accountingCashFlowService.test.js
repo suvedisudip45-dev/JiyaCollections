@@ -6,8 +6,8 @@ const journal = (id, transactionDate, entries) => entries.map((entry) => ({
   journalEntryId: id,
   journalEntry: { transactionDate: new Date(transactionDate) },
   account: { accountCode: entry.code, accountType: entry.type || "ASSET" },
-  debit: entry.debit || 0,
-  credit: entry.credit || 0,
+  debit: String(entry.debit ?? "0"),
+  credit: String(entry.credit ?? "0"),
 }));
 
 test("direct cash flow classifies actual manufacturer payout and reconciles cash", () => {
@@ -44,17 +44,17 @@ test("direct cash flow classifies actual manufacturer payout and reconciles cash
     endDate: "2026-01-31T23:59:59.999Z",
   });
 
-  assert.equal(statement.details.cashReceivedFromCustomers, 500);
-  assert.equal(statement.details.supplierPayments, 250);
-  assert.equal(statement.operatingActivities, 250);
-  assert.equal(statement.details.investingOutflows, 100);
-  assert.equal(statement.investingActivities, -100);
-  assert.equal(statement.details.financingInflows, 200);
-  assert.equal(statement.financingActivities, 200);
-  assert.equal(statement.netCashFlow, 350);
-  assert.equal(statement.beginningCash, 1000);
-  assert.equal(statement.endingCash, 1350);
-  assert.equal(statement.reconciliationDifference, 0);
+  assert.equal(statement.details.cashReceivedFromCustomers, "500.00");
+  assert.equal(statement.details.supplierPayments, "250.00");
+  assert.equal(statement.operatingActivities, "250.00");
+  assert.equal(statement.details.investingOutflows, "100.00");
+  assert.equal(statement.investingActivities, "-100.00");
+  assert.equal(statement.details.financingInflows, "200.00");
+  assert.equal(statement.financingActivities, "200.00");
+  assert.equal(statement.netCashFlow, "350.00");
+  assert.equal(statement.beginningCash, "1000.00");
+  assert.equal(statement.endingCash, "1350.00");
+  assert.equal(statement.reconciliationDifference, "0.00");
   assert.equal(statement.isReconciled, true);
 });
 
@@ -68,8 +68,8 @@ test("cash transfers between cash and bank are excluded from cash flows", () => 
     endDate: "2026-01-31T23:59:59.999Z",
   });
 
-  assert.equal(statement.netCashFlow, 0);
-  assert.equal(statement.endingCash, 0);
+  assert.equal(statement.netCashFlow, "0.00");
+  assert.equal(statement.endingCash, "0.00");
   assert.equal(statement.isReconciled, true);
 });
 
@@ -95,12 +95,46 @@ test("wallet payouts and gateway settlements reconcile across account 1180", () 
     endDate: "2026-01-31T23:59:59.999Z",
   });
 
-  assert.equal(statement.details.supplierPayments, 125);
-  assert.equal(statement.operatingActivities, -125);
-  assert.equal(statement.netCashFlow, -125);
-  assert.equal(statement.beginningCash, 400);
-  assert.equal(statement.endingCash, 275);
-  assert.equal(statement.reconciliationDifference, 0);
+  assert.equal(statement.details.supplierPayments, "125.00");
+  assert.equal(statement.operatingActivities, "-125.00");
+  assert.equal(statement.netCashFlow, "-125.00");
+  assert.equal(statement.beginningCash, "400.00");
+  assert.equal(statement.endingCash, "275.00");
+  assert.equal(statement.reconciliationDifference, "0.00");
   assert.equal(statement.isReconciled, true);
   assert.deepEqual(statement.cashEquivalentAccountCodes, ["1110", "1120", "1180"]);
+});
+
+test("cash-flow Decimal allocation preserves a paisa residual at a HALF_EVEN boundary", () => {
+  const statement = buildDirectCashFlowStatement({
+    journalLines: journal("residual-cash-inflow", "2026-01-10T00:00:00.000Z", [
+      { code: "1110", debit: "0.01" },
+      { code: "6100", debit: "0.01" },
+      { code: "4100", credit: "0.01" },
+      { code: "2510", type: "EQUITY", credit: "0.01" },
+    ]),
+    startDate: "2026-01-01T00:00:00.000Z",
+    endDate: "2026-01-31T23:59:59.999Z",
+  });
+
+  assert.equal(statement.details.cashReceivedFromCustomers, "0.01");
+  assert.equal(statement.details.financingInflows, "0.00");
+  assert.equal(statement.netCashFlow, "0.01");
+  assert.equal(statement.endingCash, "0.01");
+  assert.equal(statement.reconciliationDifference, "0.00");
+  assert.equal(statement.isReconciled, true);
+});
+
+test("cash-flow monetary inputs reject JavaScript Number values", () => {
+  const journalLines = journal("unsafe-number", "2026-01-10T00:00:00.000Z", [
+    { code: "1110", debit: 0.1 },
+    { code: "1130", credit: 0.1 },
+  ]);
+  journalLines[0].debit = 0.1;
+
+  assert.throws(() => buildDirectCashFlowStatement({
+    journalLines,
+    startDate: "2026-01-01T00:00:00.000Z",
+    endDate: "2026-01-31T23:59:59.999Z",
+  }), (error) => error.code === "INVALID_DECIMAL_INPUT");
 });

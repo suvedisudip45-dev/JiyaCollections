@@ -38,6 +38,7 @@ import FinancialStatements from "./pages/FinancialStatements";
 import PayablesReceivables from "./pages/PayablesReceivables";
 import ChartOfAccounts from "./pages/ChartOfAccounts";
 import JournalEntries from "./pages/JournalEntries";
+import AccountingApprovals from "./pages/AccountingApprovals";
 import GeneralLedger from "./pages/GeneralLedger";
 import TrialBalance from "./pages/TrialBalance";
 import FiscalPeriods from "./pages/FiscalPeriods";
@@ -212,6 +213,7 @@ const App = () => {
                   <Route path="/statements" element={withPermission("/statements", <FinancialStatements token={token} />)} />
                   <Route path="/chart-of-accounts" element={withPermission("/chart-of-accounts", <ChartOfAccounts token={token} />)} />
                   <Route path="/journal-entries" element={withPermission("/journal-entries", <JournalEntries token={token} />)} />
+                  <Route path="/accounting-approvals" element={withPermission("/accounting-approvals", <AccountingApprovals token={token} />)} />
                   <Route path="/general-ledger" element={withPermission("/general-ledger", <GeneralLedger token={token} />)} />
                   <Route path="/trial-balance" element={withPermission("/trial-balance", <TrialBalance token={token} />)} />
                   <Route path="/fiscal-periods" element={withPermission("/fiscal-periods", <FiscalPeriods token={token} />)} />

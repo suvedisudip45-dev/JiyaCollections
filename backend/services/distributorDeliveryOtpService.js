@@ -3,6 +3,7 @@ import { prisma } from "../config/db.js";
 import { createNotificationInTransaction } from "../notifications/notificationService.js";
 import { loadNotificationConfig } from "../notifications/config.js";
 import { encryptNotificationText } from "../utils/secureNotificationPayload.js";
+import { accountingDecimal, addDecimals, quantizeNprAmount } from "./accountingDecimal.js";
 import { generateSecureOtp, loadOtpConfig } from "./otpService.js";
 
 const RESEND_COOLDOWN_MS = 60_000;
@@ -26,15 +27,21 @@ const parseAddress = (address) => {
 };
 
 export const formatCollectionAmount = (order) => {
-  const amount = Number(order.amount);
-  const deliveryFee = Number(order.deliveryFee || 0);
-  if (!Number.isFinite(amount) || !Number.isFinite(deliveryFee) || amount < 0 || deliveryFee < 0) {
+  try {
+    const amount = accountingDecimal(String(order?.amount ?? 0), "Order amount");
+    const deliveryFee = accountingDecimal(String(order?.deliveryFee ?? 0), "Delivery fee");
+    if (amount.isNegative() || deliveryFee.isNegative()) {
+      throw fail("The order collection amount is invalid.", 409, "INVALID_COLLECTION_AMOUNT");
+    }
+    return quantizeNprAmount(addDecimals(amount, deliveryFee)).toFixed(2);
+  } catch (error) {
+    if (error?.code === "INVALID_COLLECTION_AMOUNT") throw error;
     throw fail("The order collection amount is invalid.", 409, "INVALID_COLLECTION_AMOUNT");
   }
-  return (Math.round(amount * 100) / 100).toFixed(2);
 };
 
-const normalizeAmount = (amount) => Number(amount).toFixed(2);
+const normalizeAmount = (amount) =>
+  quantizeNprAmount(accountingDecimal(String(amount), "Collection amount")).toFixed(2);
 
 const buildCodeHash = ({ code, orderId, distributorId, collectionAmount, secret }) => crypto
   .createHmac("sha256", secret)

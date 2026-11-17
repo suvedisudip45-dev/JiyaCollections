@@ -1,26 +1,52 @@
+import { Prisma } from "@prisma/client";
+import {
+  compareDecimals,
+  divideDecimals,
+  multiplyDecimals,
+  quantizeDecimal,
+} from "./accountingDecimal.js";
+import { decimalFromStoredFloat } from "./checkoutPricingService.js";
+
 export const calculateMarketingCardDiscount = (benefitType, value, itemsSubtotal, maxDiscountAmount = null) => {
   const type = String(benefitType || "").trim().toUpperCase();
-  const rewardValue = Number(value);
-  const subtotal = Number(itemsSubtotal);
-  if (!Number.isFinite(rewardValue) || rewardValue <= 0 || !Number.isFinite(subtotal) || subtotal < 0) {
+  if (
+    (typeof value === "number" && !Number.isFinite(value)) ||
+    (typeof itemsSubtotal === "number" && !Number.isFinite(itemsSubtotal)) ||
+    (typeof maxDiscountAmount === "number" && !Number.isFinite(maxDiscountAmount))
+  ) {
     return null;
   }
+  const rewardValue = decimalFromStoredFloat(value, "Marketing reward value");
+  const subtotal = decimalFromStoredFloat(itemsSubtotal, "Order subtotal");
+  if (!rewardValue.greaterThan(0) || subtotal.isNegative()) return null;
 
   if (type === "DISCOUNT") {
-    if (rewardValue > 100) return null;
+    if (rewardValue.greaterThan(100)) return null;
     if (
       maxDiscountAmount !== null &&
       maxDiscountAmount !== undefined &&
-      (!Number.isFinite(Number(maxDiscountAmount)) || Number(maxDiscountAmount) <= 0)
+      !decimalFromStoredFloat(maxDiscountAmount, "Maximum marketing discount").greaterThan(0)
     ) return null;
-    const discountCap = maxDiscountAmount === null || maxDiscountAmount === undefined
-      ? Infinity
-      : Number(maxDiscountAmount);
-    return Math.min(subtotal, Math.round(subtotal * rewardValue / 100), discountCap);
+    const percentageDiscount = quantizeDecimal(
+      divideDecimals(
+        multiplyDecimals(subtotal, rewardValue),
+        "100",
+        { significantDigits: 40, roundingMode: Prisma.Decimal.ROUND_HALF_UP },
+      ),
+      0,
+      Prisma.Decimal.ROUND_HALF_UP,
+    );
+    const discount = compareDecimals(percentageDiscount, subtotal) > 0 ? subtotal : percentageDiscount;
+    const capped = maxDiscountAmount === null || maxDiscountAmount === undefined
+      ? discount
+      : compareDecimals(discount, decimalFromStoredFloat(maxDiscountAmount, "Maximum marketing discount")) > 0
+        ? decimalFromStoredFloat(maxDiscountAmount, "Maximum marketing discount")
+        : discount;
+    return Number(capped.toString());
   }
 
   if (type === "VOUCHER") {
-    return Math.min(subtotal, rewardValue);
+    return Number((compareDecimals(subtotal, rewardValue) < 0 ? subtotal : rewardValue).toString());
   }
 
   return null;

@@ -25,6 +25,7 @@ import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js
 import { applyGiftDeliveryTransition } from "./giftService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import { accrueDistributorStockTransferEarning } from "./distributorServiceEarningService.js";
+import { pricingSnapshotAmounts } from "./checkoutPricingService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 const MAX_NCM_WEBHOOK_ORDER_IDS = 100;
@@ -464,7 +465,7 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
     throw error;
   }
 
-  const itemAmount = Number(order.amount || 0);
+  const itemAmount = pricingSnapshotAmounts(order).finalPayableTotal;
   const deliveryType = deliveryTypeForNcm(address.deliveryType || "Door2Door");
   const meta = normalizePackagingMeta({ items, ...packagingMeta });
   const productType = String(packagingMeta.productType || meta.productType || "Garment").trim() || "Garment";
@@ -1276,14 +1277,6 @@ export const applyNcmStatus = async ({
 
         if (deliveryState === "DELIVERED") {
           orderUpdateData.status = "Delivered";
-          orderUpdateData.payment = true; // COD or online payment settled on delivery
-        } else if (deliveryState === "RETURN_REQUESTED") {
-          const wasDelivered = Boolean(delivery.deliveredAt || delivery.state === "DELIVERED");
-          orderUpdateData.payment = wasDelivered
-            ? Boolean(delivery.order?.payment)
-            : String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
-              ? false
-              : Boolean(delivery.order?.payment);
         } else if (
           ["PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"].includes(deliveryState)
         ) {

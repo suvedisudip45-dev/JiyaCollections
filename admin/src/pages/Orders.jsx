@@ -154,7 +154,11 @@ const getPaperBillSummary = (record = {}) => {
     ["ISSUED", "VOIDED", "CREDITED", "PARTIALLY_CREDITED"].includes(status) &&
     ["VAT_TAX_INVOICE", "PAN_BILL"].includes(documentType)
   );
-  const typeLabel = documentType === "VAT_TAX_INVOICE" ? "VAT bill" : "PAN bill";
+  const typeLabel = documentType === "VAT_TAX_INVOICE"
+    ? "VAT bill"
+    : documentType === "PAN_BILL"
+      ? "PAN bill"
+      : "Internal sales record";
   let label = "Bill choice not recorded";
   if (issued && status === "VOIDED") label = `${typeLabel} voided / reverted`;
   else if (issued) label = `${typeLabel} issued`;

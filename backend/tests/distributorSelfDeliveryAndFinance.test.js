@@ -82,6 +82,7 @@ test("Admin payout initiation resolves the accounting party for subledger-backed
     amount: "150.00",
     financialAccountId: "treasury-1",
     idempotencyKey: "settlement-payout-1",
+    adminAccountId: "admin-maker",
     client,
     validatePayoutAccount: async () => ({ id: "bank-gl-account" }),
     writeAudit: async () => {},
@@ -120,6 +121,7 @@ test("legacy earnings payout initiation is blocked by an active unified settleme
     amount: "150.00",
     financialAccountId: "treasury-1",
     idempotencyKey: "legacy-payout-blocked-by-unified",
+    adminAccountId: "admin-maker",
     client,
   }), { code: "ACTIVE_UNIFIED_SETTLEMENT_REQUEST" });
 });
@@ -153,7 +155,20 @@ test("Admin service-settlement cash warnings aggregate distributor COD and pendi
       distributorRemittanceBatch: {
         groupBy: async () => [{
           distributorId: "dist-1",
+          status: "PENDING_REVIEW",
           _sum: { amount: new Prisma.Decimal("20") },
+        }],
+      },
+      distributorCashEvent: {
+        groupBy: async () => [{
+          distributorId: "dist-1",
+          _sum: { amount: new Prisma.Decimal("60") },
+        }],
+      },
+      distributorBalanceSettlement: {
+        groupBy: async () => [{
+          distributorId: "dist-1",
+          _sum: { cashAmount: new Prisma.Decimal("10") },
         }],
       },
     },
@@ -163,10 +178,15 @@ test("Admin service-settlement cash warnings aggregate distributor COD and pendi
     outstandingReceivable: "100.00",
     pendingRemittance: "20.00",
     refundPayable: "15.00",
-    availableToRemit: "80.00",
+    verifiedCustomerCollections: "60.00",
+    remittedOrPending: "30.00",
+    companyReceiptRecorded: "10.00",
+    cashHeldByDistributor: "30.00",
+    availableToRemit: "30.00",
     availableToOffset: "15.00",
   });
   assert.equal(positions.get("dist-2").outstandingReceivable, "0.00");
+  assert.equal(positions.get("dist-2").availableToRemit, "0.00");
 });
 
 test("Admin distributor payout requires a valid external transfer reference", async () => {
@@ -474,7 +494,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     amount: 200,
     deliveryFee: 20,
     paymentMethod: "PREPAID",
-    payment: true,
+    payment: false,
     status: "On the Way",
     fulfillmentStatus: "out_for_delivery",
     items: JSON.stringify([{ productId: "prod-1", size: "M", color: "Black", quantity: 2 }]),
@@ -560,6 +580,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
   assert.doesNotThrow(() => JSON.stringify(res));
   assert.equal(res.order.date, 1791566316000);
   assert.equal(res.order.status, "Delivered");
+  assert.equal(res.order.payment, false);
   assert.equal(res.assignment.status, "delivered");
   assert.equal(res.accountingStatus, "PENDING");
   assert.equal(balanceUpdated, true);
@@ -575,12 +596,14 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     status: "Delivered",
     collectionConfirmed: true,
     notificationConfig: { enabled: false, sms: { enabled: false } },
+    actorContext: { actorId: "account-dist-1" },
     accrueDeliveryEarning: async (earning) => deliveryEarnings.push(earning),
     accrueStockTransferEarning: async () => null,
   });
-  assert.equal(codResult.order.payment, true);
-  assert.equal(cashEvents[0].amount, "200.00");
+  assert.equal(codResult.order.payment, false);
+  assert.equal(cashEvents[0].amount, "220.00");
   assert.equal(cashEvents[0].status, "PENDING_VERIFICATION");
+  assert.equal(cashEvents[0].recordedByAccountId, "account-dist-1");
   assert.match(cashEvents[0].notes, /SMS OTP was disabled/);
 });
 
@@ -618,6 +641,51 @@ test("COD delivery without SMS OTP requires explicit distributor collection conf
     }),
     { code: "COD_COLLECTION_CONFIRMATION_REQUIRED" },
   );
+});
+
+test("COD collection cannot be recorded without an authenticated actor", async () => {
+  const assignment = {
+    id: "assign-cod",
+    orderId: "order-cod",
+    distributorId: "dist-1",
+    deliveryType: "SELF_DELIVERY",
+    status: "on_the_way",
+  };
+  let eventCreated = false;
+  const client = {
+    orderAssignment: { findFirst: async () => assignment },
+    deliveryOrder: { findUnique: async () => null },
+    $transaction: async (callback) => callback({
+      order: {
+        findUnique: async () => ({
+          id: "order-cod",
+          amount: 1500,
+          deliveryFee: 100,
+          paymentMethod: "COD",
+          payment: false,
+        }),
+      },
+      distributorCashEvent: {
+        create: async () => {
+          eventCreated = true;
+          return { id: "event-1" };
+        },
+      },
+    }),
+  };
+
+  await assert.rejects(
+    updateSelfDeliveryStatus({
+      distributorId: "dist-1",
+      assignmentIdOrOrderId: "assign-cod",
+      status: "Delivered",
+      collectionConfirmed: true,
+      notificationConfig: { enabled: false, sms: { enabled: false } },
+      client,
+    }),
+    { code: "COLLECTION_ACTOR_REQUIRED" },
+  );
+  assert.equal(eventCreated, false);
 });
 
 test("self-delivery return marks the order returned only after every purchased unit is returned", () => {
@@ -899,6 +967,18 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
   assert.equal(resolved.bonusRate, 0);
   assert.equal(resolved.commissionRate, 10);
   assert.equal(resolved.vatRate, 13);
+});
+
+test("distributor service-fee VAT defaults to zero when no rate is configured", async (t) => {
+  stubMethod(t, prisma.distributor, "findUnique", async () => ({ id: "dist-1" }));
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => null);
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "create", async ({ data }) => ({ id: "rate-1", ...data }));
+
+  const saved = await recordDistributorRateCard({ distributorId: "dist-1" });
+  const resolved = await resolveActiveRateCard({ distributorId: "dist-1" });
+
+  assert.equal(saved.vatRate, 0);
+  assert.equal(resolved.vatRate, 0);
 });
 
 test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and balances", async (t) => {

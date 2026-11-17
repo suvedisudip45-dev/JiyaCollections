@@ -1,6 +1,11 @@
 import { randomInt } from "node:crypto";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
+import { compareDecimals } from "./accountingDecimal.js";
+import {
+  decimalFromStoredFloat,
+  pricingSnapshotAmounts,
+} from "./checkoutPricingService.js";
 
 const parseObject = (value, fallback = {}) => {
   if (value && typeof value === "object") return value;
@@ -30,6 +35,10 @@ export const normalizeGiftCategory = (category) => {
 
 export const calculateOrderGiftEligibility = (order = {}, orderValueRules = []) => {
   const reward = parseObject(order.rewardApplied);
+  const orderAmount = decimalFromStoredFloat(
+    pricingSnapshotAmounts(order).finalPayableTotal,
+    "Accepted order amount",
+  );
   const loyaltyGiftValue = Math.max(
     0,
     Math.round(Number(reward.giftAmount || reward.loyaltyGiftAmount || 0) * 100) / 100
@@ -37,7 +46,10 @@ export const calculateOrderGiftEligibility = (order = {}, orderValueRules = []) 
   const matchedOrderRules = (Array.isArray(orderValueRules) ? orderValueRules : []).filter((rule) =>
     rule?.isActive !== false &&
     String(rule?.triggerType || "ORDER_VALUE").toUpperCase() === "ORDER_VALUE" &&
-    Number(order.amount || 0) >= Number(rule?.minSpendThreshold || 0)
+    compareDecimals(
+      orderAmount,
+      decimalFromStoredFloat(rule?.minSpendThreshold || 0, "Gift minimum spend"),
+    ) >= 0
   );
   const orderValueGiftValue = matchedOrderRules.reduce(
     (maxValue, rule) => Math.max(maxValue, Math.round(Number(rule.giftTargetValue || 0) * 100) / 100),

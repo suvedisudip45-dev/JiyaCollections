@@ -1,3 +1,4 @@
+import "../utils/requireMaintenanceDatabaseSafety.js";
 import { PrismaClient } from "@prisma/client";
 import {
   calculateCorporateIncomeTaxProjection,

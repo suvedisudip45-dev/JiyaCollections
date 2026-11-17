@@ -5,6 +5,7 @@ import {
   allocateMoneyAcrossShipments,
   splitItemsIntoDistributorShipments,
 } from "../controllers/orderController.js";
+import { validateOrderStock } from "../services/adminDirectOrderService.js";
 
 test("split checkout orders contain only the product quantities assigned to each hub", () => {
   const orders = splitItemsIntoDistributorShipments([
@@ -58,6 +59,31 @@ test("split checkout applies aggregate discounts without losing cents", () => {
 
   assert.deepEqual(shares, [5.71, 2.86, 1.43]);
   assert.equal(shares.reduce((total, amount) => total + amount, 0), 10);
+});
+
+test("stock validation aggregates repeated product lines before accepting an order", () => {
+  const validation = validateOrderStock([
+    { productId: "shirt", quantity: 2 },
+    { productId: "shirt", quantity: 2 },
+  ], [{ id: "shirt", name: "Shirt", stockQuantity: 3, variants: [] }]);
+
+  assert.equal(validation.valid, false);
+  assert.match(validation.message, /Requested quantity \(4\).*available stock \(3\)/);
+});
+
+test("variant stock validation aggregates repeated size and color selections", () => {
+  const validation = validateOrderStock([
+    { productId: "shirt", size: "M", color: "Black", quantity: 2 },
+    { productId: "shirt", size: "M", color: "Black", quantity: 2 },
+  ], [{
+    id: "shirt",
+    name: "Shirt",
+    stockQuantity: 3,
+    variants: [{ size: "M", color: "Black", quantity: 3 }],
+  }]);
+
+  assert.equal(validation.valid, false);
+  assert.match(validation.message, /Requested quantity \(4\).*available stock \(3\)/);
 });
 
 test("split order creation rejects a stale or mismatched stock plan", () => {

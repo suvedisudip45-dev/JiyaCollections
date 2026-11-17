@@ -851,7 +851,7 @@ Relevant endpoints:
 | `PATCH /manufacturer/production/:id/post-check` | Manufacturer | `manufacturer:production_manage` | QA actual counts and receive good units into inventory. |
 | `GET /manufacturer/finance/dashboard` | Manufacturer | `manufacturer:finance_dashboard` | Read production value, logistics reimbursements, outstanding and paid settlements. |
 | `GET /manufacturer/finance/settlement-requests` | Manufacturer | `manufacturer:finance_dashboard` | Read paginated settlement-request history with requested, paid, and remaining amounts and linked payout, transfer-evidence, treasury, cash-transaction, and journal details. |
-| `POST /manufacturer/finance/settlement-request` | Manufacturer | `manufacturer:settlement_request` | Request available production or logistics payable. |
+| `POST /manufacturer/finance/settlement-request` | Manufacturer | `manufacturer:settlement_request` | Submit a decimal-string amount for available production or logistics payable with a stable `Idempotency-Key` header or `idempotencyKey` body field. Exact retries replay; changed payloads conflict. |
 | `GET /admin/finance/settlements` | Admin | `finance:payables_read` | List manufacturer settlement requests with linked payout attempts and accounting/cash records; supports `PENDING`, `PARTIALLY_PAID`, `PAID`, and `REJECTED` status, manufacturerId, page, and limit filters. |
 | `PATCH /admin/finance/settlements/:id/pay` | Admin | `finance:payable_settle` | Pay a pending manufacturer settlement from a financial account. |
 | `POST /assignment/assign` | Admin/internal | `assignment:create` | Assign customer order. |

@@ -10,6 +10,9 @@ import {
   getCustomerReturns,
   createSupplierReturn,
   getSupplierReturns,
+  getSupplierReturnApplicableBills,
+  applySupplierReturnCredit,
+  getSupplierReturnReconciliation,
 } from "../controllers/returnsController.js";
 import {
   adminCompleteReturnRefund,
@@ -44,6 +47,17 @@ import {
 } from "../controllers/orderExchangeController.js";
 
 const returnsRouter = express.Router();
+
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only administrators can access supplier-return accounting controls.",
+    });
+  }
+  return next();
+};
 
 returnsRouter.post("/exchange/customer", authenticate, authorize("exchange:customer_request"), customerCreateExchangeRequest);
 returnsRouter.get("/exchange/customer", authenticate, authorize("exchange:customer_read"), customerListExchangeRequests);
@@ -86,5 +100,8 @@ returnsRouter.post("/customer/admin/distributor-refunds/:documentId/settle", aut
 // Supplier Returns (Debit Notes)
 returnsRouter.post("/supplier/create", authenticate, authorize("returns:supplier_create"), createSupplierReturn);
 returnsRouter.get("/supplier/list", authenticate, authorize("returns:supplier_read"), getSupplierReturns);
+returnsRouter.get("/supplier/reconciliation", authenticate, requireAdminRole, authorize("finance:payables_read"), getSupplierReturnReconciliation);
+returnsRouter.get("/supplier/:id/applicable-bills", authenticate, requireAdminRole, authorize("finance:payable_settle"), getSupplierReturnApplicableBills);
+returnsRouter.post("/supplier/:id/apply-credit", authenticate, requireAdminRole, authorize("finance:payable_settle"), applySupplierReturnCredit);
 
 export default returnsRouter;

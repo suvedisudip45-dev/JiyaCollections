@@ -8,9 +8,9 @@ const makeClient = ({ taxStatus = "VAT_REGISTERED" } = {}) => {
     id: "expense-1",
     title: "Office supplies",
     category: "PRINTING",
-    amount: 113,
+    amount: new Prisma.Decimal("113.00"),
     isVatBill: true,
-    vatAmount: 13,
+    vatAmount: new Prisma.Decimal("13.00"),
     supplierVatNumber: "123456789",
     invoiceNumber: "SUP-001",
     invoiceEvidenceUrl: "https://example.test/invoice.pdf",
@@ -65,6 +65,19 @@ test("input VAT is recognized only after review and a balanced journal posts in 
   assert.equal(posted[0].lines[0].debit.toString(), "13");
   assert.equal(posted[0].lines[1].accountCode, "6700");
   assert.equal(posted[0].lines[1].credit.toString(), "13");
+});
+
+test("input VAT review rejects JavaScript Number monetary values", async () => {
+  const { client, expense } = makeClient();
+  expense.amount = 113;
+
+  await assert.rejects(reviewOperatingExpenseInputVat({
+    expenseId: "expense-1",
+    decision: "APPROVE",
+    reason: "Invoice checked.",
+    client,
+    postJournal: async () => ({ id: "unused" }),
+  }), (error) => error.code === "INVALID_DECIMAL_INPUT");
 });
 
 test("input VAT approval rejects purchases outside the buyer VAT-registration period", async () => {

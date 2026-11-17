@@ -1,10 +1,21 @@
+import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import {
+  assertOperatingExpenseNotPosted,
+  findOperatingExpenseReplay,
+  hashOperatingExpenseRequest,
+  normalizeOperatingExpenseIdempotencyKey,
+} from "../services/operatingExpenseIdempotencyService.js";
 import { prisma } from "../config/db.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   postDirectIncomeAccounting,
   postExpenseAccounting,
 } from "../services/accountingPostingEngine.js";
+import {
+  allocatePaymentToDocuments,
+  createAccountingDocument,
+} from "../services/accountingSubledgerService.js";
 import { reviewOperatingExpenseInputVat } from "../services/purchaseVatService.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
@@ -12,23 +23,25 @@ import {
   resolveCalendarDateFilterInput,
   resolveCalendarDateInput,
 } from "../services/nepaliFiscalCalendar.js";
+import {
+  accountingDecimal,
+  addDecimals,
+  parseNprAmountString,
+  serializeAccountingValue,
+} from "../services/accountingDecimal.js";
+import {
+  calculateOperatingExpenseVat,
+  getOperatingExpenseTaxableAmount,
+  normalizeExpenseAmount,
+} from "../services/operatingExpenseDecimalService.js";
 
-// Helper: Calculate 13% embedded VAT amount
-const calculateVat = (amount, isVatBill, customVat, rate = 13) => {
-  if (!isVatBill) return 0;
-  if (customVat !== undefined && customVat !== null && customVat !== "") {
-    const vat = new Prisma.Decimal(String(customVat));
-    if (!vat.isFinite() || vat.isNegative()) throw new Error("VAT amount must be a non-negative decimal amount.");
-    return Number(vat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
-  }
-  const amt = new Prisma.Decimal(String(amount || 0));
-  const vatRate = new Prisma.Decimal(String(rate || 0));
-  if (vatRate.isZero() || vatRate.isNegative()) return 0;
-  const vat = amt.minus(amt.dividedBy(new Prisma.Decimal(1).plus(vatRate.dividedBy(100))));
-  return Number(vat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
+const serializeExpense = (expense, hasPostedJournal = true) => {
+  if (!expense) return expense;
+  const { idempotencyKey, requestPayloadHash, ...safeExpense } = expense;
+  return serializeAccountingValue({ ...safeExpense, hasPostedJournal });
 };
 
-const normalizeNprAmount = (value, fieldName) => {
+const normalizeLegacyIncomeAmount = (value, fieldName) => {
   let amountValue;
   try {
     amountValue = new Prisma.Decimal(String(value));
@@ -168,15 +181,138 @@ export const deleteFinancialCategory = async (req, res) => {
   }
 };
 
+export const getExpenseVendors = async (req, res) => {
+  try {
+    const vendors = await prisma.accountingParty.findMany({
+      where: { partyType: "VENDOR", status: "ACTIVE" },
+      select: { id: true, sourceEntityId: true, displayName: true, legalName: true },
+      orderBy: [{ displayName: "asc" }, { id: "asc" }],
+    });
+    return res.status(200).json({ success: true, vendors });
+  } catch (error) {
+    console.error("getExpenseVendors error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_VENDOR_QUERY_ERROR",
+      message: error.message || "Supplier records could not be loaded.",
+    });
+  }
+};
+
+export const createExpenseVendor = async (req, res) => {
+  try {
+    const idempotencyKey = normalizeOperatingExpenseIdempotencyKey(
+      req.get?.("Idempotency-Key") || req.body?.idempotencyKey,
+    );
+    const displayName = String(req.body?.displayName || "").trim();
+    const legalName = String(req.body?.legalName || "").trim() || null;
+    if (!displayName || displayName.length > 255 || (legalName && legalName.length > 255)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_EXPENSE_VENDOR",
+        message: "Supplier display name is required and names must not exceed 255 characters.",
+      });
+    }
+
+    const sourceEntityId = `ADMIN:${createHash("sha256").update(idempotencyKey).digest("hex")}`;
+    const actorId = req.auth?.accountId || req.auth?.userId || req.auth?.id || null;
+    const execute = async (tx) => {
+      const existing = await tx.accountingParty.findUnique({
+        where: { partyType_sourceEntityId: { partyType: "VENDOR", sourceEntityId } },
+      });
+      if (existing) {
+        if (existing.displayName !== displayName || existing.legalName !== legalName) {
+          const error = new Error("This Idempotency-Key was already used with a different supplier identity.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        return { vendor: existing, replayed: true };
+      }
+
+      const vendor = await tx.accountingParty.create({
+        data: {
+          partyType: "VENDOR",
+          sourceEntityId,
+          displayName,
+          legalName,
+          currency: "NPR",
+          status: "ACTIVE",
+        },
+        select: { id: true, sourceEntityId: true, displayName: true, legalName: true },
+      });
+      await recordSystemAudit(
+        {
+          actorId,
+          actorRole: "ADMIN",
+          portalSource: "ADMIN",
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent"),
+          correlationId: req.id,
+        },
+        {
+          action: "ACCOUNTING_VENDOR_CREATED",
+          entityType: "AccountingParty",
+          entityId: vendor.id,
+          afterState: { partyType: "VENDOR", displayName, legalName },
+        },
+        { client: tx },
+      );
+      return { vendor, replayed: false };
+    };
+
+    const result = await prisma.$transaction(execute, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    return res.status(result.replayed ? 200 : 201).json({
+      success: true,
+      replayed: result.replayed,
+      vendor: result.vendor,
+    });
+  } catch (error) {
+    if (error.code === "P2002") {
+      const idempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+      if (idempotencyKey) {
+        const sourceEntityId = `ADMIN:${createHash("sha256").update(idempotencyKey).digest("hex")}`;
+        const existing = await prisma.accountingParty.findUnique({
+          where: { partyType_sourceEntityId: { partyType: "VENDOR", sourceEntityId } },
+          select: { id: true, sourceEntityId: true, displayName: true, legalName: true },
+        });
+        if (existing) {
+          const displayName = String(req.body?.displayName || "").trim();
+          const legalName = String(req.body?.legalName || "").trim() || null;
+          if (existing.displayName === displayName && existing.legalName === legalName) {
+            return res.status(200).json({ success: true, replayed: true, vendor: existing });
+          }
+          return res.status(409).json({
+            success: false,
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "This Idempotency-Key was already used with a different supplier identity.",
+          });
+        }
+      }
+    }
+    console.error("createExpenseVendor error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_VENDOR_CREATE_ERROR",
+      message: error.message || "Supplier record could not be created.",
+    });
+  }
+};
+
 // ==========================================
 // 2. CREATE EXPENSE (WITH SOLVENCY & AUTO-PAYABLE)
 // ==========================================
 export const createExpense = async (req, res) => {
+  let idempotencyKey;
+  let payloadHash;
   try {
     const {
       title,
       category,
       amount,
+      accountingPartyId,
       isVatBill,
       vatAmount,
       purchaseVatRate,
@@ -194,24 +330,53 @@ export const createExpense = async (req, res) => {
       calendar,
     } = req.body;
 
+    idempotencyKey = normalizeOperatingExpenseIdempotencyKey(
+      req.get?.("Idempotency-Key") || req.body?.idempotencyKey,
+    );
+
     if (!title || !category || amount === undefined || amount === null || amount === "") {
       return res.json({ success: false, message: "Title, Category, and Amount are required." });
     }
 
-    const numAmount = normalizeNprAmount(amount, "Expense amount");
-    if (numAmount <= 0) {
+    let expenseAmount;
+    try {
+      expenseAmount = normalizeExpenseAmount(amount);
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        code: error.code || "INVALID_EXPENSE_AMOUNT",
+        message: error.message || "Expense amount must be a valid decimal string.",
+      });
+    }
+    if (!expenseAmount.isPositive()) {
       return res.json({ success: false, message: "Expense amount must be a positive number." });
     }
 
     const vatBill = isVatBill === true || isVatBill === "true";
-    const vatRate = purchaseVatRate === undefined || purchaseVatRate === "" ? 13 : Number(purchaseVatRate);
-    if (vatBill && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
-      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    if (vatBill && (purchaseVatRate === undefined || purchaseVatRate === null || purchaseVatRate === "")) {
+      return res.status(400).json({ success: false, code: "PURCHASE_VAT_RATE_REQUIRED", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
+    let vatRate = null;
+    if (vatBill) {
+      try {
+        vatRate = parseNprAmountString(purchaseVatRate, "Supplier invoice VAT rate", { allowZero: false });
+        if (vatRate.greaterThan(100)) throw new Error("Enter the VAT rate printed on the supplier invoice.");
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          code: "INVALID_PURCHASE_VAT_RATE",
+          message: error.message || "Enter the VAT rate printed on the supplier invoice.",
+        });
+      }
     }
     let computedVat;
     try {
-      computedVat = calculateVat(numAmount, vatBill, vatAmount, vatRate);
-      if (computedVat > numAmount) throw new Error("VAT amount cannot exceed the total supplier invoice amount.");
+      computedVat = calculateOperatingExpenseVat({
+        amount: expenseAmount.toFixed(2),
+        isVatBill: vatBill,
+        vatAmount,
+        purchaseVatRate: vatRate?.toString(),
+      });
     } catch (error) {
       return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_AMOUNT", message: error.message });
     }
@@ -229,31 +394,99 @@ export const createExpense = async (req, res) => {
     if (Number.isNaN(expenseDate.getTime())) {
       return res.status(400).json({ success: false, code: "INVALID_EXPENSE_DATE", message: "Enter a valid expense and invoice date." });
     }
-    const finalVendorName = (vendorName || title).trim();
+    const actorId = req.auth?.accountId || req.auth?.userId || req.auth?.id || null;
     const purchaseVatData = {
       supplierVatNumber: supplierVatId || null,
       invoiceEvidenceUrl: evidence || null,
-      purchaseTaxableAmount: vatBill ? Number((numAmount - computedVat).toFixed(2)) : null,
+      purchaseTaxableAmount: vatBill ? getOperatingExpenseTaxableAmount(expenseAmount, computedVat) : null,
       purchaseVatRate: vatBill ? vatRate : null,
       purchaseVatStatus: vatBill ? "PENDING_REVIEW" : "NOT_CLAIMED",
     };
 
-    if (!["PAID", "PAYABLE", "UNPAID"].includes(String(paymentStatus).toUpperCase())) {
+    const normalizedPaymentStatus = String(paymentStatus).toUpperCase();
+    if (!["PAID", "PAYABLE", "UNPAID"].includes(normalizedPaymentStatus)) {
       return res.status(400).json({ success: false, code: "INVALID_EXPENSE_PAYMENT_STATUS", message: "Select paid now or record the expense as payable." });
     }
 
-    if (String(paymentStatus).toUpperCase() === "PAID" && !paymentAccountId) {
+    const isPaid = normalizedPaymentStatus === "PAID";
+    const normalizedAccountingPartyId = String(accountingPartyId || "").trim() || null;
+    const vendorParty = normalizedAccountingPartyId
+      ? await prisma.accountingParty.findUnique({ where: { id: normalizedAccountingPartyId } })
+      : null;
+    if (
+      normalizedAccountingPartyId
+      && (!vendorParty || vendorParty.partyType !== "VENDOR" || vendorParty.status !== "ACTIVE")
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "INVALID_EXPENSE_VENDOR",
+        message: "Select an active registered supplier.",
+      });
+    }
+    const requiresSupplierIdentity = !isPaid || vatBill || Boolean(String(invoiceNumber || "").trim());
+    if (requiresSupplierIdentity && !vendorParty) {
+      return res.status(400).json({
+        success: false,
+        code: "SUPPLIER_IDENTITY_REQUIRED",
+        message: "A registered supplier is required for payables and supplier invoice records.",
+      });
+    }
+    const finalVendorName = vendorParty?.displayName || String(vendorName || title).trim();
+    if (isPaid && !paymentAccountId) {
       return res.status(400).json({
         success: false,
         message: "Please select a mapped Bank, Cash, or Wallet Treasury account to disburse this payment from.",
       });
     }
 
+    const normalizedPriority = priority || "MEDIUM";
+    const normalizedPaymentMethod = isPaid ? paymentMethod || "CASH" : "CREDIT";
+    payloadHash = hashOperatingExpenseRequest({
+      title: title.trim(),
+      category: category.toUpperCase(),
+      amount: expenseAmount.toFixed(2),
+      isVatBill: vatBill,
+      vatAmount: computedVat.toFixed(2),
+      purchaseVatRate: vatBill ? vatRate.toFixed(2) : null,
+      supplierVatNumber: supplierVatId || null,
+      invoiceEvidenceUrl: evidence || null,
+      accountingPartyId: vendorParty?.id || null,
+      date: date ? expenseDate.toISOString() : null,
+      paymentStatus: isPaid ? "PAID" : "PAYABLE",
+      paymentAccountId: isPaid ? paymentAccountId : null,
+      paymentMethod: normalizedPaymentMethod,
+      vendorName: finalVendorName,
+      invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null,
+      dueDate: dueDate && resolvedDueDate ? new Date(resolvedDueDate).toISOString() : null,
+      priority: isPaid ? null : normalizedPriority,
+      notes: notes ? notes.trim() : null,
+    });
+
     const result = await prisma.$transaction(async (tx) => {
+      const replay = await findOperatingExpenseReplay({ client: tx, idempotencyKey, payloadHash });
+      if (replay) return replay;
+
       let updatedAccount = null;
       let depositAccountCode = null;
       let payable = null;
-      const isPaid = String(paymentStatus).toUpperCase() === "PAID";
+
+      if (vendorParty) {
+        const currentParty = await tx.accountingParty.findUnique({
+          where: { id: vendorParty.id },
+          select: { id: true, partyType: true, status: true, displayName: true },
+        });
+        if (
+          !currentParty
+          || currentParty.partyType !== "VENDOR"
+          || currentParty.status !== "ACTIVE"
+          || currentParty.displayName !== finalVendorName
+        ) {
+          const error = new Error("The selected supplier changed or is no longer active. Refresh and retry.");
+          error.statusCode = 409;
+          error.code = "EXPENSE_VENDOR_CHANGED";
+          throw error;
+        }
+      }
 
       if (isPaid) {
         const treasuryAccount = await tx.financialAccount.findUnique({ where: { id: paymentAccountId } });
@@ -263,19 +496,19 @@ export const createExpense = async (req, res) => {
             id: paymentAccountId,
             status: "ACTIVE",
             currency: "NPR",
-            currentBalance: { gte: numAmount },
+            currentBalance: { gte: expenseAmount },
           },
-          data: { currentBalance: { decrement: numAmount } },
+          data: { currentBalance: { decrement: expenseAmount } },
         });
         if (debitResult.count !== 1) {
           const current = await tx.financialAccount.findUnique({
             where: { id: paymentAccountId },
             select: { currentBalance: true, accountName: true },
           });
-          const availableBalance = Number(current?.currentBalance || 0);
+          const availableBalance = accountingDecimal(current?.currentBalance || "0");
           const error = new Error(
             current
-              ? `Insufficient funds in ${current.accountName}. Available Rs ${availableBalance.toLocaleString()}, required Rs ${numAmount.toLocaleString()}.`
+              ? `Insufficient funds in ${current.accountName}. Available Rs ${availableBalance.toFixed(2)}, required Rs ${expenseAmount.toFixed(2)}.`
               : "Selected Treasury account was not found.",
           );
           error.statusCode = current ? 409 : 404;
@@ -288,14 +521,15 @@ export const createExpense = async (req, res) => {
           data: {
             title: title.trim(),
             payeeName: finalVendorName,
+            accountingPartyId: vendorParty.id,
             category: "OPERATING_EXPENSE",
             referenceType: "EXPENSE",
-            totalAmount: numAmount,
+            totalAmount: expenseAmount,
             paidAmount: 0,
-            remainingBalance: numAmount,
+            remainingBalance: expenseAmount,
             dueDate: resolvedDueDate ? new Date(resolvedDueDate) : null,
             invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-            priority: priority || "MEDIUM",
+            priority: normalizedPriority,
             status: "UNPAID",
             notes: notes ? notes.trim() : null,
           },
@@ -304,28 +538,58 @@ export const createExpense = async (req, res) => {
 
       const expense = await tx.operatingExpense.create({
         data: {
+          accountingPartyId: vendorParty?.id || null,
           title: title.trim(),
           category: category.toUpperCase(),
-          amount: numAmount,
+          amount: expenseAmount,
           isVatBill: vatBill,
           vatAmount: computedVat,
           ...purchaseVatData,
           date: expenseDate,
           paymentMethod: isPaid ? paymentMethod || "CASH" : "CREDIT",
           paymentStatus: isPaid ? "PAID" : "PAYABLE",
+          paidAmount: isPaid ? expenseAmount : "0",
+          payableAmount: isPaid ? "0" : expenseAmount,
           financialAccountId: isPaid ? paymentAccountId : null,
           payableId: payable?.id || null,
           vendorName: finalVendorName,
           invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null,
+          idempotencyKey,
+          requestPayloadHash: payloadHash,
           notes: notes ? notes.trim() : null,
-          createdBy: "ADMIN",
+          createdBy: actorId || "ADMIN",
         },
       });
+
+      if (payable) {
+        payable = await tx.accountPayable.update({
+          where: { id: payable.id },
+          data: { referenceId: expense.id },
+        });
+      }
+
+      const billDocument = vendorParty
+        ? await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `EXP-BILL-${expense.id}`,
+          partyId: vendorParty.id,
+          side: "PAYABLE",
+          sourceType: "OPERATING_EXPENSE",
+          sourceId: expense.id,
+          issueDate: expenseDate,
+          dueDate: resolvedDueDate ? new Date(resolvedDueDate) : null,
+          amount: expenseAmount,
+          idempotencyKey: `OPERATING_EXPENSE_BILL:${expense.id}`,
+          notes: invoiceNumber
+            ? `Supplier invoice reference: ${invoiceNumber.trim()}`
+            : "Supplier bill recorded through Admin operating expenses.",
+        }, { client: tx })
+        : null;
 
       if (isPaid) {
         await tx.cashTransaction.create({
           data: {
-            amount: numAmount,
+            amount: expenseAmount,
             date: expenseDate,
             type: "OUTFLOW",
             fromAccountId: paymentAccountId,
@@ -338,7 +602,7 @@ export const createExpense = async (req, res) => {
         });
       }
 
-      await postExpenseAccounting({
+      const journalEntry = await postExpenseAccounting({
         expenseId: expense.id,
         category: expense.category,
         title: expense.title,
@@ -347,29 +611,98 @@ export const createExpense = async (req, res) => {
         isPayable: !isPaid,
         payeeName: expense.vendorName,
         transactionDate: expense.date,
+        accountingPartyId: vendorParty?.id || null,
         client: tx,
         throwOnError: true,
       });
+      if (!journalEntry?.id) throw new Error("Expense journal was not created.");
+      if (billDocument && isPaid) {
+        const allocation = await allocatePaymentToDocuments({
+          partyId: vendorParty.id,
+          side: "PAYABLE",
+          amount: expenseAmount,
+          journalEntryId: journalEntry.id,
+          allocationType: "CASH",
+          targetDocumentIds: [billDocument.id],
+          idempotencyKey: `OPERATING_EXPENSE_PAYMENT:${expense.id}`,
+        }, { client: tx });
+        if (!allocation.unallocatedAmount.isZero()) {
+          throw new Error("The paid expense could not be fully allocated to its supplier bill.");
+        }
+      }
+      await recordSystemAudit(
+        {
+          actorId,
+          actorRole: "ADMIN",
+          portalSource: "ADMIN",
+          ipAddress: req.ip,
+          userAgent: req.get?.("user-agent"),
+          correlationId: req.id,
+        },
+        {
+          action: "OPERATING_EXPENSE_CREATED",
+          entityType: "OperatingExpense",
+          entityId: expense.id,
+          afterState: {
+            amount: expenseAmount.toFixed(2),
+            category: expense.category,
+            paymentStatus: expense.paymentStatus,
+            payableId: payable?.id || null,
+            accountingPartyId: vendorParty?.id || null,
+            accountingDocumentId: billDocument?.id || null,
+            journalEntryId: journalEntry.id,
+          },
+        },
+        { client: tx },
+      );
 
       return { expense, payable, account: updatedAccount };
     });
 
+    if (result.replayed) {
+      return res.json({
+        success: true,
+        message: "This expense was already recorded; no additional financial entries were created.",
+        expense: serializeExpense(result.expense),
+        ...(result.account ? { account: result.account } : { payable: result.payable }),
+      });
+    }
+
     if (result.account) {
       return res.json({
         success: true,
-        message: `Expense of Rs ${numAmount.toLocaleString()} paid from ${result.account.accountName} successfully!`,
-        expense: result.expense,
+        message: `Expense of Rs ${expenseAmount.toFixed(2)} paid from ${result.account.accountName} successfully!`,
+        expense: serializeExpense(result.expense),
         account: result.account,
       });
     }
     return res.json({
       success: true,
       message: `Expense recorded as Accounts Payable liability (Pay Later) due on ${dueDate || "upcoming"}.`,
-      expense: result.expense,
+      expense: serializeExpense(result.expense),
       payable: result.payable,
     });
   } catch (error) {
     console.error("createExpense error:", error);
+    if (error.code === "P2002" && idempotencyKey && payloadHash) {
+      try {
+        const replay = await findOperatingExpenseReplay({ client: prisma, idempotencyKey, payloadHash });
+        if (replay) {
+          return res.json({
+            success: true,
+            message: "This expense was already recorded; no additional financial entries were created.",
+            expense: serializeExpense(replay.expense),
+            ...(replay.account ? { account: replay.account } : { payable: replay.payable }),
+          });
+        }
+      } catch (replayError) {
+        return res.status(replayError.statusCode || 500).json({
+          success: false,
+          code: replayError.code || "EXPENSE_ERROR",
+          message: replayError.message || "Expense replay could not be resolved.",
+        });
+      }
+    }
     return res.status(error.statusCode || 500).json({
       success: false,
       code: error.code || "EXPENSE_ERROR",
@@ -431,18 +764,29 @@ export const getExpenses = async (req, res) => {
         _sum: { vatAmount: true },
       }),
     ]);
-
-    const totalAmount = Number(aggregate._sum.amount || 0);
-    const totalVatClaimable = Number(verifiedVatAggregate._sum.vatAmount || 0);
-    const totalVatPendingReview = Number(pendingVatAggregate._sum.vatAmount || 0);
+    const postedJournalSources = expenses.length
+      ? await prisma.journalEntry.findMany({
+        where: {
+          sourceType: "EXPENSE_PAYMENT",
+          sourceId: { in: expenses.map((expense) => expense.id) },
+        },
+        select: { sourceId: true },
+      })
+      : [];
+    const postedJournalSourceIds = new Set(postedJournalSources.map((entry) => entry.sourceId));
 
     res.json({
       success: true,
-      ...paginatedResponse("expenses", expenses, pagination, total),
+      ...paginatedResponse(
+        "expenses",
+        expenses.map((expense) => serializeExpense(expense, postedJournalSourceIds.has(expense.id))),
+        pagination,
+        total,
+      ),
       metrics: {
-        totalAmount,
-        totalVatClaimable,
-        totalVatPendingReview,
+        totalAmount: String(aggregate._sum.amount || "0"),
+        totalVatClaimable: String(verifiedVatAggregate._sum.vatAmount || "0"),
+        totalVatPendingReview: String(pendingVatAggregate._sum.vatAmount || "0"),
       },
     });
   } catch (error) {
@@ -463,6 +807,7 @@ export const updateExpense = async (req, res) => {
 
     const existing = await prisma.operatingExpense.findUnique({ where: { id } });
     if (!existing) return res.json({ success: false, message: "Expense record not found." });
+    await assertOperatingExpenseNotPosted(prisma, id);
 
     const {
       title,
@@ -481,34 +826,67 @@ export const updateExpense = async (req, res) => {
       calendar,
     } = req.body;
 
-    const numAmount = amount !== undefined ? normalizeNprAmount(amount, "Expense amount") : existing.amount;
+    let expenseAmount;
+    try {
+      expenseAmount = amount !== undefined
+        ? normalizeExpenseAmount(amount)
+        : accountingDecimal(existing.amount);
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        code: error.code || "INVALID_EXPENSE_AMOUNT",
+        message: error.message || "Expense amount must be a valid decimal string.",
+      });
+    }
     const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : null;
     const vatBill = isVatBill !== undefined ? isVatBill === true || isVatBill === "true" : existing.isVatBill;
-    const vatRate = purchaseVatRate === undefined || purchaseVatRate === ""
-      ? Number(existing.purchaseVatRate || 13)
-      : Number(purchaseVatRate);
-    if (vatBill && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
-      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    const selectedVatRate = purchaseVatRate === undefined || purchaseVatRate === ""
+      ? existing.purchaseVatRate
+      : purchaseVatRate;
+    if (vatBill && (selectedVatRate === undefined || selectedVatRate === null || selectedVatRate === "")) {
+      return res.status(400).json({ success: false, code: "PURCHASE_VAT_RATE_REQUIRED", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
+    let vatRate = null;
+    if (vatBill) {
+      try {
+        vatRate = parseNprAmountString(
+          String(selectedVatRate),
+          "Supplier invoice VAT rate",
+          { allowZero: false },
+        );
+        if (vatRate.greaterThan(100)) throw new Error("Enter the VAT rate printed on the supplier invoice.");
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          code: "INVALID_PURCHASE_VAT_RATE",
+          message: error.message || "Enter the VAT rate printed on the supplier invoice.",
+        });
+      }
     }
     let computedVat;
     try {
-      computedVat = calculateVat(numAmount, vatBill, vatAmount, vatRate);
-      if (computedVat > numAmount) throw new Error("VAT amount cannot exceed the total supplier invoice amount.");
+      computedVat = calculateOperatingExpenseVat({
+        amount: expenseAmount,
+        isVatBill: vatBill,
+        vatAmount,
+        purchaseVatRate: vatRate?.toString(),
+      });
     } catch (error) {
       return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_AMOUNT", message: error.message });
     }
     if (existing.purchaseVatStatus === "VERIFIED") {
       const taxFieldsChanged =
-        numAmount !== existing.amount ||
+        !expenseAmount.equals(existing.amount) ||
         vatBill !== existing.isVatBill ||
-        computedVat !== existing.vatAmount ||
+        !computedVat.equals(existing.vatAmount) ||
         (category !== undefined && String(category || "").trim().toUpperCase() !== existing.category) ||
         (date && new Date(date).getTime() !== existing.date.getTime()) ||
         (vendorName !== undefined && String(vendorName || "").trim() !== String(existing.vendorName || "")) ||
         (invoiceNumber !== undefined && String(invoiceNumber || "").trim() !== String(existing.invoiceNumber || "")) ||
         (supplierVatNumber !== undefined && String(supplierVatNumber || "").trim() !== String(existing.supplierVatNumber || "")) ||
         (invoiceEvidenceUrl !== undefined && String(invoiceEvidenceUrl || "").trim() !== String(existing.invoiceEvidenceUrl || "")) ||
-        (purchaseVatRate !== undefined && Number(purchaseVatRate) !== Number(existing.purchaseVatRate));
+        (purchaseVatRate !== undefined &&
+          !accountingDecimal(String(purchaseVatRate)).equals(existing.purchaseVatRate));
       if (taxFieldsChanged) {
         return res.status(409).json({ success: false, code: "VERIFIED_PURCHASE_VAT_IMMUTABLE", message: "A verified supplier VAT record cannot be edited. Record a correction through an accountant-reviewed adjustment." });
       }
@@ -530,12 +908,12 @@ export const updateExpense = async (req, res) => {
       data: {
         ...(title && { title: title.trim() }),
         ...(category && { category: category.toUpperCase() }),
-        amount: numAmount,
+        amount: expenseAmount,
         isVatBill: vatBill,
         vatAmount: computedVat,
         supplierVatNumber: supplierVatId || null,
         invoiceEvidenceUrl: evidence || null,
-        purchaseTaxableAmount: vatBill ? Number((numAmount - computedVat).toFixed(2)) : null,
+        purchaseTaxableAmount: vatBill ? getOperatingExpenseTaxableAmount(expenseAmount, computedVat) : null,
         purchaseVatRate: vatBill ? vatRate : null,
         purchaseVatStatus: existing.purchaseVatStatus === "REJECTED" && vatBill
           ? "PENDING_REVIEW"
@@ -573,6 +951,7 @@ export const deleteExpense = async (req, res) => {
 
     const expense = await prisma.operatingExpense.findUnique({ where: { id } });
     if (!expense) return res.status(404).json({ success: false, message: "Expense record not found." });
+    await assertOperatingExpenseNotPosted(prisma, id);
     if (expense.purchaseVatStatus === "VERIFIED") {
       return res.status(409).json({ success: false, code: "VERIFIED_PURCHASE_VAT_IMMUTABLE", message: "A verified supplier VAT record cannot be deleted; record an accountant-reviewed correction instead." });
     }
@@ -613,7 +992,11 @@ export const reviewExpenseInputVat = async (req, res) => {
         { client: tx },
       ),
     });
-    return res.status(200).json({ success: true, message: `Supplier input VAT ${record.purchaseVatStatus.toLowerCase()}.`, expense: record });
+    return res.status(200).json({
+      success: true,
+      message: `Supplier input VAT ${record.purchaseVatStatus.toLowerCase()}.`,
+      expense: serializeExpense(record),
+    });
   } catch (error) {
     console.error("reviewExpenseInputVat error:", error);
     return res.status(error.statusCode || 500).json({
@@ -638,38 +1021,38 @@ export const getExpenseSummary = async (req, res) => {
     }
 
     const allExpenses = await prisma.operatingExpense.findMany({ where });
-    const pendingVatReview = allExpenses
-      .filter((expense) => expense.purchaseVatStatus === "PENDING_REVIEW")
-      .reduce((total, expense) => total + Number(expense.vatAmount || 0), 0);
-
     const byCategory = {};
-    let grandTotal = 0;
-    let totalVatClaimable = 0;
-    let totalPaid = 0;
-    let totalPayable = 0;
+    let grandTotal = new Prisma.Decimal(0);
+    let pendingVatReview = new Prisma.Decimal(0);
+    let totalVatClaimable = new Prisma.Decimal(0);
+    let totalPaid = new Prisma.Decimal(0);
+    let totalPayable = new Prisma.Decimal(0);
 
     for (const exp of allExpenses) {
       const cat = (exp.category || "MISCELLANEOUS").toUpperCase();
-      byCategory[cat] = (byCategory[cat] || 0) + (exp.amount || 0);
-      grandTotal += exp.amount || 0;
+      const amountValue = accountingDecimal(exp.amount || "0");
+      const vatValue = accountingDecimal(exp.vatAmount || "0");
+      byCategory[cat] = addDecimals(byCategory[cat] || "0", amountValue);
+      grandTotal = addDecimals(grandTotal, amountValue);
       if (exp.purchaseVatStatus === "VERIFIED") {
-        totalVatClaimable += exp.vatAmount || 0;
+        totalVatClaimable = addDecimals(totalVatClaimable, vatValue);
+      } else if (exp.purchaseVatStatus === "PENDING_REVIEW") {
+        pendingVatReview = addDecimals(pendingVatReview, vatValue);
       }
-      if (exp.paymentStatus === "PAYABLE") {
-        totalPayable += exp.amount || 0;
-      } else {
-        totalPaid += exp.amount || 0;
-      }
+      totalPaid = addDecimals(totalPaid, accountingDecimal(exp.paidAmount || "0"));
+      totalPayable = addDecimals(totalPayable, accountingDecimal(exp.payableAmount || "0"));
     }
 
     res.json({
       success: true,
-      grandTotal,
-      totalPaid,
-      totalPayable,
-      totalVatClaimable,
-      pendingVatReview,
-      byCategory,
+      grandTotal: grandTotal.toFixed(2),
+      totalPaid: totalPaid.toFixed(2),
+      totalPayable: totalPayable.toFixed(2),
+      totalVatClaimable: totalVatClaimable.toFixed(2),
+      pendingVatReview: pendingVatReview.toFixed(2),
+      byCategory: Object.fromEntries(
+        Object.entries(byCategory).map(([category, value]) => [category, value.toFixed(2)]),
+      ),
       count: allExpenses.length,
     });
   } catch (error) {
@@ -695,7 +1078,7 @@ export const createDirectIncome = async (req, res) => {
       return res.status(400).json({ success: false, message: "Title, Amount, and Deposit Account are required." });
     }
 
-    const numAmount = normalizeNprAmount(amount, "Income amount");
+    const numAmount = normalizeLegacyIncomeAmount(amount, "Income amount");
     if (numAmount <= 0) {
       return res.status(400).json({ success: false, message: "Income amount must be a positive number." });
     }

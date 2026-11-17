@@ -3,6 +3,11 @@ import test from "node:test";
 import express from "express";
 import distributorRouter from "../routes/distributorRoute.js";
 import adminDistributorRateRouter, { adminDistributorFinanceRouter } from "../routes/adminDistributorRateRoute.js";
+import adminDistributorDetailRouter from "../routes/adminDistributorDetailRoute.js";
+import {
+  reviewAdminDistributorSettlementRequest,
+  submitDistributorSettlementRequestEvidence,
+} from "../controllers/distributorFinanceController.js";
 
 test("Distributor and Admin route routers are properly constructed", () => {
   assert.ok(distributorRouter);
@@ -47,4 +52,23 @@ test("Distributor and Admin route routers are properly constructed", () => {
   assert.ok(adminFinanceRoutes.some((r) => r.path === "/settle" && r.methods.includes("patch")));
   assert.ok(adminFinanceRoutes.some((r) => r.path === "/settle/:id" && r.methods.includes("patch")));
   assert.ok(adminFinanceRoutes.some((r) => r.path === "/settlements" && r.methods.includes("get")));
+
+  const adminDistributorRoutes = adminDistributorDetailRouter.stack
+    .filter((layer) => layer.route)
+    .map((layer) => ({
+      path: layer.route.path,
+      methods: Object.keys(layer.route.methods),
+    }));
+  const reviewRoute = adminDistributorDetailRouter.stack.find((layer) =>
+    layer.route?.path === "/:id/finance/settlement-requests/:requestId/review"
+  )?.route;
+  assert.ok(adminDistributorRoutes.some((r) =>
+    r.path === "/:id/finance/settlement-requests/:requestId/review" && r.methods.includes("post")
+  ));
+  assert.equal(reviewRoute?.stack.slice(-1)[0]?.handle, reviewAdminDistributorSettlementRequest);
+
+  const evidenceRoute = distributorRouter.stack.find((layer) =>
+    layer.route?.path === "/finance/settlement-requests/:requestId/evidence"
+  )?.route;
+  assert.equal(evidenceRoute?.stack.slice(-1)[0]?.handle, submitDistributorSettlementRequestEvidence);
 });

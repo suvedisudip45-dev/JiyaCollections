@@ -10,6 +10,8 @@ import {
   calculateProductFixedOverheadPerSoldUnit,
   countPurchaseTransactions,
 } from "../services/financialDashboardCosting.js";
+import { addDecimals } from "../services/accountingDecimal.js";
+import { exactPricingApiFields, pricingSnapshotAmounts } from "../services/checkoutPricingService.js";
 
 // Helper to safely parse JSON arrays
 const parseJson = (val, fallback = []) => {
@@ -283,6 +285,7 @@ const addLocationSale = (map, locationKey, order, deliveryCost) => {
     customerIds: new Set(),
     transactionIds: new Set(),
     revenue: 0,
+    revenueDecimal: "0",
     ncmDeliveryCost: 0,
     ncmPackageCount: 0,
     ncmPackagesWithRecordedCost: 0,
@@ -290,7 +293,11 @@ const addLocationSale = (map, locationKey, order, deliveryCost) => {
   current.orders.push(order);
   current.customerIds.add(order.userId);
   current.transactionIds.add(order.checkoutGroupId || order.id);
-  current.revenue += Number(order.amount || 0);
+  current.revenueDecimal = addDecimals(
+    current.revenueDecimal,
+    pricingSnapshotAmounts(order).finalPayableTotal,
+  ).toString();
+  current.revenue = Number(current.revenueDecimal);
   if (deliveryCost !== null) {
     current.ncmPackageCount += 1;
     current.ncmDeliveryCost += deliveryCost;
@@ -1243,10 +1250,14 @@ export const getCustomerDetails = async (req, res) => {
           product: productsById.get(item.productId || item.id) || null,
         })),
         address: parseJson(o.address, {}),
+        ...exactPricingApiFields(o),
       };
     });
     const lifetimeOrders = orders.filter((order) => order.status !== "Cancelled");
-    const totalPurchaseAmount = lifetimeOrders.reduce((total, order) => total + Number(order.amount || 0), 0);
+    const totalPurchaseAmountDecimal = addDecimals(...lifetimeOrders.map((order) =>
+      pricingSnapshotAmounts(order).finalPayableTotal
+    ));
+    const totalPurchaseAmount = Number(totalPurchaseAmountDecimal.toString());
     const notificationsForProfile = notifications
       .filter((notification) => !/(otp|two.?factor|auth|verification|password|reset|login)/i.test(notification.notificationType))
       .map((notification) => ({
@@ -1300,6 +1311,7 @@ export const getCustomerDetails = async (req, res) => {
         orderCount: lifetimeOrders.length,
         cancelledOrderCount: orders.length - lifetimeOrders.length,
         totalPurchaseAmount,
+        totalPurchaseAmountDecimal: totalPurchaseAmountDecimal.toString(),
         averageOrderAmount: lifetimeOrders.length ? totalPurchaseAmount / lifetimeOrders.length : 0,
         firstOrderDate: lifetimeOrders.length ? Math.min(...lifetimeOrders.map((order) => Number(order.date))) : null,
         lastOrderDate: lifetimeOrders.length ? Math.max(...lifetimeOrders.map((order) => Number(order.date))) : null,

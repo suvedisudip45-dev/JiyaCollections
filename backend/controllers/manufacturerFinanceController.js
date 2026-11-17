@@ -1,10 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { postSupplierPaymentAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
+import {
+  accountingDecimal,
+  compareDecimals,
+  serializeAccountingValue,
+} from "../services/accountingDecimal.js";
 import {
   confirmFinancialPayout,
   failFinancialPayout,
@@ -16,6 +20,7 @@ import {
   normalizeSettlementRequest,
   reconcileManufacturerLogisticsShipmentPayments,
 } from "../services/manufacturerSettlementService.js";
+import { serializeManufacturerSettlementHistory } from "../services/manufacturerSettlementReportingService.js";
 
 const actorContext = (req) => ({
   actorId: req.auth?.accountId || null,
@@ -111,7 +116,9 @@ export const getManufacturerSettlementRequests = async (req, res) => {
       }),
       prisma.manufacturerSettlementRequest.count({ where: { manufacturerId: req.manufacturerId } }),
     ]);
-    const settlements = await attachManufacturerSettlementPayoutHistory(settlementRows);
+    const settlements = serializeManufacturerSettlementHistory(
+      await attachManufacturerSettlementPayoutHistory(settlementRows),
+    );
     return res.json(paginatedResponse("settlements", settlements, pagination, total));
   } catch (error) {
     console.error("getManufacturerSettlementRequests error:", error);
@@ -121,54 +128,101 @@ export const getManufacturerSettlementRequests = async (req, res) => {
 
 export const createManufacturerSettlementRequest = async (req, res) => {
   try {
-    const input = normalizeSettlementRequest(req.body);
-    const idempotencyKey = String(req.headers["idempotency-key"] || req.body.idempotencyKey || randomUUID()).trim();
+    const body = req.body || {};
+    const input = normalizeSettlementRequest(body);
+    const idempotencyKey = String(req.headers["idempotency-key"] || body.idempotencyKey || "").trim();
     if (!/^[A-Za-z0-9._:-]{1,191}$/.test(idempotencyKey)) {
-      return res.status(400).json({ success: false, message: "Settlement idempotency key is invalid." });
-    }
-    const settlement = await prisma.$transaction(async (tx) => {
-      const existing = await tx.manufacturerSettlementRequest.findUnique({ where: { idempotencyKey } });
-      if (existing) {
-        if (existing.manufacturerId !== req.manufacturerId || Number(existing.amount) !== Number(input.amount) || existing.requestType !== input.requestType) {
-          throw Object.assign(new Error("Idempotency key was already used for a different settlement request."), { statusCode: 409 });
-        }
-        return existing;
-      }
-      const summary = await getManufacturerSettlementSummary(req.manufacturerId, { client: tx });
-      if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
-      const available = input.requestType === "PRODUCTION"
-        ? summary.productionPayableAvailable
-        : summary.logisticsPayableAvailable;
-      if (Number(input.amount) > available) {
-        throw Object.assign(new Error(`Requested settlement exceeds available ${input.requestType.toLowerCase()} payable of Rs ${available.toFixed(2)}.`), { statusCode: 409 });
-      }
-
-      const created = await tx.manufacturerSettlementRequest.create({
-        data: {
-          manufacturerId: req.manufacturerId,
-          requestType: input.requestType,
-          amount: input.amount,
-          notes: input.notes,
-          requestedBy: req.auth?.accountId || null,
-          idempotencyKey,
-        },
+      return res.status(400).json({
+        success: false,
+        message: "A valid settlement idempotency key is required.",
       });
-      await recordSystemAudit(actorContext(req), {
-        action: "MANUFACTURER_SETTLEMENT_REQUESTED",
-        entityType: "ManufacturerSettlementRequest",
-        entityId: created.id,
-        afterState: { requestType: created.requestType, amount: input.amount.toFixed(2), status: created.status },
-      }, { client: tx });
-      return created;
-    }, { isolationLevel: "Serializable" });
+    }
+    const assertReplayMatches = (existing) => {
+      if (
+        existing.manufacturerId !== req.manufacturerId ||
+        compareDecimals(existing.amount, input.amount) !== 0 ||
+        existing.requestType !== input.requestType ||
+        (existing.notes ?? null) !== input.notes
+      ) {
+        throw Object.assign(
+          new Error("Idempotency key was already used for a different settlement request."),
+          { statusCode: 409, code: "SETTLEMENT_REQUEST_CONFLICT" },
+        );
+      }
+    };
+    let settlement;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        settlement = await prisma.$transaction(async (tx) => {
+          const existing = await tx.manufacturerSettlementRequest.findUnique({ where: { idempotencyKey } });
+          if (existing) {
+            assertReplayMatches(existing);
+            return existing;
+          }
+          const summary = await getManufacturerSettlementSummary(req.manufacturerId, { client: tx });
+          if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
+          const available = input.requestType === "PRODUCTION"
+            ? summary.productionPayableAvailable
+            : summary.logisticsPayableAvailable;
+          if (compareDecimals(input.amount, available) > 0) {
+            const formattedAvailable = accountingDecimal(available, "Available manufacturer payable").toFixed(2);
+            throw Object.assign(
+              new Error(`Requested settlement exceeds available ${input.requestType.toLowerCase()} payable of Rs ${formattedAvailable}.`),
+              { statusCode: 409, code: "SETTLEMENT_EXCEEDS_AVAILABLE_PAYABLE" },
+            );
+          }
+
+          const created = await tx.manufacturerSettlementRequest.create({
+            data: {
+              manufacturerId: req.manufacturerId,
+              requestType: input.requestType,
+              amount: input.amount,
+              notes: input.notes,
+              requestedBy: req.auth?.accountId || null,
+              idempotencyKey,
+            },
+          });
+          await recordSystemAudit(actorContext(req), {
+            action: "MANUFACTURER_SETTLEMENT_REQUESTED",
+            entityType: "ManufacturerSettlementRequest",
+            entityId: created.id,
+            afterState: { requestType: created.requestType, amount: input.amount.toFixed(2), status: created.status },
+          }, { client: tx });
+          return created;
+        }, { isolationLevel: "Serializable" });
+        break;
+      } catch (error) {
+        if (!["P2002", "P2034"].includes(error?.code)) throw error;
+        const existing = await prisma.manufacturerSettlementRequest.findUnique({ where: { idempotencyKey } });
+        if (existing) {
+          assertReplayMatches(existing);
+          settlement = existing;
+          break;
+        }
+        if (error.code !== "P2034" || attempt >= 2) {
+          if (error.code === "P2034") {
+            throw Object.assign(
+              new Error("A concurrent settlement request changed the available payable. Retry the request."),
+              { statusCode: 409, code: "SETTLEMENT_REQUEST_CONFLICT" },
+            );
+          }
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+      }
+    }
     return res.status(201).json({
       success: true,
       message: "Settlement request submitted to admin.",
-      settlement,
+      settlement: serializeAccountingValue(settlement),
     });
   } catch (error) {
     console.error("createManufacturerSettlementRequest error:", error);
-    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to submit settlement request." });
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Unable to submit settlement request.",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
@@ -195,7 +249,9 @@ export const listAdminManufacturerSettlements = async (req, res) => {
       }),
       prisma.manufacturerSettlementRequest.count({ where }),
     ]);
-    const settlements = await attachManufacturerSettlementPayoutHistory(settlementRows);
+    const settlements = serializeManufacturerSettlementHistory(
+      await attachManufacturerSettlementPayoutHistory(settlementRows),
+    );
     return res.json(paginatedResponse("settlements", settlements, pagination, total));
   } catch (error) {
     console.error("listAdminManufacturerSettlements error:", error);

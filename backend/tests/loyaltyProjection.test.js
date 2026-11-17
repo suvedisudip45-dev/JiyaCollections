@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildPublicLoyaltySummary } from '../controllers/loyaltyController.js';
+import { buildPublicLoyaltySummary, calculateUserLoyalty } from '../controllers/loyaltyController.js';
+import { prisma } from '../config/db.js';
+import { withOrderPricingSnapshot } from '../services/checkoutPricingService.js';
 
 test('buildPublicLoyaltySummary keeps customer-visible values and strips sensitive/internal fields', () => {
   const summary = buildPublicLoyaltySummary({
@@ -96,4 +98,35 @@ test('buildPublicLoyaltySummary keeps customer-visible values and strips sensiti
   assert.equal(summary.nextLevel.createdAt, undefined);
   assert.equal(summary.allLevels[0].createdAt, undefined);
   assert.equal(summary.activeReward.isEligible, false);
+});
+
+test('loyalty tier spend uses the accepted decimal order snapshot', async (t) => {
+  const originalCount = prisma.customerLevel.count;
+  const originalFindLevels = prisma.customerLevel.findMany;
+  const originalFindOrders = prisma.order.findMany;
+  prisma.customerLevel.count = async () => 1;
+  prisma.customerLevel.findMany = async () => [
+    { levelNumber: 1, name: 'Base', minSpend: 0, minOrders: 0, rewardOrderLimit: 1 },
+    { levelNumber: 2, name: 'Threshold', minSpend: 10, minOrders: 1, rewardOrderLimit: 1 },
+  ];
+  prisma.order.findMany = async () => [{
+    id: 'order-1',
+    amount: 0,
+    rewardApplied: '{}',
+    locationPricingSnapshot: withOrderPricingSnapshot(null, {
+      version: 2,
+      currency: 'NPR',
+      totals: { finalPayableTotal: '10.005', deliveryFee: '0' },
+      lines: [],
+    }),
+  }];
+  t.after(() => {
+    prisma.customerLevel.count = originalCount;
+    prisma.customerLevel.findMany = originalFindLevels;
+    prisma.order.findMany = originalFindOrders;
+  });
+
+  const loyalty = await calculateUserLoyalty('user-1');
+  assert.equal(loyalty.currentLevel.name, 'Threshold');
+  assert.equal(loyalty.totalSpendDecimal, '10.005');
 });

@@ -23,11 +23,10 @@ import {
   createDistributorSettlementRequestToken,
   submitDistributorSettlementRequestEvidence as submitSettlementRequestEvidence,
   reviewDistributorSettlementRequestToken,
-  recordDistributorSettlementPayout,
   acknowledgeDistributorSettlementPayout,
-  netDistributorRefundPayable,
   reviewDistributorRemittance,
 } from "../services/distributorCashSettlementService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
 /**
@@ -181,6 +180,7 @@ export const reviewAdminDistributorSettlementRequest = async (req, res) => {
       distributorId: req.params.id,
       requestId: req.params.requestId,
       decision: req.body?.decision,
+      actualReceivedAmount: req.body?.actualReceivedAmount,
       financialAccountId: req.body?.financialAccountId || null,
       reviewNotes: req.body?.reviewNotes || null,
       adminAccountId: req.auth?.accountId || req.auth?.userId || null,
@@ -205,20 +205,33 @@ export const recordAdminDistributorSettlementPayout = async (req, res) => {
   let uploadedEvidence;
   try {
     uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/distributor_settlement_payouts");
-    const result = await recordDistributorSettlementPayout({
-      distributorId: req.params.id,
-      requestId: req.params.requestId,
-      transferReference: req.body?.transferReference,
-      evidenceUrl: uploadedEvidence.secure_url,
-      financialAccountId: req.body?.financialAccountId || null,
-      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
-      actorContext: {
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_SETTLEMENT_PAYOUT",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.params.id,
+        requestId: req.params.requestId,
+        transferReference: req.body?.transferReference,
+        evidenceUrl: uploadedEvidence.secure_url,
+        evidenceDigest: req.body?.evidenceDigest,
+        financialAccountId: req.body?.financialAccountId || null,
+        reason: req.body?.reason,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
         ipAddress: req.ip || null,
         userAgent: req.headers?.["user-agent"] || null,
         correlationId: req.correlationId || null,
       },
     });
-    return res.status(200).json(result);
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor settlement payout request already exists." : "Distributor settlement payout submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
     console.error("recordAdminDistributorSettlementPayout error:", error);
@@ -255,19 +268,29 @@ export const approveDistributorRefundNetting = async (req, res) => {
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       return res.status(400).json({ success: false, message: "A JSON netting approval body is required.", code: "INVALID_REQUEST_BODY" });
     }
-    const result = await netDistributorRefundPayable({
-      distributorId: req.params.id,
-      amount: req.body.amount,
-      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
-      notes: req.body.notes || null,
-      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
-      actorContext: {
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_REFUND_NETTING",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.params.id,
+        amount: req.body.amount,
+        reason: req.body.notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
         ipAddress: req.ip || null,
         userAgent: req.headers?.["user-agent"] || null,
         correlationId: req.correlationId || null,
       },
     });
-    return res.status(result.isReplay ? 200 : 201).json(result);
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor refund netting request already exists." : "Distributor refund netting submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     console.error("approveDistributorRefundNetting error:", error);
     return res.status(error.statusCode || 500).json({

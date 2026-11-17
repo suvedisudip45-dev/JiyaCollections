@@ -57,7 +57,7 @@ export const calculateCustomerReturnRefundPolicy = ({
   productValue,
   chargeRatePercent = 0,
   originalDeliveryFee = 0,
-  vatRatePercent = 13,
+  vatRatePercent = 0,
 }) => {
   const base = new Prisma.Decimal(String(productValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const rate = new Prisma.Decimal(String(chargeRatePercent || 0));

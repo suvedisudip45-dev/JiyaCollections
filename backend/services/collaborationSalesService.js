@@ -3,6 +3,7 @@ import { prisma } from "../config/db.js";
 import { createAccountingDocument } from "./accountingSubledgerService.js";
 import { postCollaborationFeeInvoiceAccounting } from "./accountingPostingEngine.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
+import { resolveSellerTaxTreatment } from "./sellerTaxProfileService.js";
 
 const toDecimal = (value) => new Prisma.Decimal(String(value || 0));
 const roundMoney = (value) => toDecimal(value).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -61,7 +62,7 @@ export const applyCollaborationReturnAdjustments = async ({ orderId, items = [],
   return adjustments;
 };
 
-export const calculateCollaborationFeeAmounts = (unitFee, quantity, vatTreatment, vatRatePercent = 13) => {
+export const calculateCollaborationFeeAmounts = (unitFee, quantity, vatTreatment, vatRatePercent = 0) => {
   const fee = toDecimal(unitFee).times(quantity);
   const rate = toDecimal(vatRatePercent).div(100);
   if (vatTreatment === "EXEMPT") return { netAmount: roundMoney(fee), vatAmount: toDecimal(0), totalAmount: roundMoney(fee) };
@@ -88,7 +89,7 @@ const getMonthPeriod = (month) => {
   return { periodStart, periodEnd, year, monthNumber };
 };
 
-const buildInvoiceLines = async ({ partnerId, client }) => {
+const buildInvoiceLines = async ({ partnerId, client, period }) => {
   const saleLines = await client.collaborationSale.findMany({
     where: {
       partnerId,
@@ -97,8 +98,6 @@ const buildInvoiceLines = async ({ partnerId, client }) => {
     },
     orderBy: [{ accruedAt: "asc" }, { orderItemIndex: "asc" }],
   });
-  const taxConfiguration = await client.taxConfiguration.findUnique({ where: { id: "default" }, select: { vatRate: true } });
-  const vatRate = Number(taxConfiguration?.vatRate ?? 13);
   const lines = [];
 
   for (const sale of saleLines) {
@@ -106,7 +105,13 @@ const buildInvoiceLines = async ({ partnerId, client }) => {
     const netInvoicedQuantity = sale.quantityInvoiced - sale.quantityCredited;
     const delta = retainedQuantity - netInvoicedQuantity;
     if (!delta) continue;
-    const amounts = calculateCollaborationFeeAmounts(sale.partnerFeePerUnit, delta, sale.vatTreatment, vatRate);
+    const taxPoint = sale.deliveredAt || period.periodEnd;
+    const sellerTaxTreatment = await resolveSellerTaxTreatment(taxPoint, { client });
+    const vatTreatment = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+      ? sale.vatTreatment
+      : "EXEMPT";
+    const vatRate = sellerTaxTreatment.vatRate?.toNumber() ?? 0;
+    const amounts = calculateCollaborationFeeAmounts(sale.partnerFeePerUnit, delta, vatTreatment, vatRate);
     lines.push({
       saleId: sale.id,
       entryType: delta > 0 ? "FEE" : "RETURN_CREDIT",
@@ -121,33 +126,62 @@ const buildInvoiceLines = async ({ partnerId, client }) => {
   return lines;
 };
 
-const finishInvoicePosting = async ({ invoice, partner, client = prisma }) => {
-  const document = invoice.accountingDocumentId
-    ? await client.accountingDocument.findUnique({ where: { id: invoice.accountingDocumentId } })
-    : await client.accountingDocument.findFirst({ where: { sourceType: "COLLABORATION_FEE", sourceId: invoice.id } });
-  const accountingDocument = document || await createAccountingDocument({
-    documentType: "INVOICE",
-    documentNumber: invoice.invoiceNumber,
-    partyId: (await ensureAccountingParty({
-      partyType: "MARKETING_PARTNER",
-      sourceEntityId: partner.id,
-      displayName: partner.name,
-    }, { client })).id,
-    side: "RECEIVABLE",
-    sourceType: "COLLABORATION_FEE",
-    sourceId: invoice.id,
-    issueDate: invoice.issuedAt,
-    amount: invoice.totalAmount,
-    notes: `Collaboration selling fees for ${invoice.periodStart.toISOString().slice(0, 7)}.`,
-  }, { client });
-
-  await postCollaborationFeeInvoiceAccounting({ invoice, partner, client });
-  await client.$transaction(async (tx) => {
-    await tx.collaborationFeeInvoice.update({
+export const finalizeCollaborationFeeInvoice = async ({
+  invoice,
+  partner,
+  client = prisma,
+  ensureParty = ensureAccountingParty,
+  createDocument = createAccountingDocument,
+  postAccounting = postCollaborationFeeInvoiceAccounting,
+}) => {
+  const finalize = async (tx) => {
+    const currentInvoice = await tx.collaborationFeeInvoice.findUnique({
       where: { id: invoice.id },
-      data: { status: "ISSUED", accountingDocumentId: accountingDocument.id },
+      include: { lines: true },
     });
-    for (const line of invoice.lines) {
+    if (!currentInvoice) throw new Error("Collaboration fee invoice was not found.");
+    if (currentInvoice.status === "ISSUED") return currentInvoice;
+    if (currentInvoice.status !== "PENDING_POSTING") {
+      throw new Error(`Collaboration fee invoice cannot be issued from ${currentInvoice.status} status.`);
+    }
+
+    const totalAmount = toDecimal(currentInvoice.totalAmount);
+    let accountingDocument = null;
+    if (!totalAmount.isZero()) {
+      const isCreditNote = totalAmount.isNegative();
+      const document = currentInvoice.accountingDocumentId
+        ? await tx.accountingDocument.findUnique({ where: { id: currentInvoice.accountingDocumentId } })
+        : await tx.accountingDocument.findFirst({
+          where: { sourceType: "COLLABORATION_FEE", sourceId: currentInvoice.id },
+        });
+      if (document && document.documentType !== (isCreditNote ? "CREDIT_NOTE" : "INVOICE")) {
+        throw new Error("Existing collaboration fee accounting document type does not match the invoice balance.");
+      }
+      accountingDocument = document || await createDocument({
+        documentType: isCreditNote ? "CREDIT_NOTE" : "INVOICE",
+        documentNumber: isCreditNote ? `CN-${currentInvoice.invoiceNumber}` : currentInvoice.invoiceNumber,
+        partyId: (await ensureParty({
+          partyType: "MARKETING_PARTNER",
+          sourceEntityId: partner.id,
+          displayName: partner.name,
+        }, { client: tx })).id,
+        side: "RECEIVABLE",
+        sourceType: "COLLABORATION_FEE",
+        sourceId: currentInvoice.id,
+        idempotencyKey: `COLLABORATION_FEE_INVOICE_DOCUMENT:${currentInvoice.id}`,
+        issueDate: currentInvoice.issuedAt,
+        amount: totalAmount.abs(),
+        notes: `Collaboration selling fee ${isCreditNote ? "credit note" : "invoice"} for ${currentInvoice.periodStart.toISOString().slice(0, 7)}.`,
+      }, { client: tx });
+
+      await postAccounting({ invoice: currentInvoice, partner, client: tx });
+    }
+
+    await tx.collaborationFeeInvoice.update({
+      where: { id: currentInvoice.id },
+      data: { status: "ISSUED", accountingDocumentId: accountingDocument?.id || null },
+    });
+    for (const line of currentInvoice.lines) {
       const delta = line.entryType === "FEE" ? line.quantity : -line.quantity;
       await tx.collaborationSale.update({
         where: { id: line.saleId },
@@ -156,8 +190,18 @@ const finishInvoicePosting = async ({ invoice, partner, client = prisma }) => {
         },
       });
     }
-  });
-  return { ...invoice, status: "ISSUED", accountingDocumentId: accountingDocument.id };
+    return { ...currentInvoice, status: "ISSUED", accountingDocumentId: accountingDocument?.id || null };
+  };
+
+  if (typeof client.$transaction !== "function") return finalize(client);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.$transaction(finalize, { isolationLevel: "Serializable" });
+    } catch (error) {
+      if (error?.code !== "P2034" || attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+    }
+  }
 };
 
 export const generateMonthlyCollaborationInvoices = async ({ month, client = prisma }) => {
@@ -179,14 +223,14 @@ export const generateMonthlyCollaborationInvoices = async ({ month, client = pri
       continue;
     }
     if (!invoice) {
-      const lines = await buildInvoiceLines({ partnerId, client });
+      const lines = await buildInvoiceLines({ partnerId, client, period });
       const totals = lines.reduce((sum, line) => ({
         units: sum.units + (line.delta > 0 ? line.delta : -Math.abs(line.delta)),
         net: sum.net.plus(line.netAmount),
         vat: sum.vat.plus(line.vatAmount),
         total: sum.total.plus(line.totalAmount),
       }), { units: 0, net: toDecimal(0), vat: toDecimal(0), total: toDecimal(0) });
-      if (!lines.length || totals.total.lessThanOrEqualTo(0)) continue;
+      if (!lines.length) continue;
 
       const partner = await client.marketingPartner.findUnique({ where: { id: partnerId }, select: { id: true, code: true, name: true } });
       if (!partner) continue;
@@ -210,7 +254,7 @@ export const generateMonthlyCollaborationInvoices = async ({ month, client = pri
 
     const partner = await client.marketingPartner.findUnique({ where: { id: partnerId }, select: { id: true, code: true, name: true } });
     if (!partner) continue;
-    results.push(await finishInvoicePosting({ invoice, partner, client }));
+    results.push(await finalizeCollaborationFeeInvoice({ invoice, partner, client }));
   }
   return results;
 };
