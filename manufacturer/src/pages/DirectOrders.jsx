@@ -328,7 +328,7 @@ const DirectOrders = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Total Direct Sales
+            Orders on Loaded Page
           </span>
           <p className="text-2xl font-black text-slate-900 mt-1">{directOrders.length}</p>
         </div>
@@ -336,7 +336,7 @@ const DirectOrders = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1">
             <Store className="w-3.5 h-3.5 text-emerald-600" />
-            Walk-in Hub Purchases
+            Walk-in Orders on Loaded Page
           </span>
           <p className="text-2xl font-black text-emerald-700 mt-1">
             {totalWalkInSales} <span className="text-xs font-normal text-slate-400">No Courier</span>
@@ -346,7 +346,7 @@ const DirectOrders = () => {
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1">
             <PhoneCall className="w-3.5 h-3.5 text-indigo-600" />
-            Direct Phone Orders
+            Phone Orders on Loaded Page
           </span>
           <p className="text-2xl font-black text-indigo-700 mt-1">
             {totalPhoneSales} <span className="text-xs font-normal text-slate-400">Self-Delivered</span>
@@ -355,10 +355,13 @@ const DirectOrders = () => {
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Paid Revenue Collected
+            Paid-Order Total on Loaded Page
           </span>
           <p className="text-2xl font-black text-slate-900 mt-1">
             {currency}{totalRevenue.toLocaleString()}
+          </p>
+          <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+            Sum of order amounts with payment=true on this loaded page; not posted sales or company Treasury receipts.
           </p>
         </div>
       </div>

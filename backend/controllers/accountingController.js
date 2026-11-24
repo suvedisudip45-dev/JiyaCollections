@@ -67,6 +67,20 @@ const getAccountingAuditContext = (req) => ({
   userAgent: req.get?.("user-agent") || null,
   correlationId: req.correlationId || null,
 });
+const buildPostedLedgerReportBasis = ({ start, end }) => ({
+  classification: "POSTED_JOURNAL_LEDGER",
+  source: "JournalEntry and JournalLine",
+  includedJournalStatuses: [...BALANCE_REPORT_JOURNAL_STATUSES],
+  dateField: "JournalEntry.transactionDate",
+  period: { start, end },
+  sourceCompleteness: "NOT_ESTABLISHED",
+  subledgerReconciliation: "NOT_ESTABLISHED",
+  limitations: [
+    "Only journal entries in the included posted/reversed statuses are reported; pending and unposted accounting events are excluded.",
+    "Balanced journal totals do not establish completeness of source events or operational subledgers.",
+    "Opening balances not represented by included journal lines are not reconstructed from operational records.",
+  ],
+});
 
 // ==========================================
 // 1. CHART OF ACCOUNTS (COA)
@@ -433,6 +447,7 @@ export const getGeneralLedgerReport = async (req, res) => {
       success: true,
       account,
       dateRange: { start, end },
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
       metrics: {
         openingBalance: openingBalance.toString(),
         totalPeriodDebit: totalPeriodDebit.toString(),
@@ -581,6 +596,7 @@ export const getTrialBalanceReport = async (req, res) => {
     res.json({
       success: true,
       dateRange: { start, end },
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
       totals: {
         totalOpeningDebit: totalOpeningDebit.toString(),
         totalOpeningCredit: totalOpeningCredit.toString(),
@@ -967,6 +983,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     res.json({
       success: true,
       period: { start, end },
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
       incomeStatement: serializeAccountingValue({
         revenue: {
           grossSales,

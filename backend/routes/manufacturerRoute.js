@@ -32,6 +32,7 @@ import {
   getManufacturerSettlementRequests,
 } from "../controllers/manufacturerFinanceController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { requireManufacturerTransferSourceLocation } from "../middleware/locationScope.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
 const manufacturerRouter = express.Router();
@@ -71,6 +72,7 @@ manufacturerRouter.post(
   authenticate,
   authorize("transfer:manufacturer_dispatch"),
   setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
   dispatchStockTransferRequest,
 );
 manufacturerRouter.post(

@@ -3,6 +3,8 @@
 **Snapshot:** 2026-09-28  
 **Status:** Findings for requirements/design review; implementation has not started.
 
+> **Historical snapshot:** This document records the 2026-09-28 discovery state and contains findings superseded by later code. For current Phase 5 source/report coverage and report-basis behavior, use [P5-R1](./19-p5-r1-accounting-domain-and-report-basis-inventory.md) together with the current source; do not treat the dated findings below as current implementation evidence.
+
 ## Priority Findings
 
 ### P0: Multiple financial sources of truth
@@ -82,6 +84,10 @@ Both global `Product.stockQuantity`/`costPrice` and per-manufacturer `Manufactur
 - Manual journal and reversal APIs need immutable audit attribution, approvals and closed-period controls.
 - App-level debit/credit checks do not protect against direct DB writes or malformed transactions; no database-enforced journal balancing constraint exists.
 - Cached account balances are incrementally updated; no robust repair/rebuild command was identified in this pass.
+
+## Current Report-Basis Revalidation (2026-11-17)
+
+The earlier report findings are historical. The current Admin Statements page reads `/api/accounting/financial-statements`, and the Trial Balance and General Ledger pages use posted-journal report routes. The Finance Dashboard separates its posted-ledger snapshot from operational estimates; the legacy `/api/finance/statements` endpoint remains operational-estimate-only, and `/api/finance/tax-report` is explicitly mixed posted-VAT/operational-tax-estimate. These distinctions do not establish completeness or reconciliation. See [P5-R1](./19-p5-r1-accounting-domain-and-report-basis-inventory.md) for endpoint inventory, controls and remaining gaps.
 
 ## Accounting Feature Coverage Matrix
 

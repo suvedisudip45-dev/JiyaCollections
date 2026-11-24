@@ -10,12 +10,17 @@ import {
   resolvePassword,
   resolveTargetPortal,
 } from "../services/authService.js";
+import { generateAccessToken, verifyAccessToken } from "../services/tokenService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
   setRefreshCookie,
 } from "../utils/refreshCookie.js";
-import { setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import {
+  createAuthenticate,
+  setDistributorContext,
+  setManufacturerContext,
+} from "../middleware/unifiedAuth.js";
 
 const encrypt = (value) => {
   const key = Buffer.from(process.env.AES_SECRET_KEY, "hex");
@@ -53,9 +58,82 @@ test("workspace access includes only active role mappings with active profiles",
   assert.deepEqual(getActiveWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
   assert.equal(isWorkspaceProfileActive(account, "MANUFACTURER"), true);
   assert.equal(isWorkspaceProfileActive(account, "DISTRIBUTOR"), true);
+  const offlineAccount = {
+    ...account,
+    distributorProfile: { ...account.distributorProfile, isActive: false },
+  };
+  assert.equal(isWorkspaceProfileActive(offlineAccount, "DISTRIBUTOR"), true);
+  assert.deepEqual(getActiveWorkspaceRoles(offlineAccount), ["MANUFACTURER", "DISTRIBUTOR"]);
   assert.equal(isWorkspaceProfileActive({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }, "DISTRIBUTOR"), false);
+  assert.equal(isWorkspaceProfileActive({ ...offlineAccount, distributorProfile: { ...offlineAccount.distributorProfile, status: "SUSPENDED" } }, "DISTRIBUTOR"), false);
   assert.equal(isWorkspaceProfileActive({ ...account, manufacturerProfile: null }, "MANUFACTURER"), false);
   assert.deepEqual(getActiveWorkspaceRoles({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }), ["MANUFACTURER"]);
+});
+
+test("offline distributor can authenticate and keep distributor workspace access", async () => {
+  const account = {
+    id: "account-1",
+    role: "DISTRIBUTOR",
+    status: "ACTIVE",
+    mustChangePassword: false,
+    customerProfile: null,
+    adminProfile: null,
+    manufacturerProfile: null,
+    distributorProfile: {
+      id: "distributor-1",
+      accountId: "account-1",
+      status: "ACTIVE",
+      isActive: false,
+    },
+    marketingPartnerProfile: null,
+    roleMappings: [{ isActive: true, role: { code: "DISTRIBUTOR", isActive: true } }],
+  };
+  const token = generateAccessToken({
+    accountId: account.id,
+    role: "DISTRIBUTOR",
+    profileId: account.distributorProfile.id,
+    portalAccess: ["DISTRIBUTOR"],
+  });
+  const claims = verifyAccessToken(token);
+  const client = {
+    authSession: {
+      findUnique: async () => ({
+        id: "session-1",
+        accountId: account.id,
+        tokenFamilyId: "family-1",
+        tokenType: "ACCESS",
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      }),
+    },
+    authAccount: { findUnique: async () => account },
+  };
+  const req = {
+    headers: { authorization: `Bearer ${token}` },
+    body: {},
+    originalUrl: "/api/distributor/availability",
+  };
+  let response;
+  let nextCalled = false;
+
+  await createAuthenticate(client, { MFA_ENABLED: "false" })(
+    req,
+    {
+      status: (code) => ({
+        json: (body) => {
+          response = { code, body };
+        },
+      }),
+    },
+    () => {
+      nextCalled = true;
+    },
+  );
+
+  assert.equal(claims.token_type, "access");
+  assert.equal(nextCalled, true);
+  assert.equal(response, undefined);
+  assert.equal(req.auth.distributorId, account.distributorProfile.id);
 });
 
 test("manufacturer login can attach both approved workspace contexts", () => {

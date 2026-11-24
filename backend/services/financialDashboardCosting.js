@@ -19,6 +19,20 @@ const resolveUnitAmount = (snapshot, acceptedRate, legacyFallback = 0) =>
 
 const roundMoney = (value) => Number(value.toFixed(2));
 
+export const calculateFinancialDashboardRevenue = ({ orders = [], customerReturns = [] } = {}) => {
+  const grossRevenueIncVat = orders.reduce((total, order) => total + Number(order.amount || 0), 0);
+  const customerRefunds = customerReturns.reduce(
+    (total, returnRecord) => total + Number(returnRecord.totalRefundAmount || 0),
+    0,
+  );
+
+  return {
+    grossRevenueIncVat,
+    customerRefunds,
+    netRevenueIncVat: Math.max(0, grossRevenueIncVat - customerRefunds),
+  };
+};
+
 const addWeightedRates = (map, key, cogs, overhead, quantity) => {
   const weight = Math.max(1, Number(quantity) || 0);
   const current = map.get(key) || { cogs: 0, overhead: 0, quantity: 0 };

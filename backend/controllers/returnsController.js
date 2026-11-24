@@ -4,7 +4,6 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { applyCollaborationReturnAdjustments } from "../services/collaborationSalesService.js";
 import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import {
-  applySupplierReturnCreditToBill,
   getSupplierReturnApplicableBills as getSupplierReturnApplicableBillsService,
   getSupplierReturnReconciliation as getSupplierReturnReconciliationService,
 } from "../services/supplierReturnCreditApplicationService.js";
@@ -351,15 +350,38 @@ export const getSupplierReturnApplicableBills = async (req, res) => {
 
 export const applySupplierReturnCredit = async (req, res) => {
   try {
-    const result = await applySupplierReturnCreditToBill({
-      supplierReturnId: req.params.id,
-      billDocumentId: req.body?.billDocumentId,
-      amount: req.body?.amount,
-      idempotencyKey: req.headers["idempotency-key"] || req.body?.idempotencyKey,
-      appliedByAccountId: req.auth?.accountId || req.auth?.userId || null,
-      notes: req.body?.notes,
+    const result = await requestAccountingActionApproval({
+      actionType: "SUPPLIER_RETURN_CREDIT_APPLICATION",
+      requestKey: req.headers["idempotency-key"] || req.body?.idempotencyKey,
+      payload: {
+        supplierReturnId: req.params.id,
+        billDocumentId: req.body?.billDocumentId,
+        amount: req.body?.amount,
+        reason: req.body?.notes,
+      },
+      actor: { accountId: req.auth?.accountId || req.auth?.userId, role: req.auth?.role },
+      auditContext: {
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent"),
+        correlationId: req.id,
+      },
     });
-    return res.status(result.isReplay ? 200 : 201).json(result);
+    const approvalRequest = result.approvalRequest;
+    const isPending = approvalRequest.status === "PENDING";
+    const message = isPending
+      ? result.isReplay
+        ? "Supplier credit application is already awaiting independent Admin approval. No payable balance has changed."
+        : "Supplier credit application submitted for independent Admin approval. Payable balances will change only after approval."
+      : approvalRequest.status === "APPROVED"
+        ? "Supplier credit application was already approved and applied."
+        : "Supplier credit application was previously rejected.";
+    return res.status(isPending ? 202 : 200).json({
+      success: true,
+      code: isPending ? "ACCOUNTING_ACTION_PENDING" : "ACCOUNTING_ACTION_ALREADY_REVIEWED",
+      message,
+      approvalRequest,
+      isReplay: result.isReplay,
+    });
   } catch (error) {
     return res.status(error.statusCode || 500).json({
       success: false,

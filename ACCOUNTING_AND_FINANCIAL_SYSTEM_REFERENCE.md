@@ -330,6 +330,8 @@ There are multiple reporting paths:
 3. **Accounting reports** (`accountingController.js`): the General Ledger, trial balance, journals, balance sheet and cash-flow statement use posted journal data. The cash-flow statement classifies net movements in Cash on Hand (1110), Bank (1120), and Wallet/Payment Gateway Clearing (1180) by their journal counterpart accounts; transfers between those accounts are excluded. Because 1180 is shared by Treasury wallets and gateway clearing, it includes all posted movements and balances on that GL account, not only wallet funds. It reports its opening/ending cash-equivalent reconciliation and should be used to verify payments posted to the GL, subject to posting gaps noted here.
 4. **Party/portal statements**: manufacturer and distributor services derive payable/settlement summaries from their own journals, cost events, rates and requests; these do not constitute every entity's full GL subledger.
 
+The General Ledger, Trial Balance, and posted Financial Statements responses include additive `reportBasis` metadata describing the included posted/reversed journal population. The metadata explicitly does not establish source-event completeness or operational subledger reconciliation; Trial Balance debit/credit parity is not a substitute for Accounting Health or independent source evidence.
+
 Use the dashboard's `postedAccounting` section when comparing to posted GL statements. Treat its operational analysis separately and check period boundaries, VAT basis, order status, return timing, cost source and asynchronous posting status before interpreting differences.
 
 ## 14. Key implementation gaps and cautions for future work

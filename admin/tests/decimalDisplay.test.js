@@ -16,3 +16,11 @@ test("settlement amount display preserves fractional and large decimal strings",
   assert.equal(formatNprAmount("0.01"), "0.01");
   assert.equal(formatNprAmount("999999999999999999.99"), "999,999,999,999,999,999.99");
 });
+
+test("amount display defaults missing values to zero and pads whole amounts", () => {
+  assert.equal(formatNprAmount(undefined), "0.00");
+  assert.equal(formatNprAmount(null), "0.00");
+  assert.equal(formatNprAmount(""), "0.00");
+  assert.equal(formatNprAmount("0"), "0.00");
+  assert.equal(formatNprAmount("800"), "800.00");
+});

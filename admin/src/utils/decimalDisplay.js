@@ -78,16 +78,22 @@ export const multiplyDecimalStringByInteger = (value, integerValue) => {
 };
 
 export const formatNprAmount = (value) => {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) {
+    return "0.00";
+  }
+
   let parts;
   try {
     parts = parseDecimalParts(value);
   } catch {
-    return String(value ?? "0");
+    return String(value);
   }
-  const normalized = formatDecimalParts(parts.coefficient, Math.max(2, parts.scale));
-  const negative = normalized.startsWith("-");
-  const unsigned = negative ? normalized.slice(1) : normalized;
-  const [integer, fraction] = unsigned.split(".");
+  const scale = Math.max(2, parts.scale);
+  const coefficient = parts.coefficient * (10n ** BigInt(scale - parts.scale));
+  const negative = coefficient < 0n;
+  const digits = (negative ? -coefficient : coefficient).toString().padStart(scale + 1, "0");
+  const integer = digits.slice(0, -scale);
+  const fraction = digits.slice(-scale);
   const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `${negative ? "-" : ""}${grouped}.${fraction}`;
 };

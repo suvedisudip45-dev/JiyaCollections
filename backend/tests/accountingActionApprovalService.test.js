@@ -183,6 +183,56 @@ test("reusing a request key with changed accounting details is rejected", async 
   );
 });
 
+test("settlement correction approval enforces maker-checker and exact request replay", async () => {
+  const { client } = createApprovalClient();
+  const payload = {
+    type: "PAYABLE",
+    recordId: "payable-1",
+    payoutId: "payout-1",
+    correctionMode: "RETURNED_FUNDS",
+    reason: "Supplier returned the settlement.",
+    evidenceReference: "BANK-RETURN-1",
+    cashTransactionId: null,
+  };
+  const submitted = await requestAccountingActionApproval({
+    actionType: "SETTLEMENT_CORRECTION",
+    requestKey: "payable-correction-request",
+    payload,
+    actor: { accountId: "correction-maker", role: "ADMIN" },
+    client,
+  });
+  const replay = await requestAccountingActionApproval({
+    actionType: "SETTLEMENT_CORRECTION",
+    requestKey: "payable-correction-request",
+    payload,
+    actor: { accountId: "correction-maker", role: "ADMIN" },
+    client,
+  });
+
+  assert.equal(submitted.isReplay, false);
+  assert.equal(replay.isReplay, true);
+  await assert.rejects(
+    requestAccountingActionApproval({
+      actionType: "SETTLEMENT_CORRECTION",
+      requestKey: "payable-correction-request",
+      payload: { ...payload, evidenceReference: "BANK-RETURN-CHANGED" },
+      actor: { accountId: "correction-maker", role: "ADMIN" },
+      client,
+    }),
+    (error) => error.code === "IDEMPOTENCY_KEY_REUSED",
+  );
+  await assert.rejects(
+    reviewAccountingActionApproval({
+      approvalId: submitted.approvalRequest.id,
+      decision: "APPROVE",
+      reason: "I reviewed the supplier correction.",
+      actor: { accountId: "correction-maker", role: "ADMIN" },
+      client,
+    }),
+    (error) => error.code === "MAKER_CANNOT_REVIEW",
+  );
+});
+
 test("Treasury GL mapping is unchanged until an independent Admin approves it", async () => {
   const { client, state } = createApprovalClient();
   const submitted = await requestAccountingActionApproval({

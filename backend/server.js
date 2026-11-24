@@ -35,6 +35,7 @@ import adminDistributorDetailRouter from "./routes/adminDistributorDetailRoute.j
 import adminManufacturerDetailRouter from "./routes/adminManufacturerDetailRoute.js";
 import adminManufacturerSettlementRouter from "./routes/adminManufacturerSettlementRoute.js";
 import inventoryLedgerRouter from "./routes/inventoryLedgerRoute.js";
+import adminStockTransferReconciliationRouter from "./routes/adminStockTransferReconciliationRoute.js";
 import stockTransferRouter from "./routes/stockTransferRoute.js";
 import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
@@ -160,6 +161,7 @@ app.use("/api/admin/distributors", adminDistributorDetailRouter);
 app.use("/api/admin/manufacturers", adminManufacturerDetailRouter);
 app.use("/api/admin/finance", adminManufacturerSettlementRouter);
 app.use("/api/admin/inventory-ledger", inventoryLedgerRouter);
+app.use("/api/admin/accounting", adminStockTransferReconciliationRouter);
 app.use("/api/stock-transfers", stockTransferRouter);
 app.use("/api/admin/access", accessManagementRouter);
 app.use("/api/admin", locationPricingRouter);

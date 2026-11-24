@@ -48,6 +48,7 @@ import {
 import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
 import { publicRegistrationRateLimit } from "../middleware/authRateLimit.js";
 import { secureEvidenceUpload } from "../middleware/secureUpload.js";
+import { requireDistributorInventoryLocation } from "../middleware/locationScope.js";
 import {
   getProductAnalyticsLocations,
   getProductAnalyticsProducts,
@@ -153,6 +154,7 @@ distributorRouter.post(
   authenticate,
   authorize("distributor:inventory_decrease"),
   setDistributorContext,
+  requireDistributorInventoryLocation,
   decreaseDistributorInventory,
 );
 distributorRouter.get(
@@ -225,7 +227,7 @@ distributorRouter.put(
 distributorRouter.patch(
   "/availability",
   authenticate,
-  authorize("distributor:profile_read"),
+  authorize("distributor:availability_update"),
   setDistributorContext,
   toggleDistributorAvailability,
 );

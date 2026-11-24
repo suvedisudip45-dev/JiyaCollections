@@ -41,6 +41,16 @@ This project follows these rules:
 - Profit & Loss: activity over a period
 - Reconciliation: proof that Treasury, AP, AR, and control accounts agree with source records
 
+### 2.3 Reading journal-derived reports
+
+The General Ledger, Trial Balance and accounting Financial Statements are calculated from journal entries in the report's included posted/reversed statuses. Their responses expose `reportBasis` metadata with the period, source population and limitations. A balanced Trial Balance proves debit/credit parity only for the included journal population; it does not prove that all business events were posted, that the subledgers are complete, or that cash agrees to a bank/provider statement.
+
+Review the Accounting Health coverage and exceptions separately. A `PARTIAL`, `SOURCE_SCOPED`, `LEGACY_PARTIAL` or `TREASURY_REGISTER_ONLY` status is not a reconciled control balance. Do not fill missing GL opening entries from a dashboard or operational estimate.
+
+The Finance Dashboard deliberately shows posted-ledger totals separately from operational estimates. The legacy Finance Statements endpoint is estimate-only, and the tax report combines posted VAT with an operational corporate-tax projection; neither should be presented as a complete authoritative or statutory report.
+
+The Admin Product Analytics and customer-location summaries use order and return records, not a complete posted-sales population. Manufacturer-portal paid-order totals may use only the currently loaded page and `Order.payment`; they are not company revenue or Treasury receipts. See the [P5-R6 report-basis inventory](./23-p5-r6-financial-reporting-source-of-truth-audit.md) before comparing any portal KPI with the GL, invoices, collections, distributor remittances, or tax reports.
+
 ---
 
 ## 3. Roles and permissions
@@ -401,6 +411,12 @@ Use the customer-return workflow for authorization, physical receipt, inspection
 
 Carrier status and money are separate evidence streams. Reconcile COD and carrier fees to the carrier statement and actual bank receipt; a delivery scan, return request, or COD transfer-ticket request is not bank evidence. Other courier APIs follow the same useful separation: [EasyPost tracking](https://docs.easypost.com/docs/trackers) distinguishes return-to-sender tracking from a return shipment, and its [webhook guidance](https://docs.easypost.com/docs/webhooks) recommends idempotent handling; [Shiprocket's API documentation](https://apidocs.shiprocket.in/) distinguishes order/tracking identifiers but does not establish COD remittance. Confirm NCM's own statement and return-status semantics before treating provider events as physical or financial evidence.
 
+### 10.5 Receipt and settlement evidence limits
+
+The mounted customer invoice collection workflow records an internal receipt, invoice allocation, Treasury movement, journal, and audit event together in its service transaction. These linked records establish internal system traceability only. An evidence reference entered by a user, an uploaded transfer image, an OTP, a distributor collection declaration, or a balanced journal is not independent proof of a bank deposit or physical cash receipt. Use bank statements or approved cash-count evidence and a separately controlled matching/review procedure before describing funds as independently reconciled.
+
+For NCM COD settlement, distinguish expected net deposit from actual net deposit; use the approved settlement-confirmation workflow that records the actual amount received. Do not treat the finance collection branch's expected amount as confirmation of cash. For distributor collections, a verified customer collection event is not a company Treasury receipt until the separate company remittance or settlement workflow posts it. See the [P5-R2 evidence-chain inventory](./20-p5-r2-collection-return-settlement-evidence-chain.md) for the current route boundaries, known gaps, and validation limits.
+
 ---
 
 ## 11. Manual operation checklist
@@ -483,3 +499,43 @@ The accounting feature in this project is designed to behave like a disciplined 
 If a user or operator cannot prove the source of the money movement, the system should block it or warn clearly rather than create a false balance.
 
 This is the safest and most reliable way to operate bank, cash, GL, and balance-sheet records.
+
+## 15. Inventory and COGS report interpretation
+
+Inventory screens do not all show the same source:
+
+- The Admin product stock list is a legacy catalog quantity projection. Do not use it as a physical count, location/owner schedule, or valuation.
+- The Admin multi-hub and Distributor inventory screens show canonical ledger quantities for their covered locations. They are operational subledger quantities, not independent counts or posted inventory value.
+- The Manufacturer inventory page reads a separate legacy `ManufacturerInventory` model. It is not interchangeable with the canonical ledger or proof of company ownership.
+- The Admin COGS calculator compares supply quotes and catalog prices. It is not actual COGS or realized profit.
+- Finance Dashboard inventory value and operational product cost are estimates; Accounting Health compares only its supported source population to posted inventory control. Neither is a complete inventory-to-GL reconciliation.
+
+For official posted balances, use the posted General Ledger/Financial Statements and confirm the source event is posted. A journal balance alone does not establish physical stock, title, source cost, or complete movement history. Returns, transfers, damage/loss, and layerless stock can have different quantity and cost evidence. Do not substitute `Product.costPrice` for an evidenced inventory layer, treat delivery as proof of collection, or assume FIFO applies to every inventory source. The detailed static limitations and required isolated-data validation are in [P5-R7](./24-p5-r7-inventory-valuation-and-cogs-evidence-audit.md). No persisted inventory or valuation accuracy is certified by this guide.
+
+## 16. Supplier procurement, payable, and payment evidence
+
+The Admin vendor registry and expense forms create internal supplier identity and expense/AP records. A supplier name, invoice number, evidence URL, expense bill, or posted journal is not by itself proof that goods were ordered, accepted, or received. The current repository does not establish a mounted PO/approval/partial goods-receipt workflow or supplier receipt-to-cost-layer path. Do not use `Product.costPrice` or the unmounted inbound-shipment poster as historical supplier acquisition cost.
+
+For an AP payout, keep initiation/reservation separate from confirmation. Confirmation is an internal Admin maker-checker action and requires a recorded bank-evidence reference; independently match that reference to the actual bank record and supplier statement before treating it as externally verified payment. A failed payout releases the reservation and is not an outflow. Immediate paid amounts entered through expense forms are recorded directly in the expense transaction and are distinct from the payout lifecycle.
+
+**Correction caution:** P5-R9 now reverses the exact linked CASH allocation and restores the expense-bill document balance/status when the payable party, bill, payout/journal, and allocation are uniquely verified. The correction fails closed when this source chain is missing, ambiguous, already reversed, or inconsistent. Confirm the AP and bill results after correction; an unlinked payable is not inferred to have a supplier bill, and the correction's recorded evidence reference is not independently verified bank proof. The generic path still permits only its existing latest-settlement/record-level correction. Supplier credit applications also have no discovered reversal path; resolve credit and originating-bill policy before application. See [P5-R9](./26-p5-r9-supplier-payable-correction-integrity.md) and the original [P5-R8 supplier audit](./25-p5-r8-supplier-procurement-and-payables-evidence-audit.md).
+
+The Expense Management input-VAT status is Finance-reviewed recorded invoice evidence, not independent supplier or tax-authority validation or proof a return was filed. The Payables & Receivables page is a mixed internal subledger/Treasury view, not a complete supplier statement, goods-received schedule, AP-control reconciliation, or independent bank match. Supplier-wide balances and inventory costs require the isolated-data and external-evidence checks described in P5-R8.
+
+## 17. Supplier return and credit evidence (P5-R10)
+
+Treat the Admin supplier-return screen as an internal request/posting workflow, not proof that stock was purchased from the selected supplier, physically handed back, or accepted. A separate Admin accounting-action approval triggers the current posting. The posted record immediately reduces legacy aggregate `Product.stockQuantity`, writes `StockLog`, and records an internal AP credit or Treasury cash inflow using a submitted unit-cost snapshot. It is not linked to an accepted supplier receipt line or cost layer; the optional legacy shipment reference checks supplier/invoice text only.
+
+An internally generated payable-side credit note is not a supplier-confirmed credit note. An internal cash inflow/Treasury increase is not independently verified bank receipt. Do not rely on the internal return reconciliation status as proof of physical stock, supplier acceptance, acquisition cost, external refund, or complete supplier/AP/GL reconciliation.
+
+At the time of P5-R10/R11, credit application was executed directly by an Admin with `finance:payable_settle`, despite the UI's approval wording. P5-R12 changed the mounted route to queue a maker-checker request: credit/bill/AP balances and allocations remain unchanged until a distinct Admin with `accounting:approval_review` approves it. Approval revalidates the source return, credit, supplier, currency, bill, and remaining balances; it links paired allocations to the existing return journal and does not post a second journal. Rejection has no financial effect. This is an internal approval control and does not prove supplier acceptance or independent external credit-note evidence. No return cancellation or credit-application reversal path was added; escalate any posted error for Finance review rather than attempting an unrecorded stock or balance adjustment.
+
+Before any return is represented as supplier-accepted or externally settled, independently retain the source invoice/bill, accepted goods-receipt and eligible quantity/cost evidence, return handoff/acceptance, supplier credit confirmation or refund proof, and any required bank/tax evidence. The minimum evidence and proposed next implementation boundary are documented in [P5-R10](./27-p5-r10-supplier-returns-and-credit-evidence-audit.md).
+
+## 18. Supplier return credit and refund lifecycle (P5-R11/P5-R12)
+
+The current mounted supplier-return path is an internal ledger workflow, not a supplier-accepted return workflow. It approves a return request, reduces aggregate `Product.stockQuantity`, writes `StockLog`, and posts either an internal AP credit or an internal Treasury inflow using submitted unit-cost snapshots. The optional shipment reference does not validate original receipt lines or accepted quantity/cost, and no original supplier bill link is required.
+
+P5-R11 identified that the direct supplier credit-application route did not enforce the independent approval described by the UI. P5-R12 corrected this: the route now creates a pending approval request; only a distinct authorized Admin can approve the credit application, and only then are bill/credit balances and paired allocations updated. The internal credit document or Treasury inflow is not external supplier acceptance or actual refund evidence.
+
+A safe future supplier-return/refund implementation must establish: original accepted receipt linkage, accepted return quantity/location, supplier acceptance or confirmed credit-note evidence, actual cash/receipt evidence, and a source-specific reversal path that restores inventory, AP, Treasury, journal, and audit history together. The P5-R12 approval does not fill those evidence gaps; treat return provenance and refund positions as internal evidence only. See [P5-R11](./26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md) and [P5-R12](./29-p5-r12-supplier-credit-application-approval-implementation.md).

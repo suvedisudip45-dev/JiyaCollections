@@ -10,14 +10,18 @@ export const normalizeProductionVatTerms = ({
   vatInvoiceReference = "",
 } = {}) => {
   const treatment = String(vatTreatment || "EXEMPT").trim().toUpperCase();
-  const rate = new Prisma.Decimal(String(vatRate ?? 0));
+  const rateText = String(vatRate ?? "").trim() || "0";
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(rateText)) {
+    throw new Error("VAT rate must be a valid number.");
+  }
+  const rate = new Prisma.Decimal(rateText);
   const invoiceReference = String(vatInvoiceReference || "").trim();
   if (!VALID_VAT_TREATMENTS.has(treatment)) {
     throw new Error("Choose VAT inclusive, VAT exclusive, or no VAT.");
   }
   if (!rate.isFinite() || rate.isNegative() || rate.greaterThan(100) ||
       (treatment !== "EXEMPT" && !rate.greaterThan(0))) {
-    throw new Error("VAT rate must be greater than zero and no more than 100% when VAT applies.");
+    throw new Error("VAT rate must be between zero and 100%, and greater than zero when VAT applies.");
   }
   if (invoiceReference.length > 120) {
     throw new Error("VAT invoice reference cannot exceed 120 characters.");

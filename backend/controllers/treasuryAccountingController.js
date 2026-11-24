@@ -389,6 +389,14 @@ export const collectReceivable = async (req, res) => {
       notes,
       idempotencyKey,
       receivedByAccountId: actorAccountId,
+    }, {
+      auditContext: {
+        actorRole: req.auth?.role || null,
+        portalSource: "ADMIN",
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
     });
     return res.json({
       success: true,

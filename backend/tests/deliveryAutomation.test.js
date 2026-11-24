@@ -10,6 +10,7 @@ import {
   generateVendorReference,
   getCarrierBookingAssignmentStatus,
   isDeliveryOrderOwner,
+  normalizeDeliveryOrderAmounts,
   normalizePackageWeight,
   normalizeDeliveryStatus,
   parseBoolean,
@@ -405,6 +406,30 @@ test("NCM booking keeps the system COD final and excludes the admin-paid deliver
   });
   assert.equal(nonFragilePayload.package_type, "Box");
   assert.equal(nonFragilePayload.handling, "Non-Fragile");
+});
+
+test("delivery database amounts normalize serialized price strings to Prisma Float values", () => {
+  assert.deepEqual(normalizeDeliveryOrderAmounts({
+    itemAmount: "1640",
+    codAmount: "1640",
+  }), {
+    itemAmount: 1640,
+    codAmount: 1640,
+  });
+  assert.deepEqual(normalizeDeliveryOrderAmounts({
+    itemAmount: "1640.25",
+    codAmount: "1640.25",
+  }), {
+    itemAmount: 1640.25,
+    codAmount: 1640.25,
+  });
+
+  for (const invalidAmount of ["", "NaN", "Infinity", "-1", "1,640"]) {
+    assert.throws(
+      () => normalizeDeliveryOrderAmounts({ itemAmount: invalidAmount, codAmount: "0" }),
+      (error) => error.code === "DELIVERY_AMOUNT_INVALID",
+    );
+  }
 });
 
 test("shipping-rate client normalizes legacy delivery type values", async () => {

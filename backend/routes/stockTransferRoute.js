@@ -18,6 +18,7 @@ import {
   updateStockTransferPreparation,
 } from "../controllers/stockTransferController.js";
 import { authenticate, authorize, authorizeAny, setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { requireManufacturerTransferSourceLocation } from "../middleware/locationScope.js";
 
 const stockTransferRouter = express.Router();
 const requireAdminRole = (req, res, next) => {
@@ -109,6 +110,7 @@ stockTransferRouter.post(
   authenticate,
   authorize("transfer:manufacturer_dispatch"),
   setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
   dispatchManualStockTransfer,
 );
 stockTransferRouter.post(
@@ -116,6 +118,7 @@ stockTransferRouter.post(
   authenticate,
   authorize("transfer:manufacturer_dispatch"),
   setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
   bookNcmStockTransfer,
 );
 stockTransferRouter.get(

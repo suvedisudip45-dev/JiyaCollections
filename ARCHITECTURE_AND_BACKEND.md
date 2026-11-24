@@ -19,7 +19,7 @@ Customer storefront (frontend/)        Admin portal (admin/)       Manufacturer 
                                                     |
                                       MySQL database via Prisma ORM
                                                     |
-                                Cloudinary / payment / NCM / notification integrations
+                                Cloudinary / NCM / separate notification worker
 ```
 
 ### Core runtime flow
@@ -76,6 +76,8 @@ The backend mounts the following major route groups in `backend/server.js`:
 | --- | --- |
 | `/api/auth` | Login, refresh, MFA, OTP, password recovery, logout |
 | `/api/admin/access` | Access management and RBAC control |
+| `/api/admin/accounting` | Permission-protected stock-transfer reconciliation JSON/CSV reader; bounded page, read-only source snapshot |
+| `/api/admin/inventory-ledger` | Admin inventory-ledger reads and reconciliation |
 | `/api/admin/product-analytics` | Admin product sales, revenue, return, location, and timeline analytics |
 | `/api/admin/discount-analytics` | Admin discount totals and customer/order-level classification analytics |
 | `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local pricing |
@@ -105,6 +107,54 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/features` | Public feature flags and admin-only platform feature updates |
 | `/api/storefront-content` | Public storefront announcement, shared header/footer logo, card, footer, About, and terms content with permission-protected admin updates/image uploads |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
+
+The canonical inventory architecture and movement contract are specified in
+[P6-R2](docs/phase-6/02-canonical-inventory-architecture-and-movement-specification.md).
+The specification distinguishes canonical location/SKU balances and ledger
+movements from legacy product/manufacturer stock projections and does not
+implement a new mutation or migration path.
+The static P6-R2A contract freeze
+([movement, reservation, cost, idempotency, audit/RBAC, and accounting contracts](docs/phase-6/03-canonical-inventory-contract-freeze.md))
+records unresolved business decisions and P6-R3 prerequisites; it does not
+authorize production implementation.
+The [P6-R2B whole-project readiness audit](docs/phase-6/04-whole-project-erp-implementation-readiness-audit.md)
+maps current portal/backend behavior and blockers from static source inspection
+only. [P6-R2C](docs/phase-6/05-legacy-to-canonical-inventory-source-mapping.md)
+maps legacy/canonical inventory sources and migration gates; it does not
+reconcile persisted quantities or authorize a cutover.
+The [P6-R2D write-path and warehouse/RBAC design](docs/phase-6/06-inventory-write-path-and-warehouse-rbac-design.md)
+freezes the target canonical boundary and proposed warehouse authorization
+architecture for static implementation planning only. P6-R2D does not add routes,
+Prisma models, migrations or deployed permissions.
+P6-R3A has hardened the existing `applyInventoryMovement` boundary and added
+database-independent validation/replay tests in
+[07-p6-r3a-canonical-inventory-movement-foundation.md](docs/phase-6/07-p6-r3a-canonical-inventory-movement-foundation.md).
+No legacy writer was migrated and persisted concurrency/physical reconciliation
+remain outstanding.
+P6-R3C documents the [receiving and put-away contract](docs/phase-6/09-p6-r3c-receiving-and-put-away-contract.md)
+and adds pure lifecycle/quantity validation. No persisted receipt or inventory
+accounting behavior was created.
+P6-R3D adds the [receipt evidence and persistence readiness design](docs/phase-6/10-p6-r3d-receipt-evidence-and-persistence-readiness.md).
+No receipt tables, migrations or receiving API behavior were implemented.
+P6-R3E adds the [persistent receiving implementation blueprint](docs/phase-6/11-p6-r3e-persistent-receiving-implementation-blueprint.md)
+with proposed receiving models, routes, transactions and release gates. Prisma
+and receiving routes remain unchanged.
+P6-R3F maps the existing [stock-transfer receipt lifecycle and hardening plan](docs/phase-6/12-p6-r3f-stock-transfer-receipt-hardening-readiness.md)
+without persistent changes.
+P6-R3G defines [dependency-aware stock-transfer hardening work packages](docs/phase-6/13-p6-r3g-stock-transfer-hardening-implementation-plan.md)
+without implementing routes, schema or database behavior.
+P6-R3H adds a database-independent canonical dispatch plan and
+manufacturer source-location middleware for existing transfer dispatch routes
+in [14-p6-r3h-canonical-stock-transfer-dispatch-implementation.md](docs/phase-6/14-p6-r3h-canonical-stock-transfer-dispatch-implementation.md).
+P6-R3I adds NCM custody/source fail-closed validation and legacy projection
+consistency checks in
+[16-p6-r3i-webhook-dispatch-authorization-and-legacy-projection-consistency.md](docs/phase-6/16-p6-r3i-webhook-dispatch-authorization-and-legacy-projection-consistency.md).
+P6-R3I adds database-independent NCM custody/source validation and legacy
+projection consistency in
+[16-p6-r3i-webhook-dispatch-authorization-and-legacy-projection-consistency.md](docs/phase-6/16-p6-r3i-webhook-dispatch-authorization-and-legacy-projection-consistency.md).
+P6-R3B adds a reusable server-side [location-scope authorization contract](docs/phase-6/08-p6-r3b-warehouse-location-and-scoped-rbac.md)
+and applies it to one distributor inventory-decrease route. No warehouse schema,
+account-location assignment or deployed location-scoped RBAC role was added.
 
 Admin direct-order creation revalidates legacy product stock and commits the
 order, optional paid-order journal, stock deductions, and `StockLog` audit rows
@@ -203,6 +253,7 @@ continues to reconcile already-recorded collaboration sales.
 - `GET /api/admin/product-analytics/charts` requires the same Admin role and permission. It returns bounded product, province/district, and distributor comparison series for quantity, item revenue, recorded COGS, completed refunds, and estimated gross product profit; `productId` narrows the distributor comparison to one validated product.
 - `GET /api/admin/discount-analytics` and `/filters` require the `ADMIN` role and `product:sales_analytics_read`. The report supports all-time, today, week, month, year, and custom (up to 366-day) ranges, with category, province, district, distributor, and customer filters. It classifies saved item price reductions and order reward snapshots into product, place-wise, loyalty, marketing-card/voucher, combo-bundle, admin, and legacy categories; totals include paginated customer and order details. Canceled orders are excluded. Place-wise pricing replaces, rather than stacks with, the product setting discount. Free-shipping savings and historical orders without original-price snapshots are not inferable from persisted data and are explicitly excluded.
 - `GET /api/distributor/product-analytics/summary`, `/products`, `/locations`, and `/timeline` require `distributor:product_sales_read` and authenticated distributor workspace context. Scope is derived from the session, never a client-provided distributor ID; the service omits revenue fields and rejects revenue sorting.
+- `PATCH /api/distributor/availability` requires `distributor:availability_update` and authenticated distributor context. Distributor `status` controls workspace eligibility, while `isActive` is the online/order-allocation availability flag; setting `isActive` false must not prevent the workspace from authenticating or re-enabling availability.
 - `GET /api/features` and `PATCH /api/features` (the update requires `platform:features_manage`)
 - `GET /api/storefront-content`, `PUT /api/storefront-content`, and `POST /api/storefront-content/upload-image` (updates/uploads require `platform:features_manage`; images pass secure upload validation before Cloudinary storage)
 - `GET /api/admin/distributors/settlement-positions` requires `finance:payables_read` and returns distributor-wise open NPR receivables, payables, pending remittances, and net due. Aggregate net receivable/payable totals are summed per distributor and cannot cross-offset counterparties.
@@ -623,8 +674,8 @@ data, not manufacturer or distributor payables.
 | Integration | Current usage |
 | --- | --- |
 | Cloudinary | Product media, contract uploads, partner media, uploaded assets |
-| Stripe | Payment processing integration |
-| Razorpay | Payment processing integration |
+| Stripe | Dependency/configuration names are present; no active initiation, verification, or webhook flow was source-verified |
+| Razorpay | Dependency/configuration names are present; no active initiation, verification, or webhook flow was source-verified |
 | Nepal Can Move (NCM) | Customer delivery creation, webhook status updates, bulk stock-transfer booking/tracking/returns, and handoff reconciliation |
 | RabbitMQ | Notification worker pipeline and durable queue setup |
 | SMTP / Sparrow SMS | Notification worker configuration for email and SMS delivery |
@@ -632,10 +683,11 @@ data, not manufacturer or distributor payables.
 
 ## 7. Operational Notes
 
-- The backend runs on port `4000` by default and exposes portals on Vite local ports: `5173`, `5174`, `5175`, and `5176`.
+- The backend runs on port `4000` by default; the four independent Vite apps use local ports `5173`, `5174`, `5175`, and `5176` (Marketing). Distributor operations share the manufacturer app; no separate delivery portal exists.
 - `server.js` boots the application and also initializes the default accounting chart of accounts via `ensureStandardChartOfAccounts()`.
 - Delivered NCM and distributor self-delivery transitions enqueue a versioned, hashed `AccountingEvent` snapshot in the same transaction as the delivery update. The scheduled delivery-accounting worker claims due events with conditional updates, retries transient failures, and posts through the central journal engine; journal creation and event completion share a transaction. Accounting APIs expose unresolved event status so reports can warn that unposted sales are excluded from GL figures. The checked-in `0_init` baseline includes the event retry and claim fields. The historical ID `20261017000000_delivery_accounting_outbox_schedule` is absent from the repository; verify the target database independently rather than treating older “unapplied” notes as current migration status.
 - The Admin finance dashboard exposes a `postedAccounting` summary calculated from posted `JournalLine` rows, while operational cost detail remains a separate analytical view. Use posted journal totals for financial statements; display unresolved delivery-accounting outbox events as exclusions rather than treating them as posted.
+- General Ledger, Trial Balance, and posted Financial Statements responses include additive `reportBasis` metadata listing their posted/reversed journal statuses and stating that source completeness and subledger reconciliation are not established. The UI presents these limitations; the metadata is not evidence of persisted reconciliation.
 - Admins configure Bikram Sambat years at `/nepali-calendar` by entering Baisakh 1's Gregorian date and the 12 month lengths. Saved definitions are immutable, created transactionally with an audit event, and use serializable validation to prevent overlapping concurrent saves; identical retries are idempotent. The backend derives dates and weekdays from that anchor; finance report ranges and Nepali fiscal periods use configured years, with the established converter retained for years not configured. A mapping correction requires a separately approved and audited correction workflow. Apply `20261107090000_nepali_calendar_years` and regenerate Prisma Client before deployment.
 - Distributor COD/refund workflows depend on schema and migration state. Older notes cite `20261027100000_distributor_cod_and_return_cash` and `20261027130000_distributor_refund_receivable_netting`, which are absent from the checked-in migration history. Verify the actual target schema and `_prisma_migrations` records on an isolated copy; do not execute or mark either absent ID as applied.
 - `npm test` in `backend/` runs unit/regression test files under `backend/tests/` sequentially; test files are isolated in individual Node test-runner processes and failures do not prevent later files from running. Tests that access the real Prisma database are opt-in with `RUN_DATABASE_INTEGRATION_TESTS=1` and must be run against an isolated, migrated/seeded test database because they create and mutate records.

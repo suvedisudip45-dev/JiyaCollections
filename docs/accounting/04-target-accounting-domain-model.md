@@ -18,7 +18,7 @@
 
 | Rule | Approved behavior |
 | --- | --- |
-| Inventory ownership | Manufacturer owns supplied stock on consignment until sale/delivery; no company inventory asset at hub receipt |
+| Inventory ownership | Manufacturer-held stock was described by this earlier design as consigned until sale/delivery; that treatment conflicts with current production-completion accounting and remains unresolved. Once stock is transferred to a distributor, Aama Clothings owns it and the distributor is a custodian; transfer and distributor receipt are not a sale. |
 | Sale recognition | Company is seller and collector, including manufacturer-originated orders; revenue and VAT recognized at delivery |
 | Customer prices | Product and delivery prices are VAT-inclusive |
 | Manufacturer COGS | Admin-approved agreed COGS, VAT-inclusive, at NCM `DELIVERED`; never proposed/global cost |
@@ -34,6 +34,12 @@
 | Readiness | Gate accounting/finance operations only; do not gate catalog or customer order operations |
 
 The 2026-09-28 commission rows in earlier revisions of this design are superseded: manufacturer commission proposals, rates, new accruals, and schema fields have been removed. Historical journals remain unchanged and legacy reversals are retained.
+
+### P5-R14 distributor inventory ownership clarification (2026-11-17)
+
+The confirmed policy is that inventory transferred to a distributor remains owned by Aama Clothings while held there. The distributor has custody and sales/distribution responsibilities, not inventory title. This supersedes any reading of the older “consignment until sale/delivery” rule as applying to distributor-held stock. Transfer and receipt do not create a wholesale sale, distributor-owned inventory, distributor AP/AR, or a second manufacturer payable.
+
+This clarification is limited to the distributor-held stage. It does not decide manufacturer-held title before dispatch or resolve the conflict between current production completion postings and this document's delivery-recognition rules. Loss, damage, shortage, customer-return disposition, contractual liability, and cost restoration remain separate evidence/policy gates. See [P5-R14](./32-inventory-ownership-and-canonical-movement-reconciliation.md).
 
 ## Target Logical Model
 

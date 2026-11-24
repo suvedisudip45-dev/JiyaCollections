@@ -109,10 +109,10 @@ const ManufacturerInventoryMonitor = ({ token }) => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-            Multi-Hub Network Stock Monitor
+            Canonical Inventory Ledger by Hub
           </h1>
           <p className="text-xs text-slate-500">
-            Real-time SKU stock across active manufacturer factories and distributor hubs
+            On-hand and reserved balances at active factory and distributor locations. Ledger quantities are not independent physical counts or a valuation.
           </p>
         </div>
 
@@ -136,7 +136,7 @@ const ManufacturerInventoryMonitor = ({ token }) => {
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Total Physical Stock Across All Hubs
+            On-hand Units in Canonical Ledger
           </span>
           <p className="text-2xl font-black text-slate-900 mt-1">
             {totalPhysicalNetworkStock}{" "}

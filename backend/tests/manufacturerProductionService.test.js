@@ -105,13 +105,40 @@ test("manufacturer quote validates per-piece pricing and batch expenses without 
   }), /non-negative batch expense/);
 });
 
+test("exempt manufacturer quote treats an empty VAT rate as zero", () => {
+  const quote = validateManufacturerProductionQuote({
+    unitCogs: "1550",
+    otherCost: "2500",
+    vatTreatment: "EXEMPT",
+    vatRate: "",
+    vatInvoiceReference: "",
+    manufacturerNote: "",
+  });
+
+  assert.equal(quote.vatRate.toFixed(2), "0.00");
+  assert.equal(quote.vatInvoiceReference, null);
+});
+
 test("manufacturer VAT quote requires an explicitly supplied positive rate", () => {
   assert.throws(() => validateManufacturerProductionQuote({
     unitCogs: "100",
     otherCost: "0",
     vatTreatment: "VAT_EXCLUSIVE",
     vatInvoiceReference: "INV-004",
-  }), /VAT rate must be greater than zero/);
+  }), /greater than zero/);
+  assert.throws(() => validateManufacturerProductionQuote({
+    unitCogs: "100",
+    otherCost: "0",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatRate: "",
+    vatInvoiceReference: "INV-005",
+  }), /VAT rate must be between zero and 100%/);
+  assert.throws(() => validateManufacturerProductionQuote({
+    unitCogs: "100",
+    otherCost: "0",
+    vatTreatment: "EXEMPT",
+    vatRate: "not-a-number",
+  }), /VAT rate must be a valid number/);
 });
 
 test("admin-assigned size/color quantities normalize independently from manufacturer quote terms", () => {

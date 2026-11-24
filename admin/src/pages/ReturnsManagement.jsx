@@ -331,7 +331,7 @@ const ReturnsManagement = ({ token }) => {
           headers: { token, "Idempotency-Key": supplierCreditForm.idempotencyKey },
         },
       );
-      toast.info(response.data.message || "Supplier credit application submitted for independent Admin approval.");
+      toast.info(response.data.message || "Supplier credit application is pending independent Admin approval.");
       setSupplierCreditReturn(null);
       await fetchData();
     } catch (error) {
@@ -1231,7 +1231,7 @@ const ReturnsManagement = ({ token }) => {
           <div className="my-8 w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900">Apply supplier credit to bill</h3>
+                <h3 className="text-base font-bold text-slate-900">Request supplier credit application</h3>
                 <p className="mt-1 text-xs text-slate-500">
                   {supplierCreditReturn.supplierName} · {supplierCredit?.documentNumber || "Credit note"}
                 </p>
@@ -1245,7 +1245,7 @@ const ReturnsManagement = ({ token }) => {
             ) : (
               <form onSubmit={handleApplySupplierCredit} className="mt-4 space-y-4 text-xs">
                 <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900">
-                  Open credit: {formatNpr(supplierCredit?.remainingAmount)}. Only open bills for this same supplier are eligible. Applying the credit references the existing return journal; it does not post another journal.
+                  Open credit: {formatNpr(supplierCredit?.remainingAmount)}. Only open bills for this same supplier are eligible. This request changes no payable balances until an independent Admin approves it. Approval references the existing return journal; it does not post another journal.
                 </p>
                 <label className="block font-semibold text-slate-700">
                   Supplier bill *
@@ -1300,7 +1300,7 @@ const ReturnsManagement = ({ token }) => {
                     disabled={supplierCreditSaving || !supplierCreditBills.length}
                     className="rounded-xl bg-indigo-600 px-4 py-2 font-bold text-white disabled:opacity-50"
                   >
-                    {supplierCreditSaving ? "Applying..." : "Apply credit"}
+                    {supplierCreditSaving ? "Submitting..." : "Request approval"}
                   </button>
                 </div>
               </form>

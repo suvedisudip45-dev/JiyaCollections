@@ -190,7 +190,12 @@ export const recordCustomerReceipt = async ({
   notes: notesInput,
   idempotencyKey: idempotencyKeyInput,
   receivedByAccountId: receivedByAccountIdInput,
-}, { client = prisma, postPaymentAccounting = postCustomerPaymentAccounting } = {}) => {
+}, {
+  client = prisma,
+  postPaymentAccounting = postCustomerPaymentAccounting,
+  writeAudit = recordSystemAudit,
+  auditContext = {},
+} = {}) => {
   const targets = normalizeInvoiceIds(invoiceIds);
   const idempotencyKey = normalizedText(idempotencyKeyInput, "Idempotency key", { required: true });
   if (idempotencyKey.length > 120 || /\s/.test(idempotencyKey)) {
@@ -357,6 +362,27 @@ export const recordCustomerReceipt = async ({
     ) {
       fail("Receipt could not be fully allocated to the selected invoices.", 409, "RECEIPT_ALLOCATION_INCOMPLETE");
     }
+
+    await writeAudit({ ...auditContext, actorId: receivedByAccountId }, {
+      action: "CUSTOMER_RECEIPT_RECORDED",
+      entityType: "CashTransaction",
+      entityId: receipt.id,
+      afterState: {
+        sourceInvoiceIds: targets,
+        amount: amount.toFixed(2),
+        settlementAmount: settlementAmount.toFixed(2),
+        adjustmentType,
+        adjustmentAmount: adjustmentAmount.toFixed(2),
+        currency: "NPR",
+        treasuryAccountId: toAccountId,
+        tenderMethod,
+        journalEntryId: journal.id,
+        allocations: allocation.allocations.map((entry) => ({
+          invoiceId: entry.documentId,
+          amount: accountingDecimal(entry.amount).toFixed(2),
+        })),
+      },
+    }, { client: tx });
 
     return {
       receiptId: receipt.id,

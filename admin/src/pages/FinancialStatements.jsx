@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import PostedLedgerBasisNotice from "../components/PostedLedgerBasisNotice";
 import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
 import { getCurrentNepaliDateRange, getNepaliDateRangeForDate } from "../utils/nepaliDate";
 import { compareDecimalStrings, formatNprAmount } from "../utils/decimalDisplay";
@@ -288,6 +289,7 @@ const FinancialStatements = ({ token }) => {
       </div>
 
       <AccountingPostingStatusBanner status={realtimeData?.accountingPostingStatus} />
+      {realtimeData && <PostedLedgerBasisNotice reportBasis={realtimeData.reportBasis} />}
 
       {/* STATEMENTS NAVIGATION TABS */}
       <div className="flex items-center gap-2 p-1.5 bg-slate-200/60 rounded-2xl w-fit">

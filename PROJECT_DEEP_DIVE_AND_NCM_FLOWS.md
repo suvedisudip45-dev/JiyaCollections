@@ -23,11 +23,15 @@ The repository contains four independent React/Vite portals and one shared Expre
 ```text
 Customer storefront ─┐
 Admin operations ────┼── HTTP/JSON ──> Express API ── Prisma ──> MySQL
-Manufacturer portal ─┤                     │
-Marketing portal ────┘                     ├── NCM API / inbound NCM webhooks
-                                           ├── Cloudinary / payment integrations
-                                           └── separate notification worker
+Manufacturer /       ┤                     ├── NCM API / inbound NCM webhooks
+distributor workspace┤                     ├── Cloudinary
+Marketing portal ────┘                     └── separate notification worker
 ```
+
+Distributor operations share the manufacturer app; there is no separate
+delivery portal directory. Stripe/Razorpay dependencies and configuration
+names are present, but no active payment-provider flow was verified in the
+reviewed backend source.
 
 The important stock boundary is:
 

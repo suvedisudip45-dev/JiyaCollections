@@ -77,7 +77,7 @@ const DistributorInventory = () => {
         <div>
           <p className="text-[11px] font-bold uppercase text-emerald-800">Distributor hub</p>
           <h1 className="mt-1 text-2xl font-black text-slate-950">Hub Inventory</h1>
-          <p className="mt-1 text-sm text-slate-600">Stock is received through approved transfers. Report damaged or lost stock with evidence.</p>
+          <p className="mt-1 text-sm text-slate-600">On-hand, reserved, available, and damaged quantities come from canonical inventory balances. They are not independent physical counts or a valuation. Report damaged or lost stock with evidence.</p>
         </div>
         <button type="button" onClick={loadInventory} disabled={loading} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh

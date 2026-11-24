@@ -100,6 +100,10 @@ const ProductAnalytics = ({ token }) => {
         </nav>
       </header>
 
+      <p role="note" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
+        Operational product metrics, not posted sales or profit. The report uses item snapshots from non-cancelled orders in the selected Kathmandu-date range and completed returns in their return-date period; payment and receipt status do not affect inclusion. Order-level discounts and delivery charges are not allocated to products, and estimated gross profit excludes broader operating expenses and taxes. This report is not reconciled to the GL.
+      </p>
+
       {customRangeIncomplete ? (
         <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Choose both dates to view a custom period.</p>
       ) : (

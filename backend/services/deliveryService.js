@@ -530,6 +530,28 @@ export const buildNcmOrderPayload = ({
   weight: String(Math.max(0.1, Number(delivery.packageWeight || 1))),
 });
 
+const toDeliveryOrderAmount = (value, fieldName) => {
+  const amountText = String(value ?? "").trim();
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(amountText)) {
+    const error = new TypeError(`${fieldName} must be a non-negative number.`);
+    error.code = "DELIVERY_AMOUNT_INVALID";
+    throw error;
+  }
+
+  const amount = Number(amountText);
+  if (!Number.isFinite(amount)) {
+    const error = new TypeError(`${fieldName} must be a finite number.`);
+    error.code = "DELIVERY_AMOUNT_INVALID";
+    throw error;
+  }
+  return amount;
+};
+
+export const normalizeDeliveryOrderAmounts = ({ itemAmount, codAmount }) => ({
+  itemAmount: toDeliveryOrderAmount(itemAmount, "Delivery item amount"),
+  codAmount: toDeliveryOrderAmount(codAmount, "Delivery COD amount"),
+});
+
 const parsePackagingMeta = (payload) => {
   if (!payload) return {};
   if (typeof payload === "string") {
@@ -710,6 +732,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   const originEntity = activeDistributor || activeManufacturer;
 
   const input = buildDeliveryInput({ order, assignment: effectiveAssignment, manufacturer: originEntity, packagingMeta });
+  const persistedAmounts = normalizeDeliveryOrderAmounts(input);
 
   logger.info("Prepared NCM delivery payload", {
     orderId,
@@ -735,8 +758,8 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
             destinationBranchName: input.destination,
             deliveryType: input.deliveryType,
             packageDescription: input.packageDescription,
-            itemAmount: input.itemAmount,
-            codAmount: input.codAmount,
+            itemAmount: persistedAmounts.itemAmount,
+            codAmount: persistedAmounts.codAmount,
             packageWeight: effectiveWeight,
             assignmentId: effectiveAssignment.id,
             manufacturerId: assignedManufacturerId,
@@ -755,8 +778,8 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
             packageDescription: input.packageDescription,
             originBranchName: input.origin,
             destinationBranchName: input.destination,
-            itemAmount: input.itemAmount,
-            codAmount: input.codAmount,
+            itemAmount: persistedAmounts.itemAmount,
+            codAmount: persistedAmounts.codAmount,
             packageWeight: effectiveWeight,
             vendorReference: input.vendorReference,
           },

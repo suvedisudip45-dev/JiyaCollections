@@ -11,7 +11,7 @@ The repository has two overlapping generations of stock and cost data:
 - **Current quantity/ledger path:** `InventoryBalance` is the current SKU/location quantity; `InventoryLedgerEntry` is the auditable movement history. Newer distributor receipt, reservation, fulfillment, damage/loss and production flows use these records.
 - **Legacy/parallel paths:** `Product.stockQuantity`, `ManufacturerInventory`, and `StockLog` remain active in selected route/service/report paths. They are not equivalent to the canonical ledger.
 - **Cost evidence:** Production flows create costed production layers and selected distributor fulfillment consumes FIFO layers. Some reports and legacy paths fall back to `Product.costPrice`, which is not an immutable per-unit receipt/issue layer.
-- **Ownership:** Platform-owned distributor stock and manufacturer-consigned stock have distinct accounting. Consigned units are not company inventory merely because a manufacturer or distributor UI displays quantity.
+- **Ownership:** Platform-owned distributor stock and manufacturer-consigned stock have distinct accounting. Manufacturer-held stock subject to a consignment policy is not company inventory merely because a portal displays quantity. For stock transferred to distributors, P5-R14 confirms that Aama owns the inventory and the distributor is a custodian.
 
 **PROPOSED INTERNAL POLICY:** Define a single authoritative balance by SKU, location, owner, condition and as-of cutoff. Every change is an immutable ledger movement with source, actor, reference, idempotency key and, where valued, cost-layer provenance. Legacy quantity/cost models remain projections or historical evidence until a verified migration and reconciliation; do not make them co-equal sources.
 
@@ -79,3 +79,32 @@ An inventory dashboard or balance equality alone does not establish valuation or
 5. Establish source-to-COGS and inventory-control reconciliation tests and then obtain separately verified isolated-database evidence before any historical conversion or cutover.
 
 R14 did not change inventory behavior, model schema, cost method, balances, or history.
+
+## P5-R7 current-source clarification (2026-11-17)
+
+The follow-up static trace in [24-p5-r7-inventory-valuation-and-cogs-evidence-audit.md](./24-p5-r7-inventory-valuation-and-cogs-evidence-audit.md) supersedes two overbroad implications in this earlier note:
+
+- Current canonical inventory locations and entries default to and are enforced as `inventoryOwner = PLATFORM`. A manufacturer ID identifies a factory/custody location in that ledger; it is not evidence that the units are manufacturer-owned or consigned. Production completion currently records good units in that PLATFORM-owned factory balance and posts manufacturer payable with the production completion. Legal title, physical existence, and older historical treatment remain unverified. Do not infer either company or manufacturer title from a portal quantity alone.
+- The older expectation that every new production receipt must create a cost layer and post the payable with accepted unit cost is true only for the covered production-completion path. Supplier purchase receipt-to-ledger/layer was not found as a complete active production flow; selected transfer/return/damage/direct-order movements can lack a cost-layer reference. No universal cost method or complete 1140/5100 tie-out has been established.
+
+Selected production/distributor paths use FIFO; that is not an approved or complete system-wide costing method. Product catalog cost remains a reference/fallback, not an authoritative layer. The earlier recommendations remain proposals unless adopted as policy. No inventory business logic, schema, cost method, balances, or history changed in P5-R7.
+
+## P5-R14 distributor ownership clarification (2026-11-17)
+
+The user-confirmed policy is that stock transferred to distributors remains owned by Aama Clothings; the distributor is a custodian. This policy applies to distributor-held inventory and supersedes any interpretation of manufacturer consignment as continuing after transfer to a distributor. Dispatch and distributor receipt are custody/location events, not wholesale sale or ownership transfer.
+
+This does not independently establish legal title for manufacturer-held stock before dispatch, resolve the production-completion-versus-delivery accounting discrepancy, or assign distributor responsibility for damage, loss, shortage, or disputed counts. Keep those conclusions separate; do not create a distributor receivable/expense or a cost-layer/GL adjustment without approved evidence and policy. See [P5-R14](./32-inventory-ownership-and-canonical-movement-reconciliation.md).
+
+## P5-R10 supplier-return inventory and cost evidence (2026-11-18)
+
+The active supplier-return approval path decrements aggregate `Product.stockQuantity` and writes `StockLog`; it does not post an `InventoryLedgerEntry`/`InventoryBalance` movement, identify a SKU/location or accepted receipt line, or consume/restore a cost layer. It relies on submitted `unitCostPrice` snapshots for the inventory-credit amount and has no check against a supplier invoice line or historical acquisition-cost record. The optional legacy shipment link does not establish accepted item/quantity/cost evidence.
+
+The current transaction protects internal writes and prevents quantity from dropping below the checked aggregate available stock, but it does not establish that the units belong to the selected supplier or are eligible for return. Different request keys can claim the same unlinked source quantity while aggregate stock remains available. The submitted return cost is `UNRECONCILED`, not `AUTHORITATIVE_SUPPLIER_INVOICE`, `VERIFIED_RECEIVED_COST`, or `AUTHORITATIVE_COST_LAYER`. The AP/Treasury counterpart is an internal return posting, not proof of supplier acceptance or bank refund.
+
+No stock restoration, cost-layer correction, or journal reversal path was found for a posted supplier return. Keep implementation deferred until policy defines ownership/location, eligible quantity, original receipt/cost linkage, supplier handoff/acceptance, credit/refund recognition, and reversal semantics. See [P5-R10](./27-p5-r10-supplier-returns-and-credit-evidence-audit.md); no costing method or inventory business behavior changed.
+
+## P5-R11 supplier return and credit inventory-control review (2026-11-17)
+
+The return route does not create a canonical `InventoryLedgerEntry`, `InventoryBalance` movement, or cost-layer consumption/restoration, so a supplier return cannot yet be treated as a verified inventory event. The repository still cannot prove return-eligible stock, accepted quantity, or original cost basis. The direct credit-application route also bypasses separate approval even though the Admin UI says otherwise.
+
+This is a design and policy gap, not a safe code change. The risk remains internal-accounting drift, not verified supplier-accepted return or refund evidence. See [26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md](./26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md).

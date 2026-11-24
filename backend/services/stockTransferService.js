@@ -12,6 +12,18 @@ const normalizeQuantity = (value, label) => {
   return quantity;
 };
 
+export const normalizeReceiptWholeNumber = (value, label = "Receipt quantity") => {
+  if (typeof value !== "number" &&
+      !(typeof value === "string" && /^\d+$/.test(value.trim()))) {
+    throw fail(`${label} must be a non-negative whole number.`);
+  }
+  const quantity = Number(value);
+  if (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > 2147483647) {
+    throw fail(`${label} must be a non-negative whole number.`);
+  }
+  return quantity;
+};
+
 export const normalizeTransferRequestLines = (lines) => {
   if (!Array.isArray(lines) || lines.length < 1 || lines.length > 100) {
     throw fail("A stock request must contain between 1 and 100 SKU lines.");
@@ -81,6 +93,92 @@ export const isStockTransferEditable = (transfer) => (
 
 export const isSameProfileOwner = (manufacturerAccountId, distributorAccountId) =>
   Boolean(manufacturerAccountId && distributorAccountId && manufacturerAccountId === distributorAccountId);
+
+export const validateWebhookDispatchAuthorization = ({
+  transfer,
+  shipment,
+  sourceLocation,
+  custodyConfirmed,
+}) => {
+  if (!custodyConfirmed) {
+    throw fail("NCM custody is not confirmed for stock-transfer dispatch.", "WEBHOOK_DISPATCH_NOT_CONFIRMED", 409);
+  }
+  if (!transfer?.id || !shipment?.id) {
+    throw fail("A verified transfer and shipment source is required.", "WEBHOOK_DISPATCH_SOURCE_REQUIRED", 409);
+  }
+  if (!sourceLocation?.id) {
+    throw fail("The stock-transfer factory source location is missing.", "WEBHOOK_SOURCE_LOCATION_REQUIRED", 409);
+  }
+  if (
+    sourceLocation.kind !== "FACTORY" ||
+    sourceLocation.inventoryOwner !== "PLATFORM" ||
+    sourceLocation.manufacturerId !== transfer.manufacturerId ||
+    sourceLocation.isActive !== true
+  ) {
+    throw fail("The NCM dispatch source location is inactive, mismatched, or not platform-owned.", "WEBHOOK_SOURCE_LOCATION_INVALID", 409);
+  }
+  if (shipment.status && !["BOOKED", "BOOKING_UNKNOWN"].includes(shipment.status)) {
+    throw fail("The NCM shipment is no longer eligible for custody-confirmed dispatch.", "WEBHOOK_DISPATCH_STATE_CONFLICT", 409);
+  }
+  return {
+    transferId: transfer.id,
+    shipmentId: shipment.id,
+    sourceLocationId: sourceLocation.id,
+  };
+};
+
+export const assessLegacyDispatchProjectionConsistency = ({
+  operation = "DISPATCH",
+  dispatchedQuantity = 0,
+  previousQuantity,
+  previousReserved,
+  nextQuantity,
+  nextReserved,
+}) => {
+  const normalizeWholeNonNegative = (value, label) => {
+    const normalized = Number(value);
+    if (!Number.isSafeInteger(normalized) || normalized < 0 || normalized > 2147483647) {
+      throw fail(`${label} must be a non-negative whole number.`);
+    }
+    return normalized;
+  };
+  const quantity = normalizeWholeNonNegative(dispatchedQuantity, "Dispatched quantity");
+  const beforeQuantity = normalizeWholeNonNegative(previousQuantity, "Previous quantity");
+  const beforeReserved = normalizeWholeNonNegative(previousReserved, "Previous reserved quantity");
+  const afterQuantity = normalizeWholeNonNegative(nextQuantity, "Next quantity");
+  const afterReserved = normalizeWholeNonNegative(nextReserved, "Next reserved quantity");
+
+  if (beforeReserved > beforeQuantity || afterReserved > afterQuantity) {
+    throw fail("Legacy reserved quantity cannot exceed legacy on-hand quantity.", "LEGACY_RESERVATION_CONFLICT", 409);
+  }
+
+  const normalizedOperation = String(operation || "").trim().toUpperCase();
+  if (normalizedOperation === "DISPATCH") {
+    if (quantity <= 0) throw fail("Dispatched quantity must be positive.", "INVALID_LEGACY_DISPATCH_QUANTITY");
+    if (afterQuantity !== beforeQuantity - quantity || afterReserved !== beforeReserved) {
+      throw fail("Legacy dispatch projection does not match the canonical dispatch quantity.", "LEGACY_DISPATCH_PROJECTION_MISMATCH", 409);
+    }
+  } else if (normalizedOperation === "RESERVE") {
+    if (afterQuantity !== beforeQuantity || afterReserved !== beforeReserved + quantity) {
+      throw fail("Legacy reservation projection does not match the reservation quantity.", "LEGACY_RESERVATION_PROJECTION_MISMATCH", 409);
+    }
+  } else if (normalizedOperation === "RELEASE") {
+    if (afterQuantity !== beforeQuantity || afterReserved !== beforeReserved - quantity) {
+      throw fail("Legacy reservation release does not match the reserved quantity.", "LEGACY_RESERVATION_RELEASE_MISMATCH", 409);
+    }
+  } else {
+    throw fail("Unsupported legacy dispatch projection operation.", "INVALID_LEGACY_PROJECTION_OPERATION");
+  }
+
+  return {
+    operation: normalizedOperation,
+    dispatchedQuantity: normalizedOperation === "DISPATCH" ? quantity : 0,
+    previousQuantity: beforeQuantity,
+    previousReserved: beforeReserved,
+    nextQuantity: afterQuantity,
+    nextReserved: afterReserved,
+  };
+};
 
 export const isNcmBranchEligible = ({ branchName, status, activeBranchNames }) => {
   const normalizedBranch = String(branchName || "").trim().toUpperCase();
@@ -244,6 +342,362 @@ export const shouldAdvanceNcmStockTransferStatus = (
 ) => !isStaleNcmStockTransferEvent(currentEventAt, incomingEventAt) &&
   normalizeNcmStockTransferEvent(incomingStatus).rank >= normalizeNcmStockTransferEvent(currentStatus).rank;
 
+const isCanonicalTransferDispatchEvidence = ({
+  transfer,
+  shipment,
+  shipmentLine,
+  transferLine,
+  dispatchEvidence,
+  transitLocationId,
+}) => Boolean(
+  dispatchEvidence &&
+  dispatchEvidence.exists === true &&
+  dispatchEvidence.shipmentId === shipment.id &&
+  dispatchEvidence.shipmentLineId === shipmentLine.id &&
+  dispatchEvidence.inventorySkuId === transferLine.inventorySkuId &&
+  dispatchEvidence.movementType === "TRANSFER_DISPATCH" &&
+  dispatchEvidence.inventoryOwner === "PLATFORM" &&
+  dispatchEvidence.referenceType === "STOCK_TRANSFER" &&
+  dispatchEvidence.referenceId === transfer.id &&
+  dispatchEvidence.idempotencyKey === `stock-transfer:${shipment.id}:dispatch:${transferLine.inventorySkuId}` &&
+  dispatchEvidence.sourceLocationId === transfer.sourceLocationId &&
+  dispatchEvidence.destinationLocationId === transitLocationId &&
+  dispatchEvidence.quantity === Number(shipmentLine.quantity) &&
+  Boolean(transitLocationId)
+);
+
+export const evaluateTransferReceiptEligibility = ({
+  transfer,
+  shipment,
+  shipmentLine,
+  transferLine,
+  dispatchEvidence,
+  transitLocationId,
+  previouslyReceivedQuantity = 0,
+  proposedReceipt,
+  destinationLocation,
+  destinationLocationAuthorized = false,
+  excessReceiptAuthorized = false,
+}) => {
+  if (!transfer?.id || !shipment?.id || !shipmentLine?.id || !transferLine?.id) {
+    throw fail("Transfer, shipment, and shipment-line identities are required.", "RECEIPT_SOURCE_REQUIRED");
+  }
+  if (shipment.stockTransferId !== transfer.id ||
+      shipmentLine.shipmentId !== shipment.id ||
+      shipmentLine.stockTransferLineId !== transferLine.id ||
+      transferLine.stockTransferId !== transfer.id) {
+    throw fail("Transfer, shipment, and shipment-line identities do not link consistently.", "RECEIPT_SOURCE_CONFLICT", 409);
+  }
+  if (["CANCELLED", "COMPLETED", "REJECTED", "RECEIVED"].includes(String(transfer.status || "").toUpperCase())) {
+    throw fail("A completed or cancelled transfer cannot accept a new receipt.", "RECEIPT_TRANSFER_STATE_CONFLICT", 409);
+  }
+  if (!["DISPATCHED", "PARTIALLY_RECEIVED"].includes(String(shipment.status || "").toUpperCase())) {
+    throw fail("Receipt requires verifiable dispatch evidence.", "RECEIPT_DISPATCH_REQUIRED", 409);
+  }
+  if (!shipment.dispatchedAt) {
+    throw fail("Receipt requires a dispatch timestamp.", "RECEIPT_DISPATCH_EVIDENCE_MISSING", 409);
+  }
+
+  if (!isCanonicalTransferDispatchEvidence({
+    transfer,
+    shipment,
+    shipmentLine,
+    transferLine,
+    dispatchEvidence,
+    transitLocationId,
+  })) {
+    throw fail("A verified canonical dispatch movement is required before receipt.", "RECEIPT_DISPATCH_EVIDENCE_MISSING", 409);
+  }
+
+  if (!destinationLocationAuthorized) {
+    throw fail("The authenticated distributor cannot receive at the destination location.", "RECEIPT_DESTINATION_UNAUTHORIZED", 403);
+  }
+  if (!destinationLocation?.id || destinationLocation.isActive !== true ||
+      destinationLocation.inventoryOwner !== "PLATFORM" ||
+      destinationLocation.kind !== "DISTRIBUTOR" ||
+      destinationLocation.distributorId !== transfer.distributorId ||
+      destinationLocation.id !== transfer.destinationLocationId) {
+    throw fail("The receipt destination is inactive, mismatched, or not platform-owned.", "RECEIPT_DESTINATION_INVALID", 409);
+  }
+
+  const dispatchedQuantity = normalizeReceiptWholeNumber(
+    Number(shipmentLine.quantity),
+    "Dispatched quantity",
+  );
+  const approvedQuantity = normalizeReceiptWholeNumber(
+    transferLine.approvedQuantity || 0,
+    "Approved quantity",
+  );
+  const recordedDispatchedQuantity = normalizeReceiptWholeNumber(
+    transferLine.dispatchedQuantity ?? 0,
+    "Recorded dispatched quantity",
+  );
+  if (dispatchedQuantity > approvedQuantity) {
+    throw fail("Shipment quantity exceeds approved transfer quantity.", "RECEIPT_APPROVED_QUANTITY_EXCEEDED", 409);
+  }
+  if (dispatchedQuantity > recordedDispatchedQuantity) {
+    throw fail("The shipment line quantity exceeds recorded transfer dispatch quantity.", "RECEIPT_DISPATCH_QUANTITY_EXCEEDED", 409);
+  }
+  const previousReceived = normalizeReceiptWholeNumber(
+    previouslyReceivedQuantity,
+    "Previously received quantity",
+  );
+  if (previousReceived > dispatchedQuantity) {
+    throw fail("Previously received quantity exceeds dispatched quantity.", "RECEIPT_PREVIOUSLY_OVER_RECEIVED", 409);
+  }
+
+  const acceptedQuantity = normalizeReceiptWholeNumber(proposedReceipt?.acceptedQuantity ?? proposedReceipt?.goodQuantity ?? 0, "Accepted quantity");
+  const damagedQuantity = normalizeReceiptWholeNumber(proposedReceipt?.damagedQuantity ?? 0, "Damaged quantity");
+  const rejectedQuantity = normalizeReceiptWholeNumber(proposedReceipt?.rejectedQuantity ?? 0, "Rejected quantity");
+  const missingQuantity = normalizeReceiptWholeNumber(proposedReceipt?.missingQuantity ?? 0, "Missing quantity");
+  const excessQuantity = normalizeReceiptWholeNumber(proposedReceipt?.excessQuantity ?? 0, "Excess quantity");
+  const putAwayQuantity = normalizeReceiptWholeNumber(proposedReceipt?.putAwayQuantity ?? 0, "Put-away quantity");
+
+  if (acceptedQuantity + damagedQuantity + rejectedQuantity + missingQuantity > dispatchedQuantity - previousReceived) {
+    throw fail("The proposed receipt exceeds the outstanding dispatched quantity.", "RECEIPT_QUANTITY_OVER_DISPATCH", 409);
+  }
+  if (acceptedQuantity + damagedQuantity + rejectedQuantity + missingQuantity === 0) {
+    throw fail("A receipt must account for at least one positive quantity.", "RECEIPT_QUANTITY_REQUIRED");
+  }
+  if (putAwayQuantity > acceptedQuantity) {
+    throw fail("Put-away quantity cannot exceed accepted quantity.", "RECEIPT_PUT_AWAY_EXCEEDS_ACCEPTED", 409);
+  }
+  if (excessQuantity > 0 && !excessReceiptAuthorized) {
+    throw fail("Excess receipt requires a separately authorized exception.", "RECEIPT_EXCESS_NOT_AUTHORIZED", 409);
+  }
+
+  const outstandingBefore = dispatchedQuantity - previousReceived;
+  const accountedThisReceipt = acceptedQuantity + damagedQuantity + rejectedQuantity + missingQuantity;
+  const outstandingAfter = outstandingBefore - accountedThisReceipt;
+  const exceptionCodes = [
+    ...(missingQuantity > 0 ? ["SHORT_RECEIPT"] : []),
+    ...(damagedQuantity > 0 ? ["DAMAGED_RECEIPT"] : []),
+    ...(rejectedQuantity > 0 ? ["REJECTED_RECEIPT"] : []),
+    ...(excessQuantity > 0 ? ["EXCESS_RECEIPT"] : []),
+  ];
+  if (exceptionCodes.length > 0) {
+    return {
+      eligible: true,
+      outcome: outstandingAfter > 0 ? "PARTIAL_WITH_EXCEPTION" : "COMPLETE_WITH_EXCEPTION",
+      exceptionCode: exceptionCodes[0],
+      exceptionCodes,
+      acceptedQuantity,
+      damagedQuantity,
+      rejectedQuantity,
+      missingQuantity,
+      excessQuantity,
+      putAwayQuantity,
+      outstandingAfter,
+      approvedQuantity,
+      dispatchedQuantity,
+      previouslyReceivedQuantity: previousReceived,
+    };
+  }
+  if (outstandingAfter > 0) {
+    return {
+      eligible: true,
+      outcome: "PARTIAL_RECEIPT",
+      exceptionCode: null,
+      exceptionCodes: [],
+      acceptedQuantity,
+      damagedQuantity,
+      rejectedQuantity,
+      missingQuantity,
+      excessQuantity,
+      putAwayQuantity,
+      outstandingAfter,
+      approvedQuantity,
+      dispatchedQuantity,
+      previouslyReceivedQuantity: previousReceived,
+    };
+  }
+  return {
+    eligible: true,
+    outcome: "FULL_RECEIPT",
+    exceptionCode: null,
+    exceptionCodes: [],
+    acceptedQuantity,
+    damagedQuantity,
+    rejectedQuantity,
+    missingQuantity,
+    excessQuantity,
+    putAwayQuantity,
+    outstandingAfter,
+    approvedQuantity,
+    dispatchedQuantity,
+    previouslyReceivedQuantity: previousReceived,
+  };
+};
+
+export const evaluateStockTransferReceiptReplay = ({
+  existingReceiptIdentity,
+  existingRequestHash,
+  receiptIdentity,
+  requestHash,
+}) => {
+  const existingIdentity = String(existingReceiptIdentity || "").trim();
+  const identity = String(receiptIdentity || "").trim();
+  const existingHash = String(existingRequestHash || "").trim();
+  const hash = String(requestHash || "").trim();
+  if (!identity || !hash) throw fail("Receipt identity and request hash are required.", "RECEIPT_IDENTITY_REQUIRED");
+  if (!existingIdentity) return { outcome: "NEW_RECEIPT", replayed: false };
+  if (existingIdentity !== identity) throw fail("Receipt identity conflicts with an existing receipt.", "RECEIPT_IDENTITY_CONFLICT", 409);
+  if (existingHash !== hash) throw fail("Receipt identity was reused for conflicting receipt details.", "RECEIPT_IDEMPOTENCY_CONFLICT", 409);
+  return { outcome: "REPLAY", replayed: true };
+};
+
+export const buildCanonicalStockTransferReceiptPlan = ({
+  transfer,
+  shipment,
+  shipmentLine,
+  transferLine,
+  dispatchEvidence,
+  receiptIdentity,
+  transitLocationId,
+  destinationLocation,
+  destinationLocationAuthorized = false,
+  damagedLocationId,
+  lostLocationId,
+  acceptedQuantity,
+  damagedQuantity,
+  missingQuantity,
+  rejectedQuantity,
+  previouslyReceivedQuantity = 0,
+  actorId,
+  actorRole,
+}) => {
+  const normalizedReceiptIdentity = String(receiptIdentity || "").trim();
+  if (!normalizedReceiptIdentity) throw fail("A stable receipt identity is required.", "RECEIPT_IDENTITY_REQUIRED");
+  if (!transfer?.id || !shipment?.id || !shipmentLine?.id || !transferLine?.id || !transferLine?.inventorySkuId) {
+    throw fail("Stable transfer, shipment, shipment-line and SKU identities are required.", "RECEIPT_SOURCE_REQUIRED");
+  }
+  if (shipment.stockTransferId !== transfer.id ||
+      shipmentLine.shipmentId !== shipment.id ||
+      shipmentLine.stockTransferLineId !== transferLine.id ||
+      transferLine.stockTransferId !== transfer.id) {
+    throw fail("Transfer, shipment, and shipment-line identities do not link consistently.", "RECEIPT_SOURCE_CONFLICT", 409);
+  }
+  if (!["IN_TRANSIT", "PARTIALLY_RECEIVED"].includes(String(transfer.status || "").toUpperCase()) ||
+      !["DISPATCHED", "PARTIALLY_RECEIVED"].includes(String(shipment.status || "").toUpperCase()) ||
+      !shipment.dispatchedAt) {
+    throw fail("Receipt planning requires an active dispatched transfer and shipment.", "RECEIPT_TRANSFER_STATE_CONFLICT", 409);
+  }
+  if (!transitLocationId || !destinationLocation?.id) {
+    throw fail("Transit and destination locations are required.", "RECEIPT_LOCATION_REQUIRED");
+  }
+  if (!isCanonicalTransferDispatchEvidence({
+    transfer,
+    shipment,
+    shipmentLine,
+    transferLine,
+    dispatchEvidence,
+    transitLocationId,
+  })) {
+    throw fail("A verified canonical dispatch movement is required before receipt planning.", "RECEIPT_DISPATCH_EVIDENCE_MISSING", 409);
+  }
+  if (!destinationLocationAuthorized) {
+    throw fail("The destination must be authorized before receipt planning.", "RECEIPT_DESTINATION_UNAUTHORIZED", 403);
+  }
+  if (destinationLocation.isActive !== true ||
+      destinationLocation.inventoryOwner !== "PLATFORM" ||
+      destinationLocation.kind !== "DISTRIBUTOR" ||
+      destinationLocation.id !== transfer.destinationLocationId ||
+      !transfer.distributorId ||
+      destinationLocation.distributorId !== transfer.distributorId) {
+    throw fail("The receipt destination is inactive, mismatched, or not platform-owned.", "RECEIPT_DESTINATION_INVALID", 409);
+  }
+  if (!String(actorId || "").trim() || !String(actorRole || "").trim()) {
+    throw fail("A receipt actor and role are required.", "RECEIPT_ACTOR_REQUIRED");
+  }
+
+  const accepted = normalizeReceiptWholeNumber(acceptedQuantity, "Accepted quantity");
+  const damaged = normalizeReceiptWholeNumber(damagedQuantity, "Damaged quantity");
+  const missing = normalizeReceiptWholeNumber(missingQuantity, "Missing quantity");
+  const rejected = normalizeReceiptWholeNumber(rejectedQuantity, "Rejected quantity");
+  const previouslyReceived = normalizeReceiptWholeNumber(previouslyReceivedQuantity, "Previously received quantity");
+  const shipmentLineQuantity = normalizeReceiptWholeNumber(shipmentLine.quantity, "Shipment line quantity");
+  const approvedQuantity = normalizeReceiptWholeNumber(transferLine.approvedQuantity, "Approved quantity");
+  const dispatchedQuantity = normalizeReceiptWholeNumber(transferLine.dispatchedQuantity, "Transfer dispatched quantity");
+  if (shipmentLineQuantity > approvedQuantity) {
+    throw fail("Shipment line quantity exceeds approved transfer quantity.", "RECEIPT_APPROVED_QUANTITY_EXCEEDED", 409);
+  }
+  if (shipmentLineQuantity > dispatchedQuantity) {
+    throw fail("Shipment line quantity exceeds recorded transfer dispatch quantity.", "RECEIPT_DISPATCH_QUANTITY_EXCEEDED", 409);
+  }
+  if (accepted + damaged + missing + rejected <= 0) {
+    throw fail("A canonical receipt plan must account for a positive quantity.", "RECEIPT_QUANTITY_REQUIRED");
+  }
+  if (previouslyReceived > shipmentLineQuantity) {
+    throw fail("Previously received quantity cannot exceed the shipment line quantity.", "RECEIPT_PREVIOUSLY_OVER_RECEIVED", 409);
+  }
+  if (previouslyReceived + accepted + damaged + missing + rejected > shipmentLineQuantity) {
+    throw fail("Canonical receipt quantities cannot exceed the shipment line quantity.", "RECEIPT_QUANTITY_OVER_DISPATCH", 409);
+  }
+
+  const movements = [];
+  if (accepted > 0) {
+    movements.push({
+      inventorySkuId: transferLine.inventorySkuId,
+      sourceLocationId: transitLocationId,
+      destinationLocationId: destinationLocation.id,
+      quantity: accepted,
+      movementType: "TRANSFER_RECEIPT",
+      referenceType: "STOCK_TRANSFER_RECEIPT",
+      referenceId: normalizedReceiptIdentity,
+      idempotencyKey: `${normalizedReceiptIdentity}:${shipmentLine.id}:accepted`,
+      actorId: String(actorId).trim(),
+      actorRole: String(actorRole).trim().toUpperCase(),
+      reason: `Accepted stock received for stock transfer ${transfer.id}.`,
+    });
+  }
+  if (damaged > 0) {
+    if (!damagedLocationId) throw fail("A damaged location is required for damaged receipt quantity.", "RECEIPT_DAMAGED_LOCATION_REQUIRED");
+    movements.push({
+      inventorySkuId: transferLine.inventorySkuId,
+      sourceLocationId: transitLocationId,
+      destinationLocationId: damagedLocationId,
+      quantity: damaged,
+      movementType: "DAMAGE",
+      referenceType: "STOCK_TRANSFER_RECEIPT",
+      referenceId: normalizedReceiptIdentity,
+      idempotencyKey: `${normalizedReceiptIdentity}:${shipmentLine.id}:damaged`,
+      actorId: String(actorId).trim(),
+      actorRole: String(actorRole).trim().toUpperCase(),
+      reason: `Damaged stock received for stock transfer ${transfer.id}.`,
+    });
+  }
+  if (missing > 0) {
+    if (!lostLocationId) throw fail("A lost location is required for missing receipt quantity.", "RECEIPT_LOST_LOCATION_REQUIRED");
+    movements.push({
+      inventorySkuId: transferLine.inventorySkuId,
+      sourceLocationId: transitLocationId,
+      destinationLocationId: lostLocationId,
+      quantity: missing,
+      movementType: "LOSS",
+      referenceType: "STOCK_TRANSFER_RECEIPT",
+      referenceId: normalizedReceiptIdentity,
+      idempotencyKey: `${normalizedReceiptIdentity}:${shipmentLine.id}:missing`,
+      actorId: String(actorId).trim(),
+      actorRole: String(actorRole).trim().toUpperCase(),
+      reason: `Missing stock recorded for stock transfer ${transfer.id}.`,
+    });
+  }
+
+  return {
+    transferId: transfer.id,
+    shipmentId: shipment.id,
+    shipmentLineId: shipmentLine.id,
+    inventorySkuId: transferLine.inventorySkuId,
+    acceptedQuantity: accepted,
+    damagedQuantity: damaged,
+    rejectedQuantity: rejected,
+    missingQuantity: missing,
+    previouslyReceivedQuantity: previouslyReceived,
+    outstandingAfter: shipmentLineQuantity - previouslyReceived - accepted - damaged - missing - rejected,
+    movements,
+  };
+};
+
 export const normalizeApprovalLines = (lines, transferLines) => {
   if (!Array.isArray(lines) || lines.length !== transferLines.length) {
     throw fail("An approval quantity is required for every requested SKU line.");
@@ -266,6 +720,99 @@ export const normalizeApprovalLines = (lines, transferLines) => {
     seen.add(lineId);
     return { id: lineId, approvedQuantity };
   });
+};
+
+export const normalizeDispatchRequestLines = (requestedLines, transferLines) => {
+  if (!Array.isArray(requestedLines) || requestedLines.length < 1 || requestedLines.length > transferLines.length) {
+    throw fail("A shipment must contain at least one approved SKU line.");
+  }
+  const byId = new Map(transferLines.map((line) => [line.id, line]));
+  const seen = new Set();
+  return requestedLines.map((requested) => {
+    const lineId = String(requested?.lineId || "").trim();
+    const line = byId.get(lineId);
+    const quantity = Number(requested?.quantity);
+    if (
+      !line ||
+      seen.has(lineId) ||
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      quantity > 2147483647
+    ) {
+      throw fail("Shipment quantities must be positive whole numbers for unique transfer lines.");
+    }
+    seen.add(lineId);
+    return { stockTransferLineId: lineId, quantity, line };
+  });
+};
+
+export const assertDispatchAvailability = (lines) => {
+  for (const { line, quantity } of lines) {
+    const eligibleQuantity = remainingApprovedQuantity(line);
+    if (quantity > eligibleQuantity) {
+      throw fail("Shipment quantities must be within each approved, undispatched line.", "INSUFFICIENT_APPROVED_QUANTITY", 409);
+    }
+  }
+  return lines;
+};
+
+export const planCanonicalTransferDispatch = ({
+  transfer,
+  shipment,
+  transferLines,
+  transitLocationId,
+  actorId,
+  actorRole,
+}) => {
+  if (!transfer?.id || !shipment?.id) throw fail("Transfer and shipment source identities are required.", "DISPATCH_SOURCE_REQUIRED");
+  if (!transitLocationId) throw fail("A verified in-transit destination location is required.", "TRANSIT_LOCATION_REQUIRED");
+  if (!Array.isArray(shipment?.lines) || shipment.lines.length < 1) {
+    throw fail("A dispatch shipment must contain at least one line.", "DISPATCH_LINES_REQUIRED");
+  }
+  if (!String(actorId || "").trim() || !String(actorRole || "").trim()) {
+    throw fail("An authenticated dispatch actor and role are required.", "DISPATCH_ACTOR_REQUIRED");
+  }
+
+  const transferLinesById = new Map((transferLines || []).map((line) => [line.id, line]));
+  const seen = new Set();
+  const movements = [];
+  for (const shipmentLine of shipment.lines) {
+    const transferLineId = shipmentLine.stockTransferLineId;
+    const transferLine = transferLinesById.get(transferLineId);
+    const quantity = Number(shipmentLine.quantity);
+    if (!transferLine || seen.has(transferLineId)) {
+      throw fail("A shipment line must reference one unique approved transfer line.", "DISPATCH_LINE_CONFLICT", 409);
+    }
+    seen.add(transferLineId);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > 2147483647) {
+      throw fail("Dispatch quantity must be a positive whole number.", "INVALID_DISPATCH_QUANTITY");
+    }
+    const approvedQuantity = Number(transferLine.approvedQuantity || 0);
+    const alreadyDispatched = Number(transferLine.dispatchedQuantity || 0);
+    if (!Number.isSafeInteger(approvedQuantity) || approvedQuantity < 0 ||
+        !Number.isSafeInteger(alreadyDispatched) || alreadyDispatched < 0 ||
+        quantity > approvedQuantity - alreadyDispatched) {
+      throw fail("Dispatch quantities must not exceed approved, undispatched transfer quantities.", "INSUFFICIENT_APPROVED_QUANTITY", 409);
+    }
+    if (!transferLine.inventorySkuId) throw fail("A dispatch line must identify an inventory SKU.", "DISPATCH_SKU_REQUIRED");
+
+    movements.push({
+      shipmentLineId: shipmentLine.id,
+      transferLineId: transferLine.id,
+      inventorySkuId: transferLine.inventorySkuId,
+      sourceLocationId: transfer.sourceLocationId,
+      destinationLocationId: transitLocationId,
+      quantity,
+      movementType: "TRANSFER_DISPATCH",
+      referenceType: "STOCK_TRANSFER",
+      referenceId: transfer.id,
+      idempotencyKey: `stock-transfer:${shipment.id}:dispatch:${transferLine.inventorySkuId}`,
+      actorId: String(actorId).trim(),
+      actorRole: String(actorRole).trim().toUpperCase(),
+      reason: `Bulk stock dispatched to distributor under transfer ${transfer.id}.`,
+    });
+  }
+  return movements;
 };
 
 const normalizeEvidence = (evidence) => {

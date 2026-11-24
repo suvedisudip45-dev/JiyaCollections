@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyInventoryMovement,
+  normalizeInventoryMovement,
   collectProductVariants,
   normalizeSkuOption,
   planLegacyInventoryBackfill,
@@ -154,7 +155,6 @@ test("stock movement is atomic, idempotent, and cannot consume reserved quantity
     quantityOnHand: 6,
     reservedQuantity: 2,
   });
-
   const first = await applyInventoryMovement(tx, movement);
   assert.equal(first.replayed, false);
   assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 2);
@@ -177,6 +177,116 @@ test("stock movement is atomic, idempotent, and cannot consume reserved quantity
     applyInventoryMovement(tx, { ...movement, quantity: 3, idempotencyKey: "shipment-line-1" }),
     (error) => error.code === "IDEMPOTENCY_CONFLICT",
   );
+});
+
+test("movement contract rejects invalid movement types, quantities, and required locations", () => {
+  assert.throws(
+    () => normalizeInventoryMovement({ ...movement, movementType: "UNSUPPORTED" }),
+    (error) => error.code === "INVALID_MOVEMENT_TYPE",
+  );
+  for (const quantity of [0, -1, 1.5, "1.5", "", null, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => normalizeInventoryMovement({ ...movement, quantity }),
+      (error) => error.code === "INVALID_QUANTITY",
+    );
+  }
+  assert.throws(
+    () => normalizeInventoryMovement({ ...movement, sourceLocationId: null }),
+    (error) => error.code === "SOURCE_LOCATION_REQUIRED",
+  );
+  assert.throws(
+    () => normalizeInventoryMovement({ ...movement, destinationLocationId: null }),
+    (error) => error.code === "DESTINATION_LOCATION_REQUIRED",
+  );
+  assert.throws(
+    () => normalizeInventoryMovement({
+      ...movement,
+      movementType: "FULFILLMENT",
+      destinationLocationId: "transit-1",
+    }),
+    (error) => error.code === "UNEXPECTED_DESTINATION_LOCATION",
+  );
+  assert.throws(
+    () => normalizeInventoryMovement({
+      ...movement,
+      movementType: "PRODUCTION_RECEIPT",
+      sourceLocationId: "factory-1",
+      destinationLocationId: "factory-1",
+    }),
+    (error) => error.code === "UNEXPECTED_SOURCE_LOCATION",
+  );
+});
+
+test("movement contract normalizes exact integer text without mutating input", () => {
+  const input = { ...movement, quantity: "4" };
+  const snapshot = { ...input };
+  const normalized = normalizeInventoryMovement(input);
+  assert.equal(normalized.quantity, 4);
+  assert.deepEqual(input, snapshot);
+});
+
+test("movement replay handles conflicts and does not repeat balance effects", async () => {
+  const { tx, balances, entries, balanceKey } = createInventoryTransaction({
+    quantityOnHand: 10,
+  });
+  const first = await applyInventoryMovement(tx, movement);
+  const replay = await applyInventoryMovement(tx, movement);
+  assert.equal(first.replayed, false);
+  assert.equal(replay.replayed, true);
+  assert.equal(entries.size, 1);
+  assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 6);
+  assert.equal(balances.get(balanceKey("transit-1", "sku-1")).quantityOnHand, 4);
+  await assert.rejects(
+    applyInventoryMovement(tx, { ...movement, quantity: 3 }),
+    (error) => error.code === "IDEMPOTENCY_CONFLICT",
+  );
+});
+
+test("movement contract preserves custody ownership and has no accounting side effects", async () => {
+  const { tx, balances, entries, balanceKey } = createInventoryTransaction({
+    quantityOnHand: 5,
+  });
+  const result = await applyInventoryMovement(tx, {
+    ...movement,
+    idempotencyKey: "custody-dispatch-1",
+  });
+  assert.equal(result.replayed, false);
+  assert.equal(entries.values().next().value.inventoryOwner, "PLATFORM");
+  assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 1);
+  assert.equal(balances.get(balanceKey("transit-1", "sku-1")).quantityOnHand, 4);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.ledgerEntry, "journalEntryId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.ledgerEntry, "revenue"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.ledgerEntry, "cogs"), false);
+});
+
+test("mocked transaction boundary reports rollback without partial balance or ledger state", async () => {
+  const { tx, balances, entries, balanceKey } = createInventoryTransaction({
+    quantityOnHand: 6,
+  });
+  const runMockTransaction = async (operation) => {
+    const beforeBalances = new Map([...balances].map(([key, value]) => [key, { ...value }]));
+    const beforeEntries = new Map(entries);
+    try {
+      return await operation(tx);
+    } catch (error) {
+      balances.clear();
+      entries.clear();
+      for (const [key, value] of beforeBalances) balances.set(key, value);
+      for (const [key, value] of beforeEntries) entries.set(key, value);
+      throw error;
+    }
+  };
+  await assert.rejects(
+    runMockTransaction(() => applyInventoryMovement(tx, {
+      ...movement,
+      quantity: 7,
+      idempotencyKey: "failed-transfer",
+    })),
+    (error) => error.code === "INSUFFICIENT_STOCK",
+  );
+  assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 6);
+  assert.equal(balances.get(balanceKey("transit-1", "sku-1")), undefined);
+  assert.equal(entries.size, 0);
 });
 
 test("completed production receipt creates one canonical cost layer and factory ledger movement", async () => {

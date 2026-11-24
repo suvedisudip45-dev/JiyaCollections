@@ -14,6 +14,18 @@ const MOVEMENT_TYPES = new Set([
   "ADJUSTMENT",
 ]);
 
+const MOVEMENT_LOCATION_RULES = Object.freeze({
+  OPENING_BALANCE: { source: false, destination: true },
+  PRODUCTION_RECEIPT: { source: false, destination: true },
+  TRANSFER_DISPATCH: { source: true, destination: true },
+  TRANSFER_RECEIPT: { source: true, destination: true },
+  FULFILLMENT: { source: true, destination: false },
+  RETURN: { source: "optional", destination: true },
+  DAMAGE: { source: true, destination: true },
+  LOSS: { source: true, destination: true },
+  ADJUSTMENT: { source: "optional", destination: "optional" },
+});
+
 const LOCATION_KINDS = new Set(["FACTORY", "DISTRIBUTOR", "IN_TRANSIT", "QUARANTINE", "DAMAGED", "LOST", "RETURN_HOLD", "RETURN_RECEIPT"]);
 
 const fail = (message, code, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
@@ -250,8 +262,16 @@ export const ensureInventoryLocation = async (tx, {
   }
 };
 
-const normalizeMovement = (movement) => {
-  const quantity = Number(movement.quantity);
+export const normalizeInventoryMovement = (movement) => {
+  const rawQuantity = movement?.quantity;
+  let quantity;
+  if (typeof rawQuantity === "number") {
+    quantity = rawQuantity;
+  } else if (typeof rawQuantity === "string" && /^\d+$/.test(rawQuantity.trim())) {
+    quantity = Number(rawQuantity.trim());
+  } else {
+    throw fail("Movement quantity must be an exact positive whole number.", "INVALID_QUANTITY");
+  }
   const movementType = String(movement.movementType || "").trim().toUpperCase();
   const sourceLocationId = movement.sourceLocationId || null;
   const destinationLocationId = movement.destinationLocationId || null;
@@ -264,6 +284,22 @@ const normalizeMovement = (movement) => {
     throw fail("Movement quantity must be a positive whole number within the supported inventory limit.", "INVALID_QUANTITY");
   }
   if (!MOVEMENT_TYPES.has(movementType)) throw fail("Select a valid inventory movement type.", "INVALID_MOVEMENT_TYPE");
+  const locationRule = MOVEMENT_LOCATION_RULES[movementType];
+  if (locationRule.source === true && !sourceLocationId) {
+    throw fail(`${movementType} requires a source location.`, "SOURCE_LOCATION_REQUIRED");
+  }
+  if (locationRule.destination === true && !destinationLocationId) {
+    throw fail(`${movementType} requires a destination location.`, "DESTINATION_LOCATION_REQUIRED");
+  }
+  if (locationRule.source === false && sourceLocationId) {
+    throw fail(`${movementType} must not have a source location.`, "UNEXPECTED_SOURCE_LOCATION");
+  }
+  if (locationRule.destination === false && destinationLocationId) {
+    throw fail(`${movementType} must not have a destination location.`, "UNEXPECTED_DESTINATION_LOCATION");
+  }
+  if (movementType === "ADJUSTMENT" && (!sourceLocationId && !destinationLocationId)) {
+    throw fail("ADJUSTMENT requires a source or destination location.", "LOCATION_REQUIRED");
+  }
   if (!sourceLocationId && !destinationLocationId) throw fail("A stock movement must have a source or destination location.", "LOCATION_REQUIRED");
   if (sourceLocationId && sourceLocationId === destinationLocationId) throw fail("Source and destination locations must be different.", "SAME_LOCATION");
   if (!idempotencyKey || idempotencyKey.length > 191) throw fail("A valid idempotency key is required.", "IDEMPOTENCY_KEY_REQUIRED");
@@ -311,7 +347,7 @@ const ensureBalance = (tx, locationId, inventorySkuId) => tx.inventoryBalance.up
 });
 
 export const applyInventoryMovement = async (tx, input) => {
-  const movement = normalizeMovement(input);
+  const movement = normalizeInventoryMovement(input);
   const existing = await tx.inventoryLedgerEntry.findUnique({
     where: { idempotencyKey: movement.idempotencyKey },
   });
@@ -399,7 +435,7 @@ export const recordInventoryMovement = async (movement, { client = prisma } = {}
     return await client.$transaction((tx) => applyInventoryMovement(tx, movement));
   } catch (error) {
     if (error.code !== "P2002") throw error;
-    const normalized = normalizeMovement(movement);
+    const normalized = normalizeInventoryMovement(movement);
     const existing = await client.inventoryLedgerEntry.findUnique({
       where: { idempotencyKey: normalized.idempotencyKey },
     });

@@ -23,6 +23,8 @@ import { applyCollaborationFeeCreditToInvoice } from "./collaborationFeeCreditAp
 import { recordLoanRepayment } from "./loanAccountingService.js";
 import { recordShareBuyback } from "./shareBuybackService.js";
 import { createSupplierReturn } from "./supplierReturnService.js";
+import { applySupplierReturnCreditToBill } from "./supplierReturnCreditApplicationService.js";
+import { parseNprAmountString } from "./accountingDecimal.js";
 import {
   confirmNcmSettlementBatch,
   correctNcmSettlementBatch,
@@ -49,6 +51,7 @@ const ACTION_TYPES = new Set([
   "NCM_VARIANCE_RESOLUTION",
   "MANUFACTURER_CREDIT_APPLICATION",
   "COLLABORATION_CREDIT_APPLICATION",
+  "SUPPLIER_RETURN_CREDIT_APPLICATION",
   "LOAN_REPAYMENT",
   "SHARE_BUYBACK",
   "SUPPLIER_RETURN_CREATE",
@@ -375,6 +378,23 @@ const normalizePayload = (actionType, input) => {
       invoiceDocumentId: text(input.invoiceDocumentId, "Partner invoice ID", 191, { required: true }),
       amount: text(String(input.amount ?? ""), "Partner credit application amount", 64, { required: true }),
       reason: text(input.reason, "Partner credit application reason", 1000, { required: true, minLength: 3 }),
+    };
+  }
+
+  if (actionType === "SUPPLIER_RETURN_CREDIT_APPLICATION") {
+    let amount;
+    try {
+      amount = parseNprAmountString(input.amount, "Supplier credit application amount", {
+        allowZero: false,
+      }).toFixed(2);
+    } catch (error) {
+      throw fail(error.message || "Supplier credit application amount must be a positive decimal string.", 400, "INVALID_AMOUNT");
+    }
+    return {
+      supplierReturnId: text(input.supplierReturnId, "Supplier return ID", 191, { required: true }),
+      billDocumentId: text(input.billDocumentId, "Supplier bill ID", 191, { required: true }),
+      amount,
+      reason: text(input.reason, "Supplier credit application reason", 1000, { required: true, minLength: 3 }),
     };
   }
 
@@ -863,6 +883,24 @@ const executeApprovedAction = async (tx, approval, reviewer, auditContext) => {
       entityType: "CollaborationFeeCreditApplication",
       entityId: result.application?.id || approval.id,
       journalEntryId: result.journalEntryId || null,
+      isReplay: result.isReplay,
+    };
+  }
+
+  if (approval.actionType === "SUPPLIER_RETURN_CREDIT_APPLICATION") {
+    const result = await applySupplierReturnCreditToBill({
+      supplierReturnId: payload.supplierReturnId,
+      billDocumentId: payload.billDocumentId,
+      amount: payload.amount,
+      idempotencyKey: approval.id,
+      appliedByAccountId: reviewer.accountId,
+      notes: payload.reason,
+      client: tx,
+    });
+    return {
+      entityType: "SupplierReturnCreditApplication",
+      entityId: result.application?.id || approval.id,
+      journalEntryId: result.journalEntryId || result.application?.journalEntryId || null,
       isReplay: result.isReplay,
     };
   }

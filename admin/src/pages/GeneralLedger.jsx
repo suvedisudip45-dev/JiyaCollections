@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import PostedLedgerBasisNotice from "../components/PostedLedgerBasisNotice";
 import { formatNepaliDate, getCurrentNepaliDateRange } from "../utils/nepaliDate";
 import { compareDecimalStrings, formatNprAmount } from "../utils/decimalDisplay";
 
@@ -119,6 +120,7 @@ const GeneralLedger = ({ token }) => {
       </div>
 
       <AccountingPostingStatusBanner status={statementData?.accountingPostingStatus} />
+      {statementData && <PostedLedgerBasisNotice reportBasis={statementData.reportBasis} />}
 
       {/* Control Bar: Account Selector & Date Range */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-4 items-end">

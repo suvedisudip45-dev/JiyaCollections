@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  calculateFinancialDashboardRevenue,
   calculateAllocatedProductionOverhead,
   calculateFinancialDashboardProductCosts,
   calculateInventoryValuationAtCost,
@@ -8,6 +9,25 @@ import {
   calculateProductFixedOverheadPerSoldUnit,
   countPurchaseTransactions,
 } from "../services/financialDashboardCosting.js";
+
+test("dashboard revenue subtracts completed customer refunds from gross period revenue", () => {
+  assert.deepEqual(calculateFinancialDashboardRevenue({
+    orders: [{ amount: 1640 }, { amount: "360" }],
+    customerReturns: [{ totalRefundAmount: 250 }, { totalRefundAmount: "50" }],
+  }), {
+    grossRevenueIncVat: 2000,
+    customerRefunds: 300,
+    netRevenueIncVat: 1700,
+  });
+  assert.deepEqual(calculateFinancialDashboardRevenue({
+    orders: [{ amount: 100 }],
+    customerReturns: [{ totalRefundAmount: 125 }],
+  }), {
+    grossRevenueIncVat: 100,
+    customerRefunds: 125,
+    netRevenueIncVat: 0,
+  });
+});
 
 test("product-cost calculation captures accepted unit COGS and per-unit other charges", () => {
   const result = calculateFinancialDashboardProductCosts({

@@ -317,6 +317,11 @@ inventory changes continue to use their separately protected operations.
   `DistributorLocation`; admins can manage additional service districts in the
   Service-area coverage tab. Admin review controls activation. Status values
   include `PENDING_APPROVAL`, `ACTIVE`, `SUSPENDED`, and `REJECTED`.
+  An approved `ACTIVE` status controls distributor workspace access; `isActive`
+  controls whether the distributor is currently available for order allocation.
+  Going offline therefore does not block the distributor from signing in or
+  switching availability back on. The availability update requires the
+  `distributor:availability_update` permission.
 - Admins can edit the distributor registration profile from Distributor
   Management. `PUT /api/admin/distributor-applications/:id/profile` updates the
   account email/phone and stored location, NCM, pickup, and contract fields in
@@ -697,6 +702,8 @@ transfer flow:
    `PATCH /api/manufacturer/production/:id/quote`. The Admin reviews and may
    adjust the quoted terms before approving or rejecting the quote through
    `POST /api/manufacturer-production/admin/requests/:id/review`.
+   An empty VAT rate is treated as zero for an exempt quote; VAT-inclusive or
+   VAT-exclusive quotes require a positive rate and invoice reference.
 3. Only an Admin-approved order can pass the required fabric, sample-quality,
    and color-shade pre-production checks through
    `PATCH /api/manufacturer/production/:id/pre-check`. Production can start

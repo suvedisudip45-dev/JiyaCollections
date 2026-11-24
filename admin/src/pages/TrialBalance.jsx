@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import PostedLedgerBasisNotice from "../components/PostedLedgerBasisNotice";
 import { getCurrentNepaliDateRange } from "../utils/nepaliDate";
 import { compareDecimalStrings, formatNprAmount, subtractDecimalStrings } from "../utils/decimalDisplay";
 
@@ -115,7 +116,7 @@ const TrialBalance = ({ token }) => {
             )}
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Authoritative double-entry parity verification across opening balances, period activity, and closing ledgers
+            Posted-journal debit/credit parity across opening balances, period activity, and closing balances
           </p>
         </div>
 
@@ -155,6 +156,7 @@ const TrialBalance = ({ token }) => {
       </div>
 
       <AccountingPostingStatusBanner status={data?.accountingPostingStatus} />
+      {data && <PostedLedgerBasisNotice reportBasis={data.reportBasis} />}
 
       {/* Summary Invariant Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

@@ -751,7 +751,7 @@ const PayablesReceivables = ({ token }) => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Accounts Payable &amp; Receivable</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Track supplier bills, distributor settlement requests, manufacturer obligations, and liquid cash.</p>
+          <p className="text-xs text-slate-500 mt-0.5">Internal subledger and Treasury records. Supplier balances are not reconciled to a complete receipt register or independent supplier and bank statements.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {canSettlePayable&&<button onClick={()=>{

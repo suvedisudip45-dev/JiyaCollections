@@ -229,7 +229,7 @@ const Inventory = () => {
             Hub Inventory &amp; Supply Price Quotations
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Maintain your physical variant stock (sizes &amp; colors pre-configured by admin) and quote your supply manufacturing cost.
+            This page reads manufacturer inventory records and movement history, not the canonical inventory ledger or a posted valuation. Quote your supply manufacturing cost here.
           </p>
         </div>
 
@@ -253,7 +253,7 @@ const Inventory = () => {
 
         <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Total Physical Units
+            Recorded Manufacturer Units
           </span>
           <p className="text-2xl font-black text-slate-900 mt-1">
             {totalPhysicalStock} <span className="text-xs font-normal text-slate-500">units</span>

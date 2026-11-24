@@ -77,10 +77,10 @@ const Inventory = ({ token }) => {
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-2">
             <Boxes className="w-6 h-6 text-slate-900" />
-            Central Catalog Stock Monitor
+            Catalog Stock Projection
           </h1>
           <p className="text-xs text-slate-500">
-            Read-only aggregated inventory across all regional manufacturer hubs. Stock levels are updated directly by authorized manufacturers.
+            Displays Product.stockQuantity from the catalog API. This operational quantity is not a physical count, ownership register, or canonical-ledger reconciliation.
           </p>
         </div>
 
@@ -97,9 +97,9 @@ const Inventory = ({ token }) => {
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-start gap-3">
         <Info className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
         <div className="text-xs text-blue-900">
-          <p className="font-bold">Decentralized Stock Management Active</p>
+          <p className="font-bold">Catalog quantity source</p>
           <p className="text-blue-800 mt-0.5">
-            Admin defines garment varieties (sizes and colors). Physical inventory is verified and supplied exclusively by regional manufacturer hubs to guarantee real-world fulfillment accuracy.
+            Product stock can be synchronized from distributor ledger balances, but legacy order, return, and adjustment paths also write catalog quantities. Use the Inventory Ledger Audit for canonical movements and balances.
           </p>
         </div>
       </div>
@@ -120,7 +120,7 @@ const Inventory = ({ token }) => {
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-            Total Physical Stock
+            Total Catalog Units
           </span>
           <div className="mt-3 flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-black text-slate-900">
@@ -211,7 +211,7 @@ const Inventory = ({ token }) => {
                   <th className="py-3.5 px-4">Category</th>
                   <th className="py-3.5 px-4">Retail Price</th>
                   <th className="py-3.5 px-4 text-center">Configured Sizes &amp; Colors</th>
-                  <th className="py-3.5 px-4 text-center">Network Stock</th>
+                  <th className="py-3.5 px-4 text-center">Catalog Units</th>
                   <th className="py-3.5 px-4 text-right">Status</th>
                 </tr>
               </thead>

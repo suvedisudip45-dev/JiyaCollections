@@ -111,6 +111,9 @@ test("realtime balance sheet includes distributor COD receivables and distributo
   );
 
   assert.equal(response.success, true);
+  assert.equal(response.reportBasis.classification, "POSTED_JOURNAL_LEDGER");
+  assert.deepEqual(response.reportBasis.includedJournalStatuses, ["POSTED", "REVERSED"]);
+  assert.equal(response.reportBasis.sourceCompleteness, "NOT_ESTABLISHED");
   assert.equal(response.balanceSheet.assets.currentAssets.distributorCodReceivable, "1500");
   assert.equal(response.balanceSheet.assets.currentAssets.totalCurrentAssets, "1500");
   assert.equal(response.balanceSheet.liabilities.currentLiabilities.distributorPayable, "350");

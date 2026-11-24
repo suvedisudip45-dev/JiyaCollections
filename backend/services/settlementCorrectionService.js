@@ -26,6 +26,139 @@ const parseHistory = (value, label) => {
   return history;
 };
 
+const correctionDecimal = (value, label) => {
+  let amount;
+  try {
+    amount = new Prisma.Decimal(String(value));
+  } catch {
+    fail(`${label} is invalid; reconcile it before proceeding.`, 409, "SETTLEMENT_BALANCE_MISMATCH");
+  }
+  if (!amount.isFinite()) {
+    fail(`${label} is invalid; reconcile it before proceeding.`, 409, "SETTLEMENT_BALANCE_MISMATCH");
+  }
+  return amount;
+};
+
+const resolvePayableBillAllocation = async ({
+  tx,
+  payable,
+  payout,
+  cashTransaction,
+  originalJournal,
+  settlementAmount,
+}) => {
+  if (!payable.accountingPartyId) return null;
+
+  const documents = await tx.accountingDocument.findMany({
+    where: {
+      partyId: payable.accountingPartyId,
+      side: "PAYABLE",
+      documentType: "BILL",
+      sourceType: "OPERATING_EXPENSE",
+      sourceId: payable.referenceId,
+    },
+    select: {
+      id: true,
+      partyId: true,
+      side: true,
+      documentType: true,
+      sourceType: true,
+      sourceId: true,
+      originalAmount: true,
+      allocatedAmount: true,
+      remainingAmount: true,
+      status: true,
+    },
+  });
+  if (documents.length !== 1) {
+    fail(
+      documents.length
+        ? "More than one supplier bill matches this payable; reconcile the source before correcting it."
+        : "The supplier bill linked to this expense payable is missing.",
+      409,
+      documents.length ? "PAYABLE_BILL_DOCUMENT_AMBIGUOUS" : "EXPENSE_BILL_DOCUMENT_MISSING",
+    );
+  }
+  const document = documents[0];
+  const allocationKey = payout ? `ACCOUNT_PAYABLE_PAYOUT:${payout.id}` : null;
+  let allocations;
+  if (allocationKey) {
+    const allocation = await tx.accountingAllocation.findUnique({
+      where: { idempotencyKey: allocationKey },
+    });
+    allocations = allocation ? [allocation] : [];
+  } else {
+    allocations = await tx.accountingAllocation.findMany({
+      where: {
+        documentId: document.id,
+        journalEntryId: originalJournal.id,
+        allocationType: "CASH",
+      },
+    });
+  }
+  if (allocations.length !== 1) {
+    fail(
+      allocations.length
+        ? "The supplier bill has ambiguous allocations for this settlement; reconcile it before correcting."
+        : "The supplier bill allocation for this settlement is missing; reconcile it before correcting.",
+      409,
+      allocations.length ? "PAYABLE_BILL_ALLOCATION_AMBIGUOUS" : "PAYABLE_BILL_ALLOCATION_MISSING",
+    );
+  }
+
+  const allocation = allocations[0];
+  const allocationAmount = correctionDecimal(allocation.amount, "Supplier bill allocation amount");
+  const originalAmount = correctionDecimal(document.originalAmount, "Supplier bill original amount");
+  const allocatedAmount = correctionDecimal(document.allocatedAmount, "Supplier bill allocated amount");
+  const remainingAmount = correctionDecimal(document.remainingAmount, "Supplier bill remaining amount");
+  const expectedStatus = remainingAmount.isZero()
+    ? "PAID"
+    : allocatedAmount.isZero()
+      ? "OPEN"
+      : "PARTIALLY_PAID";
+  if (
+    allocation.documentId !== document.id ||
+    allocation.journalEntryId !== originalJournal.id ||
+    allocation.allocationType !== "CASH" ||
+    (allocation.idempotencyKey && allocationKey && allocation.idempotencyKey !== allocationKey) ||
+    (allocation.cashTransactionId && allocation.cashTransactionId !== cashTransaction.id) ||
+    !allocationAmount.isPositive() ||
+    !allocationAmount.equals(settlementAmount) ||
+    !originalAmount.isPositive() ||
+    allocatedAmount.isNegative() ||
+    remainingAmount.isNegative() ||
+    !allocatedAmount.plus(remainingAmount).equals(originalAmount) ||
+    allocatedAmount.lessThan(allocationAmount) ||
+    remainingAmount.plus(allocationAmount).greaterThan(originalAmount) ||
+    !["OPEN", "PARTIALLY_PAID", "PAID"].includes(document.status) ||
+    document.status !== expectedStatus
+  ) {
+    fail("Supplier bill allocation and current document balances do not match this settlement.", 409, "PAYABLE_BILL_BALANCE_MISMATCH");
+  }
+
+  const priorReversal = await tx.accountingAllocation.findMany({
+    where: { reversesAllocationId: { in: [allocation.id] } },
+    select: { id: true },
+  });
+  const reversalKey = `SETTLEMENT_CORRECTION_ALLOCATION:${cashTransaction.id}`;
+  const keyedReversal = await tx.accountingAllocation.findUnique({
+    where: { idempotencyKey: reversalKey },
+  });
+  if (priorReversal.length || keyedReversal) {
+    fail("The supplier bill allocation has already been reversed.", 409, "PAYABLE_BILL_ALLOCATION_ALREADY_REVERSED");
+  }
+
+  return {
+    document,
+    allocation,
+    allocationAmount,
+    originalAmount,
+    allocatedAmount,
+    remainingAmount,
+    reversalKey,
+  };
+};
+
 const correctMarketingCpaPayableTransaction = async ({
   tx,
   recordId,
@@ -427,6 +560,16 @@ export const correctSettledTransaction = async ({
         fail("This payout has confirmed bank evidence; record returned funds instead of voiding it as unexecuted.", 409, "SETTLED_PAYOUT_CANNOT_BE_VOIDED");
       }
     }
+    const payableBillAllocation = type === "PAYABLE"
+      ? await resolvePayableBillAllocation({
+          tx,
+          payable: record,
+          payout,
+          cashTransaction,
+          originalJournal,
+          settlementAmount,
+        })
+      : null;
 
     const accountId = type === "PAYABLE" ? cashTransaction.fromAccountId : cashTransaction.toAccountId;
     if (!accountId) fail("The original settlement has no linked treasury account.", 409, "SETTLEMENT_TREASURY_ACCOUNT_MISSING");
@@ -492,6 +635,53 @@ export const correctSettledTransaction = async ({
     });
     if (updated.count !== 1) fail("Settlement source changed during correction; refresh and retry.", 409, "SETTLEMENT_CORRECTION_CONFLICT");
 
+    if (payableBillAllocation) {
+      const {
+        document,
+        allocation,
+        allocationAmount,
+        originalAmount,
+        allocatedAmount,
+        remainingAmount,
+        reversalKey,
+      } = payableBillAllocation;
+      const nextAllocatedAmount = allocatedAmount.minus(allocationAmount);
+      const nextRemainingAmount = remainingAmount.plus(allocationAmount);
+      const nextDocumentStatus = nextRemainingAmount.isZero()
+        ? "PAID"
+        : nextAllocatedAmount.isZero()
+          ? "OPEN"
+          : "PARTIALLY_PAID";
+      const documentUpdate = await tx.accountingDocument.updateMany({
+        where: {
+          id: document.id,
+          allocatedAmount: document.allocatedAmount,
+          remainingAmount: document.remainingAmount,
+          status: document.status,
+        },
+        data: {
+          allocatedAmount: nextAllocatedAmount,
+          remainingAmount: nextRemainingAmount,
+          status: nextDocumentStatus,
+        },
+      });
+      if (documentUpdate.count !== 1 || nextRemainingAmount.greaterThan(originalAmount)) {
+        fail("Supplier bill changed during correction; refresh and retry.", 409, "PAYABLE_BILL_BALANCE_CONFLICT");
+      }
+      await tx.accountingAllocation.create({
+        data: {
+          documentId: document.id,
+          cashTransactionId: reversalTransaction.id,
+          journalEntryId: reversalJournal.id,
+          allocationType: "REVERSAL",
+          amount: allocationAmount,
+          reversesAllocationId: allocation.id,
+          notes: `Reverses payable settlement ${cashTransaction.id}; evidence ${proofReference}; reason ${reason}`,
+          idempotencyKey: reversalKey,
+        },
+      });
+    }
+
     if (payout && correctionMode === "RETURNED_FUNDS") {
       const payoutUpdated = await tx.financialPayout.updateMany({
         where: { id: payout.id, status: "SETTLED" },
@@ -545,6 +735,13 @@ export const correctSettledTransaction = async ({
         cashTransactionId: cashTransaction.id,
         reversalTransactionId: reversalTransaction.id,
         reversalJournalEntryId: reversalJournal.id,
+        ...(payableBillAllocation
+          ? {
+              supplierBillDocumentId: payableBillAllocation.document.id,
+              reversedAllocationId: payableBillAllocation.allocation.id,
+              reversedAllocationAmount: payableBillAllocation.allocationAmount.toFixed(2),
+            }
+          : {}),
         reason,
       },
     }, { client: tx });

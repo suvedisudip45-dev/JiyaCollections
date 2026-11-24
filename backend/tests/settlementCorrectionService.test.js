@@ -3,7 +3,14 @@ import test from "node:test";
 import { Prisma } from "@prisma/client";
 import { correctSettledTransaction } from "../services/settlementCorrectionService.js";
 
-const makePayableClient = ({ payoutStatus = "SETTLED" } = {}) => {
+const makePayableClient = ({
+  payoutStatus = "SETTLED",
+  payableOverrides = {},
+  supplierBill = null,
+  billAllocations = [],
+  reversedAllocations = [],
+  failAllocationCreate = false,
+} = {}) => {
   const payable = {
     id: "payable-1",
     title: "Test supplier bill",
@@ -18,6 +25,8 @@ const makePayableClient = ({ payoutStatus = "SETTLED" } = {}) => {
       amount: "100.00",
       settlementAmount: "150.00",
     }],
+    ...(supplierBill ? { accountingPartyId: supplierBill.partyId } : {}),
+    ...payableOverrides,
   };
   const cashTransaction = {
     id: "cash-1",
@@ -27,13 +36,61 @@ const makePayableClient = ({ payoutStatus = "SETTLED" } = {}) => {
     fromAccountId: "bank-1",
     referenceId: "payable-1",
   };
-  const calls = { accountChanges: [], cashCreates: [], payableUpdates: [], payoutUpdates: [], reversionCreates: [], audits: [] };
+  const payout = {
+    id: "payout-1",
+    idempotencyKey: "payout-key-1",
+    targetType: "ACCOUNT_PAYABLE",
+    targetId: "payable-1",
+    status: payoutStatus,
+  };
+  const calls = {
+    accountChanges: [],
+    cashCreates: [],
+    payableUpdates: [],
+    documentUpdates: [],
+    allocationCreates: [],
+    payoutUpdates: [],
+    reversionCreates: [],
+    audits: [],
+  };
+  const transactionCalls = [];
   const tx = {
     accountPayable: {
       findUnique: async () => payable,
       updateMany: async (args) => {
         calls.payableUpdates.push(args);
+        Object.assign(payable, args.data);
         return { count: 1 };
+      },
+    },
+    accountingDocument: {
+      findMany: async ({ where }) => supplierBill &&
+        where.partyId === supplierBill.partyId &&
+        where.sourceId === supplierBill.sourceId
+        ? [supplierBill]
+        : [],
+      updateMany: async (args) => {
+        calls.documentUpdates.push(args);
+        Object.assign(supplierBill, args.data);
+        return { count: 1 };
+      },
+    },
+    accountingAllocation: {
+      findUnique: async ({ where }) =>
+        billAllocations.find((allocation) => allocation.idempotencyKey === where.idempotencyKey) ||
+        reversedAllocations.find((allocation) => allocation.idempotencyKey === where.idempotencyKey) ||
+        null,
+      findMany: async ({ where }) => where.reversesAllocationId?.in
+        ? reversedAllocations.filter((allocation) => where.reversesAllocationId.in.includes(allocation.reversesAllocationId))
+        : billAllocations.filter((allocation) =>
+            allocation.documentId === where.documentId &&
+            allocation.journalEntryId === where.journalEntryId &&
+            allocation.allocationType === where.allocationType
+          ),
+      create: async ({ data }) => {
+        if (failAllocationCreate) throw new Error("Injected allocation failure.");
+        calls.allocationCreates.push(data);
+        return { id: "allocation-reversal-1", ...data };
       },
     },
     cashTransaction: {
@@ -51,9 +108,10 @@ const makePayableClient = ({ payoutStatus = "SETTLED" } = {}) => {
       findFirst: async () => ({ id: "journal-1", status: "POSTED" }),
     },
     financialPayout: {
-      findUnique: async () => ({ id: "payout-1", targetType: "ACCOUNT_PAYABLE", targetId: "payable-1", status: payoutStatus }),
+      findUnique: async () => payout,
       updateMany: async (args) => {
         calls.payoutUpdates.push(args);
+        Object.assign(payout, args.data);
         return { count: 1 };
       },
     },
@@ -66,8 +124,61 @@ const makePayableClient = ({ payoutStatus = "SETTLED" } = {}) => {
   return {
     calls,
     payable,
-    client: { $transaction: async (callback) => callback(tx) },
+    supplierBill,
+    transactionCalls,
+    client: {
+      $transaction: async (callback, options) => {
+        transactionCalls.push(options);
+        const snapshot = {
+          payable: { ...payable },
+          supplierBill: supplierBill ? { ...supplierBill } : null,
+          payout: { ...payout },
+          callLengths: Object.fromEntries(Object.entries(calls).map(([name, entries]) => [name, entries.length])),
+        };
+        try {
+          return await callback(tx);
+        } catch (error) {
+          Object.assign(payable, snapshot.payable);
+          if (supplierBill) Object.assign(supplierBill, snapshot.supplierBill);
+          Object.assign(payout, snapshot.payout);
+          for (const [name, length] of Object.entries(snapshot.callLengths)) calls[name].length = length;
+          throw error;
+        }
+      },
+    },
   };
+};
+
+const makeSupplierBillFixture = ({
+  originalAmount,
+  allocatedAmount,
+  settlementAllocationAmount,
+}) => {
+  const original = new Prisma.Decimal(originalAmount);
+  const allocated = new Prisma.Decimal(allocatedAmount);
+  const remaining = original.minus(allocated);
+  const document = {
+    id: "supplier-bill-1",
+    partyId: "vendor-1",
+    documentType: "BILL",
+    side: "PAYABLE",
+    sourceType: "OPERATING_EXPENSE",
+    sourceId: "invoice-1",
+    currency: "NPR",
+    originalAmount: original,
+    allocatedAmount: allocated,
+    remainingAmount: remaining,
+    status: remaining.isZero() ? "PAID" : allocated.isZero() ? "OPEN" : "PARTIALLY_PAID",
+  };
+  const allocation = {
+    id: "allocation-target-1",
+    idempotencyKey: "ACCOUNT_PAYABLE_PAYOUT:payout-1",
+    documentId: document.id,
+    journalEntryId: "journal-1",
+    allocationType: "CASH",
+    amount: new Prisma.Decimal(settlementAllocationAmount),
+  };
+  return { document, allocation };
 };
 
 const makeReceivableClient = () => {
@@ -250,6 +361,254 @@ test("returned payable funds atomically restore source, treasury, payout and sou
   assert.equal(calls.payoutUpdates[0].data.status, "REVERSED");
   assert.equal(calls.reversionCreates.length, 1);
   assert.equal(calls.audits[0].afterState.correctionMode, "RETURNED_FUNDS");
+});
+
+test("supplier bill correction reverses a fully settled bill allocation and reopens its balance", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "150.00",
+    allocatedAmount: "150.00",
+    settlementAllocationAmount: "150.00",
+  });
+  const { client, calls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [allocation],
+  });
+
+  await correctSettledTransaction({
+    type: "PAYABLE",
+    recordId: "payable-1",
+    correctionMode: "RETURNED_FUNDS",
+    correctionReason: "Supplier returned the payment",
+    evidenceReference: "BANK-RETURN-FULL",
+    actorAccountId: "admin-checker",
+    client,
+    reverseJournal: async () => ({ id: "journal-reversal-1" }),
+    writeAudit: async (_actor, event) => calls.audits.push(event),
+  });
+
+  assert.equal(document.allocatedAmount.toFixed(2), "0.00");
+  assert.equal(document.remainingAmount.toFixed(2), "150.00");
+  assert.equal(document.status, "OPEN");
+  assert.equal(calls.documentUpdates[0].data.status, "OPEN");
+  assert.equal(calls.allocationCreates.length, 1);
+  assert.equal(calls.allocationCreates[0].allocationType, "REVERSAL");
+  assert.equal(calls.allocationCreates[0].amount.toFixed(2), "150.00");
+  assert.equal(calls.allocationCreates[0].reversesAllocationId, allocation.id);
+  assert.equal(calls.audits[0].afterState.supplierBillDocumentId, document.id);
+  assert.equal(calls.audits[0].afterState.reversedAllocationAmount, "150.00");
+});
+
+test("supplier bill correction reverses only its payout when multiple allocations remain", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "200.00",
+    allocatedAmount: "175.00",
+    settlementAllocationAmount: "75.00",
+  });
+  const priorAllocation = {
+    id: "allocation-prior-1",
+    idempotencyKey: "EXPENSE_PAYMENT:prior-payment",
+    documentId: document.id,
+    journalEntryId: "prior-journal-1",
+    allocationType: "CASH",
+    amount: new Prisma.Decimal("100.00"),
+  };
+  const { client, calls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [priorAllocation, allocation],
+    payableOverrides: {
+      totalAmount: new Prisma.Decimal("200.00"),
+      paidAmount: new Prisma.Decimal("175.00"),
+      remainingBalance: new Prisma.Decimal("25.00"),
+      status: "PARTIALLY_PAID",
+      settlementHistory: [{
+        idempotencyKey: "payout-key-1",
+        amount: "100.00",
+        settlementAmount: "75.00",
+      }],
+    },
+  });
+
+  await correctSettledTransaction({
+    type: "PAYABLE",
+    recordId: "payable-1",
+    correctionMode: "RETURNED_FUNDS",
+    correctionReason: "Supplier returned the latest payment",
+    evidenceReference: "BANK-RETURN-PARTIAL",
+    actorAccountId: "admin-checker",
+    client,
+    reverseJournal: async () => ({ id: "journal-reversal-1" }),
+    writeAudit: async () => {},
+  });
+
+  assert.equal(document.allocatedAmount.toFixed(2), "100.00");
+  assert.equal(document.remainingAmount.toFixed(2), "100.00");
+  assert.equal(document.status, "PARTIALLY_PAID");
+  assert.equal(calls.allocationCreates.length, 1);
+  assert.equal(calls.allocationCreates[0].reversesAllocationId, allocation.id);
+  assert.equal(calls.allocationCreates[0].amount.toFixed(2), "75.00");
+  assert.equal(priorAllocation.amount.toFixed(2), "100.00");
+});
+
+test("supplier bill correction fails closed when the linked allocation is missing", async () => {
+  const { document } = makeSupplierBillFixture({
+    originalAmount: "150.00",
+    allocatedAmount: "150.00",
+    settlementAllocationAmount: "150.00",
+  });
+  const { client, calls } = makePayableClient({ supplierBill: document });
+
+  await assert.rejects(
+    correctSettledTransaction({
+      type: "PAYABLE",
+      recordId: "payable-1",
+      correctionMode: "RETURNED_FUNDS",
+      correctionReason: "Supplier returned the payment",
+      evidenceReference: "BANK-RETURN-MISSING",
+      actorAccountId: "admin-checker",
+      client,
+    }),
+    { code: "PAYABLE_BILL_ALLOCATION_MISSING" },
+  );
+  assert.equal(calls.accountChanges.length, 0);
+  assert.equal(calls.cashCreates.length, 0);
+  assert.equal(calls.payableUpdates.length, 0);
+});
+
+test("supplier bill correction rejects an already reversed allocation", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "150.00",
+    allocatedAmount: "150.00",
+    settlementAllocationAmount: "150.00",
+  });
+  const { client, calls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [allocation],
+    reversedAllocations: [{ id: "existing-reversal", reversesAllocationId: allocation.id }],
+  });
+
+  await assert.rejects(
+    correctSettledTransaction({
+      type: "PAYABLE",
+      recordId: "payable-1",
+      correctionMode: "RETURNED_FUNDS",
+      correctionReason: "Supplier returned the payment",
+      evidenceReference: "BANK-RETURN-REPLAY",
+      actorAccountId: "admin-checker",
+      client,
+    }),
+    { code: "PAYABLE_BILL_ALLOCATION_ALREADY_REVERSED" },
+  );
+  assert.equal(calls.accountChanges.length, 0);
+  assert.equal(calls.cashCreates.length, 0);
+});
+
+test("supplier bill correction rejects over-reversal and invalid allocation amounts", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "200.00",
+    allocatedAmount: "50.00",
+    settlementAllocationAmount: "75.00",
+  });
+  const { client, calls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [allocation],
+    payableOverrides: {
+      settlementHistory: [{
+        idempotencyKey: "payout-key-1",
+        amount: "100.00",
+        settlementAmount: "75.00",
+      }],
+    },
+  });
+
+  await assert.rejects(
+    correctSettledTransaction({
+      type: "PAYABLE",
+      recordId: "payable-1",
+      correctionMode: "RETURNED_FUNDS",
+      correctionReason: "Supplier returned the payment",
+      evidenceReference: "BANK-RETURN-OVER",
+      actorAccountId: "admin-checker",
+      client,
+    }),
+    { code: "PAYABLE_BILL_BALANCE_MISMATCH" },
+  );
+  assert.equal(calls.accountChanges.length, 0);
+  assert.equal(calls.cashCreates.length, 0);
+  assert.equal(calls.documentUpdates.length, 0);
+});
+
+test("supplier bill correction rejects an allocation amount that differs from the settlement", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "150.00",
+    allocatedAmount: "150.00",
+    settlementAllocationAmount: "150.00",
+  });
+  const { client, calls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [allocation],
+    payableOverrides: {
+      settlementHistory: [{
+        idempotencyKey: "payout-key-1",
+        amount: "100.00",
+        settlementAmount: "149.99",
+      }],
+    },
+  });
+
+  await assert.rejects(
+    correctSettledTransaction({
+      type: "PAYABLE",
+      recordId: "payable-1",
+      correctionMode: "RETURNED_FUNDS",
+      correctionReason: "Supplier returned the payment",
+      evidenceReference: "BANK-RETURN-AMOUNT-MISMATCH",
+      actorAccountId: "admin-checker",
+      client,
+    }),
+    { code: "PAYABLE_BILL_BALANCE_MISMATCH" },
+  );
+  assert.equal(calls.accountChanges.length, 0);
+  assert.equal(calls.cashCreates.length, 0);
+  assert.equal(calls.documentUpdates.length, 0);
+});
+
+test("supplier bill correction rolls back all mocked updates when reversal allocation creation fails", async () => {
+  const { document, allocation } = makeSupplierBillFixture({
+    originalAmount: "150.00",
+    allocatedAmount: "150.00",
+    settlementAllocationAmount: "150.00",
+  });
+  const { client, calls, payable, transactionCalls } = makePayableClient({
+    supplierBill: document,
+    billAllocations: [allocation],
+    failAllocationCreate: true,
+  });
+
+  await assert.rejects(
+    correctSettledTransaction({
+      type: "PAYABLE",
+      recordId: "payable-1",
+      correctionMode: "RETURNED_FUNDS",
+      correctionReason: "Supplier returned the payment",
+      evidenceReference: "BANK-RETURN-ROLLBACK",
+      actorAccountId: "admin-checker",
+      client,
+      reverseJournal: async () => ({ id: "journal-reversal-1" }),
+      writeAudit: async (_actor, event) => calls.audits.push(event),
+    }),
+    /Injected allocation failure/,
+  );
+
+  assert.equal(transactionCalls[0].isolationLevel, "Serializable");
+  assert.equal(payable.status, "PARTIALLY_PAID");
+  assert.equal(document.allocatedAmount.toFixed(2), "150.00");
+  assert.equal(document.remainingAmount.toFixed(2), "0.00");
+  assert.equal(calls.accountChanges.length, 0);
+  assert.equal(calls.cashCreates.length, 0);
+  assert.equal(calls.payableUpdates.length, 0);
+  assert.equal(calls.documentUpdates.length, 0);
+  assert.equal(calls.payoutUpdates.length, 0);
+  assert.equal(calls.reversionCreates.length, 0);
 });
 
 test("returned Marketing CPA payout restores bill, Treasury, allocation, and linked journal", async () => {

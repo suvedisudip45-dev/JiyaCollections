@@ -103,7 +103,7 @@ export const getAccountProfile = (account, activeRole = account.role) => {
 
 export const isWorkspaceProfileActive = (account, role) => {
   if (role === "DISTRIBUTOR") {
-    return account.distributorProfile?.status === "ACTIVE" && account.distributorProfile?.isActive === true;
+    return account.distributorProfile?.status === "ACTIVE";
   }
   if (String(role || "").toUpperCase() === "CUSTOMER") {
     return Boolean(account.customerProfile?.id) && account.customerProfile.isDisabled !== true;

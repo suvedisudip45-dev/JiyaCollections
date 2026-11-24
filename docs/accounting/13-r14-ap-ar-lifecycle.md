@@ -98,3 +98,33 @@ An expense-linked report calculation test proves only its arithmetic for fixture
 ## 7. Validation boundary
 
 Existing focused tests include Decimal collection and payable/settlement report tests, document allocation tests, financial payout lifecycle tests and selected reconciliation tests. R14 ran no code tests. Database integrations remain gated; without a separately verified isolated endpoint, persisted source-to-document, transaction rollback, replay, concurrency and source-to-journal validation are **BLOCKED**. Do not access configured `localhost/clothing`.
+
+## 8. P5-R8 supplier procurement and payable-correction revalidation (2026-11-18)
+
+The current static supplier procurement/AP findings and report basis are in [P5-R8](./25-p5-r8-supplier-procurement-and-payables-evidence-audit.md). Current routes confirm local vendor registry, expense-backed vendor bills, AP payouts, supplier returns/credits, and return-specific reconciliation. They do not establish a production PO/receipt chain, accepted supplier quantity/cost, a supplier advance subledger, complete 2110 vendor reconciliation, or independent supplier/bank statement matching. `InboundShipment` and its accounting helper remain legacy/unmounted for production-route evidence.
+
+**Correction-path defect:** `settlementCorrectionService`'s generic `PAYABLE` path reverses the legacy payable/Treasury/journal and can mark the linked AP payout reversed, but it does not reverse a CASH `AccountingAllocation` or restore the linked `OperatingExpense` supplier `AccountingDocument` balance/status. The AP and bill-document subledgers can diverge after correction. This is verified in code; actual persisted incidence is not known. No transaction behavior was changed. A focused, separately approved correction should validate and reverse the exact bill allocation atomically with the existing Treasury/AP/journal/reversion effects.
+
+The Admin VAT and AP page disclosures are copy-only. R14 and P5-R8 remain static/code-evidence audits; actual supplier balances, source completeness, rollback/concurrency, and external payment/statement evidence require a separately verified isolated database and independently obtained supplier/bank records.
+
+## 9. P5-R9 supplier payable correction integrity (2026-11-18)
+
+The P5-R8 generic payable correction defect has a bounded code correction. The mounted Admin approval path now identifies the single `OPERATING_EXPENSE` bill for a payable's `accountingPartyId` and `referenceId`, then reverses only the CASH allocation linked to the selected source payment journal and payout key. The correction restores the document's allocated/remaining Decimal balances and derives `OPEN`/`PARTIALLY_PAID`/`PAID` status from those balances. Missing, ambiguous, already-reversed, mismatched, or over-reversal evidence fails closed.
+
+The original allocation and journal remain historical records. A linked `REVERSAL` allocation records the source allocation ID and correction journal; the bill update, payable/Treasury/cash/journal/payout correction, settlement reversion, approval, and audit remain within the existing serializable approval transaction. Payables without an accounting-party bill link continue on their existing generic path; the code does not infer a supplier bill for them. The generic correction still permits only its existing record-level correction and latest-history selection, not multiple corrections against one AP row.
+
+Focused tests cover full and partial restoration with other allocations remaining, missing/already-reversed/mismatched/over-reversal allocations, approval idempotency and maker-checker behavior, and injected failure using an in-memory transaction wrapper. Those mocks do not establish persisted rollback, concurrency, or database balance correctness. No schema, purchase/receipt, payment-initiation, Treasury-posting, customer-receipt, or inventory-costing behavior changed. See [P5-R9](./26-p5-r9-supplier-payable-correction-integrity.md) for the route trace and validation limits.
+
+## 10. P5-R10 supplier return and credit evidence (2026-11-18)
+
+The mounted supplier-return path is `POST /api/returns/supplier/create` → independent accounting-action approval → `createSupplierReturn`. Approval creates a completed return and atomically posts a Product/StockLog decrement plus either a payable-side internal credit document and AP journal or an internal Treasury cash inflow and journal. There is no required link to an original supplier bill, accepted receipt line, cost layer, physical handoff, supplier-approved credit note, or independent refund evidence. The optional legacy shipment reference matches supplier/invoice text only.
+
+The internal AP credit is posted at return approval without allocation to the original bill. Later application is a direct, permission-gated Admin route, limited to same-vendor/same-currency open bills issued on or after the return date. It updates credit/bill document balances, optional expense-backed legacy AP, paired allocations, and audit history without another journal. It does not use a separate approval request, despite the Admin UI message, and no application reversal was found. P5-R9 payable correction does not supply a correction path for these return records.
+
+Internal return credit or cash records do not establish a supplier obligation reduction or cash receipt. Return-specific reconciliation matches internal records but is not a supplier subledger/2110 tie-out or a physical/cost-layer reconciliation. Do not claim return or credit confirmation without independent supplier, receipt, and bank evidence. Keep this workflow audit-only pending source-link and reversal policy; see [P5-R10](./27-p5-r10-supplier-returns-and-credit-evidence-audit.md).
+
+## 11. P5-R11 supplier return credit and refund control gap (2026-11-17)
+
+P5-R11 confirms the core design gap: return posting is source-unlinked and inventory/cost evidence is not authoritative, while the direct credit-application route is not maker-checker gated in production. The UI message stating an independent approval is pending is a mismatch with the mounted route behavior. Until the repository can prove original receipt linkage, accepted quantity and cost, supplier acceptance, confirmed refund evidence, and a source-specific reversal path, treat return and credit positions as internal ledger evidence only.
+
+The safe next step is a source-linked design and policy gate, not a production code change. No production behavior was changed in this increment; see [26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md](./26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md).

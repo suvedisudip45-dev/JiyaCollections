@@ -362,18 +362,20 @@ const Customers = ({ token }) => {
         </div>
       </section>
 
-      <section aria-label="Sales and approximate profit" className="space-y-4">
+      <section aria-label="Order totals and estimated contribution" className="space-y-4">
         <div>
-          <h2 className="text-lg font-black text-slate-900">Sales by customer location</h2>
-          <p className="mt-1 text-xs text-slate-500">All-time, non-cancelled orders grouped by the delivery address saved with each purchase.</p>
+          <h2 className="text-lg font-black text-slate-900">Accepted order totals by customer location</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            All-time, non-cancelled orders grouped by saved delivery address, regardless of payment or accounting status; this is not posted revenue or cash collected.
+          </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            { label: "Sales", value: metrics.salesSummary?.sales },
+            { label: "Accepted order total", value: metrics.salesSummary?.sales },
             { label: "Estimated COGS", value: metrics.salesSummary?.cogs },
             { label: "Allocated fixed overhead", value: metrics.salesSummary?.productionOverhead },
             { label: "Recorded NCM delivery", value: metrics.salesSummary?.ncmDeliveryCost },
-            { label: "Approximate profit", value: metrics.salesSummary?.estimatedProfit, color: "text-emerald-700" },
+            { label: "Estimated contribution before returns", value: metrics.salesSummary?.estimatedProfit, color: "text-emerald-700" },
           ].map((item) => (
             <article key={item.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -382,11 +384,11 @@ const Customers = ({ token }) => {
           ))}
         </div>
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
-          Fixed overhead is calculated per product as total approved batch overhead (per-piece amount × good units produced) divided by that product&apos;s all-time non-cancelled units sold, then allocated to those sales. Profit also subtracts available COGS and recorded NCM delivery charges. Unrecorded NCM charges and local distributor delivery costs are not included; returns/refunds and other operating expenses are not deducted.
+          Fixed overhead is calculated per product as total approved batch overhead (per-piece amount × good units produced) divided by that product&apos;s all-time non-cancelled units sold, then allocated to those orders. The estimate subtracts available COGS and recorded NCM delivery charges. Unrecorded NCM charges and local distributor delivery costs are not included; returns/refunds and other operating expenses are not deducted.
         </p>
         <div className="space-y-4">
-          {renderSalesTable("Province sales", metrics.salesByProvince, "Province")}
-          {renderSalesTable("District sales", metrics.salesByDistrict, "District / province")}
+          {renderSalesTable("Province order totals", metrics.salesByProvince, "Province")}
+          {renderSalesTable("District order totals", metrics.salesByDistrict, "District / province")}
         </div>
       </section>
 

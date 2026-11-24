@@ -63,6 +63,10 @@ test("general ledger calculations preserve exact decimal strings and Kathmandu d
   );
 
   assert.equal(response.success, true);
+  assert.equal(response.reportBasis.classification, "POSTED_JOURNAL_LEDGER");
+  assert.deepEqual(response.reportBasis.includedJournalStatuses, ["POSTED", "REVERSED"]);
+  assert.equal(response.reportBasis.sourceCompleteness, "NOT_ESTABLISHED");
+  assert.equal(response.reportBasis.subledgerReconciliation, "NOT_ESTABLISHED");
   assert.equal(periodQuery.where.journalEntry.transactionDate.lt.toISOString(), "2026-04-15T18:15:00.000Z");
   assert.equal(periodQuery.where.journalEntry.transactionDate.lte, undefined);
   assert.equal(response.metrics.openingBalance, "90071992547409.91");
@@ -99,6 +103,8 @@ test("trial balance uses exact Decimal totals without a balance tolerance", asyn
   );
 
   assert.equal(response.success, true);
+  assert.equal(response.reportBasis.classification, "POSTED_JOURNAL_LEDGER");
+  assert.equal(response.reportBasis.sourceCompleteness, "NOT_ESTABLISHED");
   assert.equal(periodQuery.where.journalEntry.transactionDate.lt.toISOString(), "2026-04-15T18:15:00.000Z");
   assert.equal(periodQuery.where.journalEntry.transactionDate.lte, undefined);
   assert.equal(response.rows[0].openingDebit, "0.09");

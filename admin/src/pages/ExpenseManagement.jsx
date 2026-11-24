@@ -718,13 +718,13 @@ const ExpenseManagement = ({ token }) => {
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              Input VAT Claimable
+              Finance-Reviewed Input VAT
             </span>
             <p className="text-2xl font-black text-purple-700 mt-1">
               Rs {formatNprAmount(summaryMetrics.totalVatClaimable || "0")}
             </p>
             <span className="text-[10px] text-purple-600 mt-1 block">
-              Verified supplier invoices only
+              Recorded invoice evidence reviewed internally; not independently supplier- or tax-authority-verified.
               {compareDecimalStrings(summaryMetrics.pendingVatReview || "0", "0") > 0 && ` · Rs ${formatNprAmount(summaryMetrics.pendingVatReview)} pending review`}
             </span>
           </div>
@@ -908,7 +908,7 @@ const ExpenseManagement = ({ token }) => {
                                       : "bg-amber-50 text-amber-700 border-amber-200"
                                 }`}>
                                   {exp.purchaseVatStatus === "VERIFIED" ? <ShieldCheck className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                                  {exp.purchaseVatStatus === "VERIFIED" ? "Verified" : exp.purchaseVatStatus === "REJECTED" ? "Rejected" : "Pending review"}
+                                  {exp.purchaseVatStatus === "VERIFIED" ? "Finance reviewed" : exp.purchaseVatStatus === "REJECTED" ? "Rejected" : "Pending review"}
                                 </span>
                                 <span className="text-[10px] text-slate-500">{exp.purchaseVatRate == null ? "Rate not recorded" : `${exp.purchaseVatRate}%`} · Rs {formatNprAmount(exp.vatAmount || "0")}</span>
                                 {exp.invoiceEvidenceUrl && <a href={exp.invoiceEvidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-indigo-600 underline">Invoice evidence</a>}
@@ -928,7 +928,7 @@ const ExpenseManagement = ({ token }) => {
                             <div className="flex items-center justify-end gap-1.5">
                               {canReviewPurchaseVat && exp.purchaseVatStatus === "PENDING_REVIEW" && (
                                 <>
-                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "APPROVE")} className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100">Verify</button>
+                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "APPROVE")} className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100">Approve VAT</button>
                                   <button type="button" onClick={() => handleReviewPurchaseVat(exp, "REJECT")} className="rounded-lg bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-100">Reject</button>
                                 </>
                               )}
@@ -1258,7 +1258,7 @@ const ExpenseManagement = ({ token }) => {
                   </div>
                 )}
                 {isVatBill && (
-                  <p className="text-[10px] text-purple-700">A VAT claim is not recognized until Finance verifies the supplier ID, invoice evidence, bill amounts, and VAT-registration date.</p>
+                  <p className="text-[10px] text-purple-700">Finance reviews the recorded supplier VAT number and invoice evidence, checks the amounts and registration date, and records the decision. No independent supplier or tax-authority validation is performed.</p>
                 )}
               </div>
 

@@ -16,6 +16,7 @@ import {
 import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
 import { runFixedAssetDepreciationBatch } from "../services/fixedAssetDepreciationService.js";
 import {
+  calculateFinancialDashboardRevenue,
   calculateFinancialDashboardProductCosts,
   calculateInventoryValuationAtCost,
   calculateManufacturerLogisticsExpenseDetails,
@@ -589,7 +590,6 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       : [[], []];
 
     // Keep operational order totals separate from the posted-ledger revenue and VAT basis.
-    let grossPeriodRevenueIncVat = 0;
     const productCosts = calculateFinancialDashboardProductCosts({
       orders,
       costLayers: productionCostLayers,
@@ -616,15 +616,16 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     const marketingExpenseDetails = operatingExpenseDetails.filter((expense) => expense.category === "MARKETING");
     const fixedExpenseDetails = operatingExpenseDetails.filter((expense) => expense.category !== "MARKETING");
 
-    orders.forEach((ord) => {
-      grossPeriodRevenueIncVat += Number(ord.amount || 0);
-    });
-
     // Customer Returns adjustments in period
     const taxableRevenue = Number(postedAccounting.incomeStatement.netRevenue || 0);
     const outputVatCollected = Number(postedAccounting.vat.outputVat || 0);
 
     const recognizedProductCOGS = periodDirectCOGS;
+    const {
+      grossRevenueIncVat: grossPeriodRevenueIncVat,
+      customerRefunds: totalCustomerRefunds,
+      netRevenueIncVat,
+    } = calculateFinancialDashboardRevenue({ orders, customerReturns });
 
     // Categorized Operating Expenses
     let marketingSpend = 0;

@@ -34,6 +34,11 @@ import {
   isPositiveLocalFreightCharge,
   planCostLayerAllocations,
   planReceivedCostLayerAllocations,
+  normalizeDispatchRequestLines,
+  assertDispatchAvailability,
+  planCanonicalTransferDispatch,
+  validateWebhookDispatchAuthorization,
+  assessLegacyDispatchProjectionConsistency,
   remainingApprovedQuantity,
   validateTransferRequestAvailability,
 } from "../services/stockTransferService.js";
@@ -204,38 +209,6 @@ const loadTransfer = (tx, id) => tx.stockTransfer.findUnique({
   },
 });
 
-const normalizeDispatchRequestLines = (requestedLines, transferLines) => {
-  if (!Array.isArray(requestedLines) || requestedLines.length < 1 || requestedLines.length > transferLines.length) {
-    throw fail("A shipment must contain at least one approved SKU line.");
-  }
-  const byId = new Map(transferLines.map((line) => [line.id, line]));
-  const seen = new Set();
-  return requestedLines.map((requested) => {
-    const lineId = clean(requested?.lineId);
-    const line = byId.get(lineId);
-    const quantity = Number(requested?.quantity);
-    if (
-      !line ||
-      seen.has(lineId) ||
-      !Number.isSafeInteger(quantity) ||
-      quantity <= 0 ||
-      quantity > 2147483647
-    ) {
-      throw fail("Shipment quantities must be positive whole numbers for unique transfer lines.");
-    }
-    seen.add(lineId);
-    return { stockTransferLineId: lineId, quantity, line };
-  });
-};
-
-const assertDispatchAvailability = (lines) => {
-  for (const { line, quantity } of lines) {
-    if (quantity > remainingApprovedQuantity(line)) {
-      throw fail("Shipment quantities must be within each approved, undispatched line.", "INSUFFICIENT_APPROVED_QUANTITY", 409);
-    }
-  }
-};
-
 const normalizeFreightCharge = (value) => {
   if (value === undefined || value === null || value === "") return null;
   let amount;
@@ -307,7 +280,9 @@ const updateLegacyFactoryStock = async (tx, transfer, shipmentLines, { reserve =
     if (!Array.isArray(variants)) throw fail("Legacy factory variants are invalid; reconcile before transferring inventory.", "LEGACY_FACTORY_STOCK_INVALID", 409);
     let quantityDelta = 0;
     let reservedDelta = 0;
+    let projectionQuantity = 0;
     for (const { line, quantity } of stockLines) {
+      projectionQuantity += quantity;
       const sizeKey = normalizeSkuOption(line.inventorySku.size).key;
       const colorKey = normalizeSkuOption(line.inventorySku.color).key;
       const variant = variants.find((item) =>
@@ -339,6 +314,14 @@ const updateLegacyFactoryStock = async (tx, transfer, shipmentLines, { reserve =
     const variantReserved = variants.reduce((sum, variant) => sum + Number(variant.reservedQty || 0), 0);
     const nextQuantity = previousQuantity - quantityDelta;
     const nextReserved = previousReserved + reservedDelta;
+    assessLegacyDispatchProjectionConsistency({
+      operation: reserve ? "RESERVE" : release ? "RELEASE" : "DISPATCH",
+      dispatchedQuantity: projectionQuantity,
+      previousQuantity,
+      previousReserved,
+      nextQuantity,
+      nextReserved,
+    });
     if (variantQuantity !== nextQuantity || variantReserved !== nextReserved || nextQuantity < nextReserved) {
       throw fail("Legacy factory aggregate quantities do not match their variants; reconcile before transferring inventory.", "LEGACY_FACTORY_STOCK_VARIANCE", 409);
     }
@@ -520,26 +503,23 @@ const dispatchShipmentStock = async (tx, transfer, shipment, lines, actor, { rel
     referenceId: shipment.id,
     name: `Transfer ${transfer.id.slice(-8)} shipment`,
   });
-  for (const shipmentLine of shipment.lines) {
-    const transferLine = lines.find((line) => line.id === shipmentLine.stockTransferLineId);
+  const dispatchMovements = planCanonicalTransferDispatch({
+    transfer,
+    shipment,
+    transferLines: lines,
+    transitLocationId: transitLocation.id,
+    actorId: actor.id,
+    actorRole: actor.role,
+  });
+  for (const dispatchMovement of dispatchMovements) {
+    const shipmentLine = shipment.lines.find((line) => line.id === dispatchMovement.shipmentLineId);
+    const transferLine = lines.find((line) => line.id === dispatchMovement.transferLineId);
     if (!transferLine) throw fail("A shipment line no longer belongs to this stock transfer.", "TRANSFER_LINE_NOT_FOUND", 409);
-    const reservationDecrement = releaseReservations ? shipmentLine.quantity : 0;
-    if (releaseReservations && transferLine.reservedShipmentQuantity < shipmentLine.quantity) {
+    const reservationDecrement = releaseReservations ? dispatchMovement.quantity : 0;
+    if (releaseReservations && transferLine.reservedShipmentQuantity < dispatchMovement.quantity) {
       throw fail("The NCM booking reservation no longer matches the shipment.", "TRANSFER_RESERVATION_CONFLICT", 409);
     }
-    await applyInventoryMovement(tx, {
-      inventorySkuId: transferLine.inventorySkuId,
-      sourceLocationId: transfer.sourceLocationId,
-      destinationLocationId: transitLocation.id,
-      quantity: shipmentLine.quantity,
-      movementType: "TRANSFER_DISPATCH",
-      referenceType: "STOCK_TRANSFER",
-      referenceId: transfer.id,
-      idempotencyKey: `stock-transfer:${shipment.id}:dispatch:${transferLine.inventorySkuId}`,
-      actorId: actor.id,
-      actorRole: actor.role,
-      reason: `Bulk stock dispatched to distributor under transfer ${transfer.id}.`,
-    });
+    await applyInventoryMovement(tx, dispatchMovement);
     const updated = await tx.stockTransferLine.updateMany({
       where: {
         id: transferLine.id,
@@ -547,12 +527,12 @@ const dispatchShipmentStock = async (tx, transfer, shipment, lines, actor, { rel
         reservedShipmentQuantity: transferLine.reservedShipmentQuantity,
       },
       data: {
-        dispatchedQuantity: { increment: shipmentLine.quantity },
+        dispatchedQuantity: { increment: dispatchMovement.quantity },
         ...(reservationDecrement ? { reservedShipmentQuantity: { decrement: reservationDecrement } } : {}),
       },
     });
     if (updated.count !== 1) throw fail("The transfer line changed concurrently; refresh and retry.", "TRANSFER_LINE_CONFLICT", 409);
-    transferLine.dispatchedQuantity += shipmentLine.quantity;
+    transferLine.dispatchedQuantity += dispatchMovement.quantity;
     transferLine.reservedShipmentQuantity -= reservationDecrement;
   }
   await updateLegacyFactoryStock(tx, transfer, shipment.lines, { actorId: actor.id });
@@ -1568,6 +1548,22 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
     if (!isStaleEvent && normalized.custodyConfirmed && ["BOOKED", "BOOKING_UNKNOWN"].includes(current.status)) {
       const transfer = await loadTransfer(tx, current.stockTransferId);
       if (!transfer) throw fail("Stock transfer not found for NCM pickup event.", "TRANSFER_NOT_FOUND", 404);
+      const sourceLocation = await tx.inventoryLocation.findUnique({
+        where: { id: transfer.sourceLocationId },
+        select: {
+          id: true,
+          kind: true,
+          inventoryOwner: true,
+          manufacturerId: true,
+          isActive: true,
+        },
+      });
+      validateWebhookDispatchAuthorization({
+        transfer,
+        shipment: current,
+        sourceLocation,
+        custodyConfirmed: normalized.custodyConfirmed,
+      });
       await dispatchShipmentStock(
         tx,
         transfer,

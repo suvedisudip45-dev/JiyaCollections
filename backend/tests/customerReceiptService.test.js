@@ -6,15 +6,23 @@ import {
   reverseCustomerReceipt,
 } from "../services/customerReceiptService.js";
 
-const makeHarness = (balances = ["20.00", "30.00"]) => {
+const makeHarness = (balances = ["20.00", "30.00"], options = {}) => {
+  const {
+    sourceType = "TEST_RECEIVABLE",
+    sourceIds = balances.map((_, index) => `source-${index + 1}`),
+    partyId = "party-1",
+    partyName = "Customer One",
+  } = options;
   const documents = balances.map((remainingAmount, index) => ({
     id: `invoice-${index + 1}`,
     documentType: "INVOICE",
     documentNumber: `INV-${index + 1}`,
+    sourceType,
+    sourceId: sourceIds[index],
     side: "RECEIVABLE",
     currency: "NPR",
-    partyId: "party-1",
-    party: { partyType: "CUSTOMER", status: "ACTIVE", displayName: "Customer One" },
+    partyId,
+    party: { partyType: "CUSTOMER", status: "ACTIVE", displayName: partyName },
     originalAmount: new Prisma.Decimal(remainingAmount),
     allocatedAmount: new Prisma.Decimal("0"),
     remainingAmount: new Prisma.Decimal(remainingAmount),
@@ -25,7 +33,7 @@ const makeHarness = (balances = ["20.00", "30.00"]) => {
   }));
   const receipts = new Map();
   const allocations = [];
-  const calls = { treasuryIncrement: null, journal: [], receiptCreates: [] };
+  const calls = { treasuryIncrement: null, journal: [], receiptCreates: [], audit: [] };
   let treasuryBalance = new Prisma.Decimal("100.00");
   let receiptSequence = 0;
   let originalJournalStatus = "POSTED";
@@ -124,6 +132,10 @@ const makeHarness = (balances = ["20.00", "30.00"]) => {
     calls.journal.push(input);
     return { id: "journal-1" };
   };
+  const writeAudit = async (actorContext, payload, { client: auditClient } = {}) => {
+    calls.audit.push({ actorContext, payload, client: auditClient });
+    return { id: `audit-${calls.audit.length}` };
+  };
   const input = {
     invoiceIds: documents.map((document) => document.id),
     amount: "10.00",
@@ -143,6 +155,8 @@ const makeHarness = (balances = ["20.00", "30.00"]) => {
     documents,
     input,
     postPaymentAccounting,
+    tx,
+    writeAudit,
     receipts,
     getTreasuryBalance: () => treasuryBalance,
     markReceiptReversed: (receiptId) => {
@@ -184,10 +198,18 @@ const makeHarness = (balances = ["20.00", "30.00"]) => {
   };
 };
 
-const record = (harness, overrides = {}) =>
+const record = (harness, overrides = {}, {
+  auditContext = {},
+  writeAudit = harness.writeAudit,
+} = {}) =>
   recordCustomerReceipt(
     { ...harness.input, ...overrides },
-    { client: harness.client, postPaymentAccounting: harness.postPaymentAccounting },
+    {
+      client: harness.client,
+      postPaymentAccounting: harness.postPaymentAccounting,
+      writeAudit,
+      auditContext,
+    },
   );
 
 test("full and partial receipt collections preserve invoice, Treasury, and journal amounts", async () => {
@@ -220,6 +242,153 @@ test("a receipt is allocated deterministically across multiple invoices", async 
     { invoiceId: "invoice-2", amount: "10.00" },
   ]);
   assert.equal(harness.allocations.reduce((sum, allocation) => sum.plus(allocation.amount), new Prisma.Decimal(0)).toFixed(2), "16.25");
+});
+
+test("a fresh receipt writes source, amount, journal, and authenticated-actor audit evidence", async () => {
+  const harness = makeHarness(["10.00"]);
+  await record(
+    harness,
+    { invoiceIds: ["invoice-1"], amount: "10.00" },
+    {
+      auditContext: {
+        actorRole: "ADMIN",
+        portalSource: "ADMIN",
+        correlationId: "receipt-correlation-1",
+      },
+    },
+  );
+
+  assert.equal(harness.calls.audit.length, 1);
+  const [audit] = harness.calls.audit;
+  assert.equal(audit.client, harness.tx);
+  assert.deepEqual(audit.actorContext, {
+    actorRole: "ADMIN",
+    portalSource: "ADMIN",
+    correlationId: "receipt-correlation-1",
+    actorId: "admin-account-1",
+  });
+  assert.equal(audit.payload.action, "CUSTOMER_RECEIPT_RECORDED");
+  assert.equal(audit.payload.entityType, "CashTransaction");
+  assert.equal(audit.payload.entityId, "receipt-1");
+  assert.deepEqual(audit.payload.afterState, {
+    sourceInvoiceIds: ["invoice-1"],
+    amount: "10.00",
+    settlementAmount: "10.00",
+    adjustmentType: "NONE",
+    adjustmentAmount: "0.00",
+    currency: "NPR",
+    treasuryAccountId: "treasury-1",
+    tenderMethod: "BANK_TRANSFER",
+    journalEntryId: "journal-1",
+    allocations: [{ invoiceId: "invoice-1", amount: "10.00" }],
+  });
+});
+
+test("an audit write error rejects a receipt instead of returning success", async () => {
+  const harness = makeHarness(["10.00"]);
+  const auditError = new Error("Audit outbox unavailable.");
+  await assert.rejects(
+    record(harness, { invoiceIds: ["invoice-1"], amount: "10.00" }, {
+      writeAudit: async () => { throw auditError; },
+    }),
+    auditError,
+  );
+});
+
+test("Admin direct-order receivables use the generic full-receipt path with source-linked idempotency and audit", async () => {
+  const orderId = "admin-direct-order-1";
+  const harness = makeHarness(["10.00"], {
+    sourceType: "DIRECT_ORDER_RECEIVABLE",
+    sourceIds: [orderId],
+    partyId: "admin-customer-1",
+    partyName: "Admin Direct Customer",
+  });
+  const receiptInput = { amount: "10.00", invoiceIds: ["invoice-1"] };
+  const actorContext = { actorRole: "ADMIN", portalSource: "ADMIN" };
+
+  const first = await record(harness, receiptInput, { auditContext: actorContext });
+
+  assert.equal(first.status, "CONFIRMED");
+  assert.equal(harness.documents[0].sourceType, "DIRECT_ORDER_RECEIVABLE");
+  assert.equal(harness.documents[0].sourceId, orderId);
+  assert.equal(harness.documents[0].partyId, "admin-customer-1");
+  assert.equal(harness.documents[0].remainingAmount.toFixed(2), "0.00");
+  assert.equal(harness.calls.receiptCreates[0].referenceId, orderId);
+  assert.equal(harness.calls.receiptCreates[0].partyName, "Admin Direct Customer");
+  assert.equal(harness.calls.receiptCreates[0].invoiceNumber, "INV-1");
+  assert.equal(harness.calls.receiptCreates[0].toAccountId, "treasury-1");
+  assert.equal(harness.calls.journal[0].accountingPartyId, "admin-customer-1");
+  assert.equal(harness.calls.journal[0].depositAccountCode, "1120");
+  assert.equal(harness.allocations[0].documentId, "invoice-1");
+  assert.equal(harness.allocations[0].cashTransactionId, first.receiptId);
+  assert.equal(harness.allocations[0].journalEntryId, "journal-1");
+  assert.equal(harness.getTreasuryBalance().toFixed(2), "110.00");
+  assert.equal(harness.calls.audit[0].actorContext.actorId, "admin-account-1");
+  assert.deepEqual(harness.calls.audit[0].payload.afterState.sourceInvoiceIds, ["invoice-1"]);
+  assert.equal(harness.calls.audit[0].payload.afterState.journalEntryId, "journal-1");
+
+  const replay = await record(harness, receiptInput, { auditContext: actorContext });
+  assert.equal(replay.alreadyProcessed, true);
+  assert.equal(replay.receiptId, first.receiptId);
+  assert.equal(harness.calls.receiptCreates.length, 1);
+  assert.equal(harness.allocations.length, 1);
+  assert.equal(harness.calls.journal.length, 1);
+  assert.equal(harness.calls.audit.length, 1);
+  assert.equal(harness.getTreasuryBalance().toFixed(2), "110.00");
+
+  await assert.rejects(
+    record(harness, { ...receiptInput, amount: "9.99" }, { auditContext: actorContext }),
+    { code: "IDEMPOTENCY_KEY_CONFLICT" },
+  );
+  assert.equal(harness.calls.receiptCreates.length, 1);
+  assert.equal(harness.allocations.length, 1);
+  assert.equal(harness.calls.journal.length, 1);
+  assert.equal(harness.calls.audit.length, 1);
+});
+
+test("Distributor direct-order receivables support partial collection and reject overpayment or settled invoices", async () => {
+  const orderId = "distributor-direct-order-1";
+  const harness = makeHarness(["12.00"], {
+    sourceType: "DIRECT_ORDER_RECEIVABLE",
+    sourceIds: [orderId],
+    partyId: "distributor-customer-1",
+    partyName: "Distributor Direct Customer",
+  });
+  const result = await record(harness, {
+    amount: "5.00",
+    invoiceIds: ["invoice-1"],
+  });
+
+  assert.equal(result.allocatedAmount, "5.00");
+  assert.equal(harness.documents[0].originalAmount.toFixed(2), "12.00");
+  assert.equal(harness.documents[0].allocatedAmount.toFixed(2), "5.00");
+  assert.equal(harness.documents[0].remainingAmount.toFixed(2), "7.00");
+  assert.equal(harness.documents[0].status, "PARTIALLY_PAID");
+  assert.equal(harness.calls.receiptCreates[0].referenceId, orderId);
+  assert.equal(harness.calls.receiptCreates[0].partyName, "Distributor Direct Customer");
+  assert.equal(harness.calls.journal[0].accountingPartyId, "distributor-customer-1");
+  assert.equal(harness.allocations[0].documentId, "invoice-1");
+  assert.equal(harness.allocations[0].amount.toFixed(2), "5.00");
+  assert.equal(harness.getTreasuryBalance().toFixed(2), "105.00");
+  assert.equal(harness.calls.audit[0].payload.afterState.sourceInvoiceIds[0], "invoice-1");
+
+  const receiptCount = harness.calls.receiptCreates.length;
+  await assert.rejects(record(harness, {
+    amount: "7.01",
+    invoiceIds: ["invoice-1"],
+    idempotencyKey: "distributor-direct-overpayment",
+  }), { code: "RECEIPT_EXCEEDS_OUTSTANDING" });
+
+  harness.documents[0].status = "PAID";
+  await assert.rejects(record(harness, {
+    amount: "1.00",
+    invoiceIds: ["invoice-1"],
+    idempotencyKey: "distributor-direct-settled-invoice",
+  }), { code: "RECEIVABLE_INVOICE_CLOSED" });
+  assert.equal(harness.calls.receiptCreates.length, receiptCount);
+  assert.equal(harness.calls.journal.length, 1);
+  assert.equal(harness.calls.audit.length, 1);
+  assert.equal(harness.getTreasuryBalance().toFixed(2), "105.00");
 });
 
 test("receipt amounts use NPR HALF_EVEN rounding and retain decimal-string responses", async () => {
@@ -260,6 +429,7 @@ test("same-key receipt requests replay exactly and changed payload reuse conflic
   assert.equal(replay.allocatedAmount, "5.00");
   assert.equal(harness.calls.receiptCreates.length, 1);
   assert.equal(harness.calls.journal.length, 1);
+  assert.equal(harness.calls.audit.length, 1);
   await assert.rejects(
     record(harness, { amount: "6.00", invoiceIds: ["invoice-1"] }),
     { code: "IDEMPOTENCY_KEY_CONFLICT" },
@@ -338,7 +508,7 @@ test("receipt rejects mismatched invoice owners, unsupported currency, and missi
   );
 });
 
-const makeReceiptReversalHarness = () => {
+const makeReceiptReversalHarness = ({ sourceType = null, sourceIds = [] } = {}) => {
   const receipt = {
     id: "receipt-reversal-1",
     idempotencyKey: "receipt-key-reversal-1",
@@ -381,6 +551,12 @@ const makeReceiptReversalHarness = () => {
       status: "PARTIALLY_PAID",
     },
   ];
+  if (sourceType) {
+    documents.forEach((document, index) => {
+      document.sourceType = sourceType;
+      document.sourceId = sourceIds[index] || `direct-order-${index + 1}`;
+    });
+  }
   const allocations = [
     {
       id: "allocation-1",
@@ -558,6 +734,54 @@ test("full multi-invoice receipt reversal restores invoice balances and reverses
   assert.equal(harness.calls.reversions[0].priorRemainingBalance.toFixed(2), "7.00");
   assert.equal(harness.calls.journalReversals[0].expectedSourceId, harness.receipt.id);
   assert.equal(harness.calls.audits[0].actor.actorId, "admin-checker");
+});
+
+test("direct-order receivable allocations reverse fully and reject a replayed reversal", async () => {
+  const harness = makeReceiptReversalHarness({
+    sourceType: "DIRECT_ORDER_RECEIVABLE",
+    sourceIds: ["admin-direct-order-reversal", "distributor-direct-order-reversal"],
+  });
+  const input = {
+    receiptId: harness.receipt.id,
+    correctionMode: "RETURNED_FUNDS",
+    correctionReason: "Customer funds were returned",
+    evidenceReference: "BANK-REFUND-DIRECT-ORDER",
+    actorAccountId: "admin-checker",
+    client: harness.client,
+    reverseJournal: harness.reverseJournal,
+    writeAudit: harness.writeAudit,
+  };
+
+  const result = await reverseCustomerReceipt(input);
+
+  assert.ok(harness.documents.every((document) => document.sourceType === "DIRECT_ORDER_RECEIVABLE"));
+  assert.deepEqual(harness.documents.map((document) => document.sourceId), [
+    "admin-direct-order-reversal",
+    "distributor-direct-order-reversal",
+  ]);
+  assert.deepEqual(harness.documents.map((document) => ({
+    allocated: document.allocatedAmount.toFixed(2),
+    remaining: document.remainingAmount.toFixed(2),
+  })), [
+    { allocated: "0.00", remaining: "12.00" },
+    { allocated: "25.00", remaining: "25.00" },
+  ]);
+  assert.equal(result.cashReversedAmount, "29.00");
+  assert.equal(result.allocatedReversedAmount, "30.00");
+  assert.equal(harness.treasuryBalance().toFixed(2), "71.00");
+  assert.equal(harness.calls.cashCreates.length, 1);
+  assert.equal(harness.calls.allocationCreates.length, 2);
+  assert.equal(harness.calls.journalReversals.length, 1);
+  assert.equal(harness.calls.reversions.length, 1);
+  assert.equal(harness.calls.audits.length, 1);
+
+  await assert.rejects(reverseCustomerReceipt(input), { code: "CUSTOMER_RECEIPT_ALREADY_REVERSED" });
+  assert.equal(harness.calls.cashCreates.length, 1);
+  assert.equal(harness.calls.allocationCreates.length, 2);
+  assert.equal(harness.calls.journalReversals.length, 1);
+  assert.equal(harness.calls.reversions.length, 1);
+  assert.equal(harness.calls.audits.length, 1);
+  assert.equal(harness.treasuryBalance().toFixed(2), "71.00");
 });
 
 test("receipt reversal rejects repeats and invalid inputs without extra mutations", async () => {
