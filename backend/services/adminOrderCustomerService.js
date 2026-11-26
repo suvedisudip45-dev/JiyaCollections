@@ -1,8 +1,5 @@
 import { prisma } from "../config/db.js";
-import {
-  generateSocialCustomerCode,
-  normalizePhoneNumber,
-} from "../utils/socialCustomerProfile.js";
+import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 
 const parseJson = (value, fallback = {}) => {
   if (!value) return fallback;
@@ -22,8 +19,8 @@ const phoneVariantsFor = (phone) => {
     : [];
 };
 
-const getLatestOrderForPhone = async (phoneVariants, userId = null) => {
-  const orders = await prisma.order.findMany({
+const getLatestOrderForPhone = async (phoneVariants, userId = null, client = prisma) => {
+  const orders = await client.order.findMany({
     where: userId ? { userId } : undefined,
     select: { id: true, userId: true, address: true, date: true, status: true, orderType: true },
     orderBy: { date: "desc" },
@@ -33,28 +30,6 @@ const getLatestOrderForPhone = async (phoneVariants, userId = null) => {
     const address = parseJson(order.address);
     return phoneVariants.includes(String(address.phone || "").trim());
   }) || null;
-};
-
-const ensureCustomerCode = async (user) => {
-  if (user.socialCustomerCode) return user;
-
-  let code = generateSocialCustomerCode();
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      return await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          socialCustomerCode: code,
-          socialCustomerPhone: user.socialCustomerPhone || user.phone || "",
-        },
-      });
-    } catch (error) {
-      if (error.code !== "P2002") throw error;
-      code = generateSocialCustomerCode();
-    }
-  }
-
-  throw new Error("Unable to provision the customer social code");
 };
 
 const buildCustomerSnapshot = (user, latestOrder) => {
@@ -94,14 +69,14 @@ const buildCustomerSnapshot = (user, latestOrder) => {
   };
 };
 
-export const findAdminOrderCustomer = async (phone) => {
+export const findAdminOrderCustomer = async (phone, client = prisma) => {
   const normalizedPhone = normalizePhoneNumber(phone);
   const phoneVariants = phoneVariantsFor(normalizedPhone);
   if (!normalizedPhone || phoneVariants.length === 0) {
     return { state: "INVALID_PHONE", normalizedPhone: "", customer: null };
   }
 
-  let user = await prisma.user.findFirst({
+  let user = await client.user.findFirst({
     where: {
       OR: [
         { phone: { in: phoneVariants } },
@@ -110,21 +85,17 @@ export const findAdminOrderCustomer = async (phone) => {
     },
   });
 
-  const latestOrder = await getLatestOrderForPhone(phoneVariants, user?.id || null);
+  const latestOrder = await getLatestOrderForPhone(phoneVariants, user?.id || null, client);
   if (!user && latestOrder?.userId && latestOrder.userId !== "admin_social_client") {
-    user = await prisma.user.findUnique({ where: { id: latestOrder.userId } });
+    user = await client.user.findUnique({ where: { id: latestOrder.userId } });
   }
 
   if (!user && !latestOrder) {
     return { state: "NEW_CUSTOMER", normalizedPhone, customer: null };
   }
 
-  if (user && !user.socialCustomerCode) {
-    user = await ensureCustomerCode(user);
-  }
-
   return {
-    state: "CODE_REQUIRED",
+    state: "CODE_OPTIONAL",
     normalizedPhone,
     customer: buildCustomerSnapshot(user, latestOrder),
     socialCustomerCode: user?.socialCustomerCode || null,
@@ -132,9 +103,9 @@ export const findAdminOrderCustomer = async (phone) => {
   };
 };
 
-export const verifyAdminOrderCustomer = async (phone, code) => {
-  const result = await findAdminOrderCustomer(phone);
-  if (result.state !== "CODE_REQUIRED") return result;
+export const verifyAdminOrderCustomer = async (phone, code, client = prisma) => {
+  const result = await findAdminOrderCustomer(phone, client);
+  if (result.state !== "CODE_OPTIONAL") return result;
 
   const suppliedCode = String(code || "").trim().toUpperCase();
   const verified = Boolean(result.socialCustomerCode)
@@ -150,16 +121,22 @@ export const verifyAdminOrderCustomer = async (phone, code) => {
   };
 };
 
-export const getAdminOrderCustomerForCreation = async (phone, code = "") => {
+export const getAdminOrderCustomerForCreation = async (phone, code = "", client = prisma) => {
   const result = code
-    ? await verifyAdminOrderCustomer(phone, code)
-    : await findAdminOrderCustomer(phone);
+    ? await verifyAdminOrderCustomer(phone, code, client)
+    : await findAdminOrderCustomer(phone, client);
+  const phoneMatchedExistingCustomer = !code
+    && result.state === "CODE_OPTIONAL"
+    && Boolean(result.userId);
+  const state = phoneMatchedExistingCustomer ? "PHONE_MATCHED" : result.state;
 
   return {
     ...result,
-    loyaltyEligible: result.state === "NEW_CUSTOMER" || result.state === "VERIFIED",
-    giftEligible: result.state === "NEW_CUSTOMER" || result.state === "VERIFIED",
-    userId: result.state === "VERIFIED" ? result.userId : null,
+    state,
+    verified: state === "VERIFIED" || state === "PHONE_MATCHED",
+    loyaltyEligible: ["NEW_CUSTOMER", "VERIFIED", "PHONE_MATCHED"].includes(state),
+    giftEligible: ["NEW_CUSTOMER", "VERIFIED", "PHONE_MATCHED"].includes(state),
+    userId: ["VERIFIED", "PHONE_MATCHED"].includes(state) ? result.userId : null,
   };
 };
 

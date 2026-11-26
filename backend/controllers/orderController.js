@@ -1906,8 +1906,8 @@ const adminCreateOrder = async (req, res) => {
       calculatedAt: pricingAcceptedAt,
     });
 
-    // Only a verified existing customer may be linked. Invalid-code orders use a
-    // unique anonymous identity so their loyalty history cannot be shared.
+    // A phone-matched existing account or a code-verified account may be linked.
+    // Unverified matches use a unique anonymous identity to protect account history.
     let orderUserId = customerDecision.userId || `admin_social_client_${randomUUID()}`;
 
     const isSocialOrder = /social|instagram|facebook|whatsapp|tiktok|messenger|phone/i.test(

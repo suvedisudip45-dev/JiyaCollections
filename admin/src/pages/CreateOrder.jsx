@@ -37,7 +37,6 @@ const CreateOrder = ({ token }) => {
     firstName: "",
     lastName: "",
     phone: "",
-    socialCode: "",
     email: "",
     gender: "PREFER_NOT_TO_SAY",
     province: "Bagmati Province",
@@ -98,10 +97,9 @@ const CreateOrder = ({ token }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdOrderForPrint, setCreatedOrderForPrint] = useState(null);
   const [isPrintingModalActive, setIsPrintingModalActive] = useState(false);
-  const [existingCustomer, setExistingCustomer] = useState(null);
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
-  const [customerVerificationState, setCustomerVerificationState] = useState("IDLE");
+  const [customerLookupError, setCustomerLookupError] = useState(false);
 
   // Load Shipping Config, Products & Categories
   useEffect(() => {
@@ -187,10 +185,8 @@ const CreateOrder = ({ token }) => {
       const updated = { ...prev, [name]: value };
 
       if (name === "phone") {
-        updated.socialCode = "";
-        setExistingCustomer(null);
         setCustomerLookupMessage("");
-        setCustomerVerificationState("IDLE");
+        setCustomerLookupError(false);
       }
 
       if (name === "province") {
@@ -234,82 +230,23 @@ const CreateOrder = ({ token }) => {
     if (!phoneValue.trim()) return;
     setCustomerLookupLoading(true);
     setCustomerLookupMessage("");
+    setCustomerLookupError(false);
     try {
       const response = await axios.get(`${backendUrl}/api/order/admin-customer`, {
         params: { phone: phoneValue.trim() },
         headers: { token },
       });
       if (!response.data.success) {
-        setExistingCustomer(null);
-        setCustomerVerificationState("ERROR");
+        setCustomerLookupError(true);
         setCustomerLookupMessage(response.data.message || "Unable to check this contact number.");
       } else if (response.data.found) {
-        setExistingCustomer(response.data.customer);
-        setCustomerVerificationState("CODE_REQUIRED");
-        setCustomerLookupMessage("Existing customer found. Social code is optional; use it only to verify the account and apply eligible loyalty or gift benefits.");
+        setCustomerLookupMessage("Existing customer found. Enter the details for this order below.");
       } else {
-        setExistingCustomer(null);
-        setCustomerVerificationState("NEW_CUSTOMER");
         setCustomerLookupMessage("New contact number. Continue entering the customer details.");
       }
     } catch (error) {
-      setExistingCustomer(null);
-      setCustomerVerificationState("ERROR");
+      setCustomerLookupError(true);
       setCustomerLookupMessage(error.response?.data?.message || "Unable to check this contact number.");
-    } finally {
-      setCustomerLookupLoading(false);
-    }
-  };
-
-  const applyCustomerSnapshot = (customer) => {
-    if (!customer) return;
-    const address = customer.address || {};
-    setClient((prev) => ({
-      ...prev,
-      firstName: customer.firstName || prev.firstName,
-      lastName: customer.lastName || prev.lastName,
-      email: customer.email || prev.email,
-      gender: customer.gender || prev.gender,
-      phone: customer.phone || prev.phone,
-      province: address.province || prev.province,
-      district: address.district || prev.district,
-      city: address.city || prev.city,
-      ncmBranch: address.ncmBranch || prev.ncmBranch,
-      orderNotes: address.deliveryInstruction || address.orderNotes || prev.orderNotes,
-      state: address.state || prev.state,
-      zipcode: address.zipcode || prev.zipcode,
-      country: address.country || prev.country,
-      street: address.street || prev.street,
-      landmark: address.landmark || prev.landmark,
-    }));
-  };
-
-  const verifyCustomerCode = async (codeValue = client.socialCode) => {
-    if (!existingCustomer || !codeValue.trim()) return;
-    setCustomerLookupLoading(true);
-    try {
-      const response = await axios.post(`${backendUrl}/api/order/admin-customer/verify`, {
-        phone: client.phone,
-        code: codeValue.trim(),
-      }, { headers: { token } });
-
-      if (!response.data.success) {
-        setCustomerVerificationState("ERROR");
-        setCustomerLookupMessage(response.data.message || "Unable to verify this social code.");
-        return;
-      }
-
-      setCustomerVerificationState(response.data.verified ? "VERIFIED" : "UNVERIFIED");
-      if (response.data.verified) {
-        setCustomerLookupMessage("Verified customer. Loyalty and gift benefits remain active.");
-      } else {
-        toast.error("Social code did not match this contact number. Loyalty and gift benefits are disabled for this order.");
-        setCustomerLookupMessage("Social code did not match this contact number. Customer data loaded for dispatch only.");
-      }
-      applyCustomerSnapshot(response.data.customer);
-    } catch (error) {
-      setCustomerVerificationState("ERROR");
-      setCustomerLookupMessage(error.response?.data?.message || "Unable to verify this social code.");
     } finally {
       setCustomerLookupLoading(false);
     }
@@ -325,14 +262,6 @@ const CreateOrder = ({ token }) => {
 
     return () => clearTimeout(lookupTimer);
   }, [client.phone]);
-
-  useEffect(() => {
-    if (existingCustomer && client.socialCode.trim().length >= 8) {
-      const verifyTimer = setTimeout(() => verifyCustomerCode(client.socialCode), 300);
-      return () => clearTimeout(verifyTimer);
-    }
-    return undefined;
-  }, [client.socialCode, existingCustomer]);
 
   useEffect(() => {
     const fetchNcmBranches = async () => {
@@ -853,7 +782,6 @@ const CreateOrder = ({ token }) => {
       firstName: "",
       lastName: "",
         phone: "",
-        socialCode: "",
       email: "",
       gender: "PREFER_NOT_TO_SAY",
       province: "Bagmati Province",
@@ -875,10 +803,9 @@ const CreateOrder = ({ token }) => {
     setUseCustomShipping(false);
     setCreatedOrderForPrint(null);
     setIsPrintingModalActive(false);
-    setExistingCustomer(null);
     setCustomerLookupLoading(false);
     setCustomerLookupMessage("");
-    setCustomerVerificationState("IDLE");
+    setCustomerLookupError(false);
   };
 
   return (
@@ -957,34 +884,11 @@ const CreateOrder = ({ token }) => {
               </div>
               {customerLookupLoading && <p className="mt-1 text-[10px] text-gray-500">Checking previous purchases...</p>}
               {!customerLookupLoading && customerLookupMessage && (
-                <p role="status" className={`mt-1 text-[10px] ${customerVerificationState === "VERIFIED" ? "text-emerald-700" : customerVerificationState === "UNVERIFIED" ? "text-amber-700" : customerVerificationState === "ERROR" ? "text-rose-700" : "text-gray-600"}`}>
+                <p role="status" className={`mt-1 text-[10px] ${customerLookupError ? "text-rose-700" : "text-gray-600"}`}>
                   {customerLookupMessage}
                 </p>
               )}
             </div>
-            {existingCustomer && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Optional: Verify Customer</span>
-                  <span className="text-[10px] text-amber-800">{existingCustomer.name || "Existing customer"}</span>
-                </div>
-                <p className="text-[10px] leading-4 text-amber-900">
-                  Skip this code to create the order without linking it to the existing customer account. Enter the code to verify the account and apply eligible loyalty or gift benefits.
-                </p>
-                <input
-                  type="text"
-                  name="socialCode"
-                  maxLength={8}
-                  autoComplete="off"
-                  placeholder="Optional customer code"
-                  value={client.socialCode}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-white border border-amber-300 rounded-lg focus:border-amber-500 focus:outline-none uppercase"
-                />
-                {customerVerificationState === "VERIFIED" && <p className="text-[10px] font-semibold text-emerald-700">Verified. Loyalty and gifts are eligible.</p>}
-                {customerVerificationState === "UNVERIFIED" && <p className="text-[10px] font-semibold text-amber-800">Data loaded for dispatch only. Loyalty and gifts are disabled.</p>}
-              </div>
-            )}
           </div>
 
           {/* Social Channel Selector Card */}

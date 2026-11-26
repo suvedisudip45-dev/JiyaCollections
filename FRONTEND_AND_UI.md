@@ -49,7 +49,7 @@ The Manufacturer/Distributor portal uses a desktop side navigation and a horizon
 
 Location-entry forms across the storefront, Admin, and Manufacturer/Distributor portals load province and district choices from `GET /api/lookups/nepal`; active NCM branches and covered areas are also database-backed for workflows that need carrier coverage selection. The API and each portal reuse successful lookup responses for ten minutes. Customer checkout and Admin direct/social order creation use a required free-text street/neighborhood field with a separate NCM branch selector; manufacturer/distributor workflows retain covered-area selectors where operationally required. Lookup failures are shown in affected location selectors rather than silently allowing stale or empty options to appear valid.
 
-Admin direct/social orders can be created without an existing customer's social code. The code is optional verification for linking an existing account and applying eligible loyalty or gift benefits; when skipped, the order uses the details entered for that order and is not linked to the existing customer account.
+Admin direct/social order creation does not show or require a customer code. A phone number matching an existing customer account links the order to that account and keeps the customer eligible for loyalty and gift benefits; unmatched historical anonymous orders do not grant existing-account benefits.
 
 ### Styling setup
 
