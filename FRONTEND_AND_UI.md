@@ -21,6 +21,8 @@ The project uses a multi-app frontend architecture:
 | `manufacturer/` | Manufacturer fulfillment portal | `BrowserRouter` + protected layout |
 | `marketing/` | Partner campaign portal | `BrowserRouter` + protected route shell |
 
+The four frontends remain separate React applications with independent dependency trees and builds. Production uses three application deployments: `frontend/` stays separate, while the Admin, Manufacturer (including its existing Distributor workspace), and Marketing build artifacts are assembled under one static mixed-portal deployment. Run `npm run build:mixed-portals` from the repository root to create `mixed-portal-dist/`; the app bundles are not merged into one React application.
+
 ### Frameworks and styling
 
 - Vite as the build tool for all portals
@@ -30,6 +32,8 @@ The project uses a multi-app frontend architecture:
 - `lucide-react` for icons
 - `axios` for API access
 - localStorage for token persistence and some client state persistence
+
+On the shared mixed-portal origin, the existing Admin (`token`), Manufacturer (`manufacturerToken`), and Marketing (`mp_token`) access-token keys remain distinct. Manufacturer workspace state uses `manufacturerWorkspace`, and Marketing partner profile state uses `mp_partner`. The portals keep their existing refresh/session flows and backend-issued portal-specific HttpOnly cookies; do not replace or combine these keys as part of deployment.
 
 ### List pagination and response caching
 
@@ -343,6 +347,13 @@ and letter links/actions follow the public platform feature configuration.
 New database seeds leave these optional features disabled until an admin enables
 them; core production, transfer, ordering, and delivery actions remain available.
 Turning a flag off does not delete loyalty or personalized-letter history. Its route list includes:
+
+In the mixed deployment, Admin, Manufacturer, Distributor, and Marketing are
+available under `/admin/*`, `/manufacturer/*`, `/distributor/*`, and
+`/marketing/*`, respectively. The Distributor URLs reuse the Manufacturer app
+build and existing backend-authorized workspace switch; selecting or typing a
+prefix does not grant a role. Standalone portal route behavior remains
+available when building an individual app with Vite's default `/` base path.
 
 | Route | Purpose |
 | --- | --- |

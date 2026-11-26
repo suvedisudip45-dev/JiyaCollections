@@ -19,6 +19,7 @@ import {
   ReceiptText,
 } from "lucide-react";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
+import { getDistributorHomePath, getDistributorPath } from "../utils/workspaceRoutes";
 
 const Sidebar = () => {
   const { stats, availableWorkspaces, manufacturer, distributor, activeWorkspace, token, platformFeatures } = useManufacturer();
@@ -113,7 +114,7 @@ const Sidebar = () => {
               </span>
             </div>
             <nav aria-label="Distributor navigation" className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 lg:block lg:space-y-1 lg:overflow-visible">
-              <NavLink to="/distributor" className={navLinkStyle} end>
+              <NavLink to={getDistributorHomePath(import.meta.env.BASE_URL)} className={navLinkStyle} end>
                 <div className="flex items-center gap-3">
                   <Building className="w-4 h-4 text-emerald-600" />
                   <span>Distributor Overview</span>
@@ -146,7 +147,7 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
-              <NavLink to="/distributor/deliveries" className={navLinkStyle}>
+              <NavLink to={getDistributorPath(import.meta.env.BASE_URL, "/deliveries")} className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Truck className="w-4 h-4 text-emerald-600" />
                   <span>Self-Delivery Orders</span>
@@ -160,21 +161,21 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
-              <NavLink to="/distributor/demand" className={navLinkStyle}>
+              <NavLink to={getDistributorPath(import.meta.env.BASE_URL, "/demand")} className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Boxes className="w-4 h-4 text-emerald-600" />
                   <span>Demand &amp; Receipts</span>
                 </div>
               </NavLink>
 
-              <NavLink to="/distributor/finance" className={navLinkStyle}>
+              <NavLink to={getDistributorPath(import.meta.env.BASE_URL, "/finance")} className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Wallet className="w-4 h-4 text-emerald-600" />
                   <span>Distributor Finance</span>
                 </div>
               </NavLink>
 
-              <NavLink to="/distributor/paper-bills" className={navLinkStyle}>
+              <NavLink to={getDistributorPath(import.meta.env.BASE_URL, "/paper-bills")} className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <ReceiptText className="w-4 h-4 text-emerald-600" />
                   <span>Physical Bill Books</span>

@@ -1112,6 +1112,10 @@ story/template delivery records.
   - Renders **Manufacturer Navigation** routes by default.
   - If the user holds `DISTRIBUTOR` authorization, dynamically exposes the **Distributor Operations Hub** section and a top-bar **[ Switch View: Manufacturer | Distributor ]** quick-toggle.
   - If the user is exclusively a Manufacturer, renders a clean **"Apply for Distributor Authorization"** prompt card.
+- **Mixed deployment routing**:
+  - The Admin, Manufacturer, existing Distributor workspace, and Marketing portals are served from one static mixed-portal deployment at `/admin/*`, `/manufacturer/*`, `/distributor/*`, and `/marketing/*`. Their React apps and dependency trees remain independent; Distributor URLs reuse the Manufacturer build.
+  - Direct navigation to a prefixed workspace still requires the existing authenticated profile and a successful backend `/api/auth/workspace` transition. The path itself does not establish a role or permission.
+  - Build the mixed static artifacts from the repository root with `npm run build:mixed-portals`. Upload `mixed-portal-dist/` to Netlify or an Apache/cPanel document root; keep the customer storefront and backend deployments separate.
 - **Pre & Post Production Checklists (`manufacturer/src/components/ProductionChecklistModal.jsx`)**:
   - Step-by-step gate verification (fabric GSM, sample pattern, color shade matching) for pre-production.
   - Granular post-production QA breakdown by size/color variant with good vs. damaged unit classification before factory inventory receipt.

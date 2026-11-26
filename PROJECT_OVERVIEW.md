@@ -105,6 +105,14 @@ Use Prisma Migrate's deployment command from `backend/` (`npm run db:migrate:dep
 | `marketing/` | Partner campaigns | campaign management, card validation, redemption, reports |
 | `backend/` | API + domain logic | Prisma service layer, routers, controllers, auth/RBAC, order orchestration |
 
+### Production deployment topology
+
+Production has three application deployments: the independent customer storefront (`frontend/`), a mixed static deployment containing independent builds of `admin/`, `manufacturer/`, and `marketing/`, and the existing `backend/` API. The Manufacturer build also serves the existing Distributor workspace; there is no separate Distributor app or duplicated build. The mixed portal artifacts are placed under `/admin/`, `/manufacturer/`, and `/marketing/`, while `/distributor/` uses the Manufacturer artifacts with its own router basename.
+
+From the repository root, `npm run build:mixed-portals` installs and builds each mixed portal independently and writes the combined static site to `mixed-portal-dist/`. `npm run test:mixed-portals` checks deployment path mappings and auth-token storage-key separation. Use the root `netlify.toml` for Netlify, or upload `mixed-portal-dist/` to an Apache/cPanel document root with the included `.htaccess`. The storefront continues to build and deploy separately from `frontend/`; no backend build, migration, or schema change is part of this deployment.
+
+Set each portal's production `VITE_BACKEND_URL` and compatible `VITE_HMAC_SECRET` through that portal's environment/configuration. `VITE_` values are included in browser bundles; in particular, `VITE_HMAC_SECRET` is compatibility signing data, not a confidential secret. Add the final mixed-portal HTTPS origin to the backend's `CORS_ALLOWED_ORIGINS` configuration. Keep backend authorization, refresh cookies, and HTTPS requirements unchanged.
+
 ## 5. Immediate Roadmap / Next Steps
 
 1. Complete the still-missing marketing partner flows called out in the repo analysis: signup, forgot-password/reset-password, and email verification support.

@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "build:mixed-portals": "node scripts/build-mixed-portals.mjs",
+    "test:mixed-portals": "node --test tests/mixedPortalDeployment.test.mjs"
+  },
   "devDependencies": {
     "eslint": "^10.12.0"
   }

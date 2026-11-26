@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Select an Aama Clothings workspace." />
+    <title>Aama Clothings Workspaces</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "DM Sans", "Segoe UI", sans-serif;
+        background: #f8f7f4;
+        color: #171717;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        padding: 2rem 1rem;
+        place-items: center;
+      }
+
+      main { width: min(100%, 48rem); }
+
+      .eyebrow {
+        color: #575757;
+        font-size: .75rem;
+        font-weight: 700;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+      }
+
+      h1 { margin: .5rem 0 2rem; font-size: clamp(2rem, 7vw, 3.5rem); }
+
+      .workspaces { display: grid; gap: 1rem; }
+
+      a {
+        display: block;
+        padding: 1.25rem;
+        border: 1px solid #dedbd3;
+        border-radius: 1rem;
+        background: #fff;
+        color: inherit;
+        text-decoration: none;
+        transition: border-color .15s ease, transform .15s ease;
+      }
+
+      a:hover, a:focus-visible { border-color: #171717; transform: translateY(-2px); }
+      a:focus-visible { outline: 3px solid #171717; outline-offset: 3px; }
+      h2 { margin: 0 0 .35rem; font-size: 1.1rem; }
+      p { margin: 0; color: #575757; line-height: 1.5; }
+
+      @media (min-width: 40rem) {
+        .workspaces { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        a:first-child { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Aama Clothings</p>
+      <h1>Select a workspace</h1>
+      <nav class="workspaces" aria-label="Available workspaces">
+        <a href="/admin/login">
+          <h2>Admin</h2>
+          <p>Business operations, finance, inventory, orders and access control.</p>
+        </a>
+        <a href="/manufacturer/login">
+          <h2>Manufacturer</h2>
+          <p>Production, factory inventory, transfers and manufacturer finance.</p>
+        </a>
+        <a href="/distributor/login">
+          <h2>Distributor</h2>
+          <p>Hub inventory, order fulfillment, deliveries and distributor finance.</p>
+        </a>
+        <a href="/marketing/login">
+          <h2>Marketing partner</h2>
+          <p>Campaigns, cards, redemptions and partner reporting.</p>
+        </a>
+      </nav>
+    </main>
+  </body>
+</html>

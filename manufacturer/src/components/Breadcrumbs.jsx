@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useManufacturer } from "../context/ManufacturerContext";
+import { getDistributorHomePath } from "../utils/workspaceRoutes";
 
 const LABELS = {
   production: "Production",
@@ -26,8 +27,11 @@ const Breadcrumbs = () => {
   const { pathname } = useLocation();
   const { activeWorkspace } = useManufacturer();
   const segments = pathname.split("/").filter(Boolean);
-  const root = activeWorkspace === "DISTRIBUTOR" ? "/distributor" : "/";
-  const isDistributorHome = activeWorkspace === "DISTRIBUTOR" && segments.length === 1 && segments[0] === "distributor";
+  const root = activeWorkspace === "DISTRIBUTOR"
+    ? getDistributorHomePath(import.meta.env.BASE_URL)
+    : "/";
+  const isDistributorHome = activeWorkspace === "DISTRIBUTOR" &&
+    (segments.length === 0 || (segments.length === 1 && segments[0] === "distributor"));
   const crumbs = [{
     label: isDistributorHome ? "Distributor Overview" : activeWorkspace === "DISTRIBUTOR" ? "Distributor Home" : "Manufacturer Home",
     to: root,
@@ -38,7 +42,9 @@ const Breadcrumbs = () => {
     if (activeWorkspace === "DISTRIBUTOR" && index === 0 && segment === "distributor") return;
     path += `/${segment}`;
     const joined = segments.slice(0, index + 1).join("/");
-    const label = LABELS[joined] || LABELS[segment] ||
+    const label = activeWorkspace === "DISTRIBUTOR" && segment === "finance"
+      ? "Distributor Finance"
+      : LABELS[joined] || LABELS[segment] ||
       (index === segments.length - 1 ? "Details" : segment.replaceAll("-", " "));
     crumbs.push({ label, to: path });
   });

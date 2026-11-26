@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
+import { getDistributorPath } from "../utils/workspaceRoutes";
 
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
 const TRANSFER_PAGE_SIZE = 10;
@@ -340,7 +341,7 @@ const DistributorDemandReceipt = () => {
 
         {/* Tab Switcher */}
         {transferId ? (
-          <Link to="/distributor/demand" className="rounded-lg border border-[#dedbd3] px-3.5 py-2 text-xs font-bold text-[#171717] hover:bg-[#f8f7f4]">
+          <Link to={getDistributorPath(import.meta.env.BASE_URL, "/demand")} className="rounded-lg border border-[#dedbd3] px-3.5 py-2 text-xs font-bold text-[#171717] hover:bg-[#f8f7f4]">
             Back to transfers
           </Link>
         ) : <div className="flex items-center gap-1 bg-[#ffffff] p-1 rounded-xl border border-[#dedbd3] self-start sm:self-auto">
@@ -616,7 +617,7 @@ const DistributorDemandReceipt = () => {
                           </td>
                           <td className="px-4 py-3 text-right">
                             <Link
-                              to={`/distributor/demand/${transfer.id}`}
+                              to={getDistributorPath(import.meta.env.BASE_URL, `/demand/${transfer.id}`)}
                               className="rounded-lg border border-[#dedbd3] px-3 py-1.5 text-[11px] font-bold text-[#171717] hover:bg-white"
                             >
                               View / Receive

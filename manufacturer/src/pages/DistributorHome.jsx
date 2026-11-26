@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { toast } from "react-toastify";
 import { PackageOpen, RotateCw } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
+import { getDistributorPath } from "../utils/workspaceRoutes";
 
 const requestKey = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const getFeaturedPhoto = (image) => {
@@ -260,8 +261,8 @@ const DistributorHome = () => {
 
         {/* Hub Quick Navigation Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
-          <a
-            href="/orders"
+          <Link
+            to="/orders"
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -273,10 +274,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               View →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/direct-orders"
+          <Link
+            to="/direct-orders"
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -288,10 +289,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Manage →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/inventory"
+          <Link
+            to="/inventory"
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -303,10 +304,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Stock →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/distributor/deliveries"
+          <Link
+            to={getDistributorPath(import.meta.env.BASE_URL, "/deliveries")}
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -318,10 +319,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Dispatch →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/distributor/demand"
+          <Link
+            to={getDistributorPath(import.meta.env.BASE_URL, "/demand")}
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -333,10 +334,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Inbound →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/distributor/finance"
+          <Link
+            to={getDistributorPath(import.meta.env.BASE_URL, "/finance")}
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
           >
             <div>
@@ -348,10 +349,10 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Statement →
             </span>
-          </a>
+          </Link>
 
-          <a
-            href="/pickup-profile"
+          <Link
+            to="/pickup-profile"
             className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group sm:col-span-2 lg:col-span-3"
           >
             <div>
@@ -363,7 +364,7 @@ const DistributorHome = () => {
             <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
               Configure Setup →
             </span>
-          </a>
+          </Link>
         </div>
       </header>
 
@@ -628,7 +629,7 @@ const DistributorHome = () => {
               </div>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span>
-                <Link to={`/distributor/demand/${transfer.id}`} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <Link to={getDistributorPath(import.meta.env.BASE_URL, `/demand/${transfer.id}`)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                   View / Edit
                 </Link>
               </div>

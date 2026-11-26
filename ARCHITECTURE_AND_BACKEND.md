@@ -11,16 +11,24 @@ Configure `HMAC_SECRET` on the backend and the matching `VITE_HMAC_SECRET` in ea
 The application is structured as a distributed e-commerce platform with a central API server and multiple portal clients:
 
 ```text
-Customer storefront (frontend/)        Admin portal (admin/)       Manufacturer portal (manufacturer/)
-        |                                      |                                 |
-        |-- HTTP REST requests ---------------->|-------------------------------|
-                                                    |
-                                            Node.js + Express backend (backend/)
-                                                    |
-                                      MySQL database via Prisma ORM
-                                                    |
-                                Cloudinary / NCM / separate notification worker
+Customer storefront (frontend/)     Mixed portal: Admin + Manufacturer/Distributor + Marketing
+        |                                      |
+        |----------- HTTP REST requests --------|
+                           |
+                   Node.js + Express backend (backend/)
+                           |
+             MySQL database via Prisma ORM
+                           |
+     Cloudinary / NCM / separate notification worker
 ```
+
+### Frontend deployment topology
+
+The production target has three application deployments: `frontend/` remains the independent customer storefront; `admin/`, `manufacturer/` (including its existing Distributor workspace), and `marketing/` are independently built and assembled into one static deployment; and `backend/` remains the API deployment. The mixed portal is not a shared React application and does not share package dependencies. The Distributor workspace is the existing Manufacturer app under `/distributor/*`, not a duplicate.
+
+Run `npm run build:mixed-portals` from the repository root to produce `mixed-portal-dist/`. The build script performs a locked install and production Vite build for each of the three portals with isolated output directories and route-specific base paths. `netlify.toml` configures Netlify; for cPanel/Apache, upload the output directory with its included `.htaccess` and enable rewrite/header support. `npm run test:mixed-portals` validates prefix routing, host rewrite configuration, route helper behavior, and token-key separation. The storefront still uses its own package build.
+
+Set the mixed site's exact HTTPS origin in backend `CORS_ALLOWED_ORIGINS` so credentialed API calls and existing refresh cookies continue to work. Configure each portal's own production environment (including `VITE_BACKEND_URL` and compatible public `VITE_HMAC_SECRET`) before building. Vite-exposed values are public; never place backend secrets in a portal build. The URL prefix only selects a frontend route: authorization and workspace changes remain backend-enforced.
 
 ### Core runtime flow
 

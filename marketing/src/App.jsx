@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Navigate, matchPath, useLocation } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import AppShell from "./components/layout/AppShell";
-import { backendUrl } from "./api/client";
+import api from "./api/client";
 
 // Pages
 import LoginPage from "./pages/auth/LoginPage";
@@ -28,7 +27,7 @@ const MarketingFeatureGate = ({ children }) => {
 
   useEffect(() => {
     let mounted = true;
-    axios.get(`${backendUrl}/api/features`)
+    api.get("/api/features")
       .then((response) => {
         if (!response.data?.success) throw new Error("Feature status is unavailable.");
         if (mounted) setEnabled(Boolean(response.data.features?.marketingCardsEnabled));
@@ -48,17 +47,37 @@ const MarketingFeatureGate = ({ children }) => {
   return children;
 };
 
-const App = () => {
+const MARKETING_KNOWN_ROUTES = [
+  "/",
+  "/login",
+  "/signup",
+  "/dashboard",
+  "/campaigns",
+  "/campaigns/:id",
+  "/cards",
+  "/cards/:id",
+  "/redemptions",
+  "/qr-validator",
+  "/reports",
+  "/profile",
+  "/settings",
+  "/unauthorized",
+];
+
+const MarketingRoutes = () => {
+  const location = useLocation();
+  const knownRoute = MARKETING_KNOWN_ROUTES.some((path) =>
+    matchPath({ path, end: true }, location.pathname)
+  );
+
+  if (!knownRoute) return <NotFoundPage />;
+
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <MarketingFeatureGate>
+    <MarketingFeatureGate>
         <Routes>
-          {/* Public Auth Route */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
 
-          {/* Protected Marketing Partner Portal Routes */}
           <Route
             path="/"
             element={
@@ -79,10 +98,21 @@ const App = () => {
             <Route path="profile" element={<ProfilePage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="unauthorized" element={<UnauthorizedPage />} />
-            <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Routes>
-        </MarketingFeatureGate>
+    </MarketingFeatureGate>
+  );
+};
+
+const App = () => {
+  const routerBasename = import.meta.env.BASE_URL === "/"
+    ? "/"
+    : import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  return (
+    <BrowserRouter basename={routerBasename}>
+      <AuthProvider>
+        <MarketingRoutes />
       </AuthProvider>
     </BrowserRouter>
   );

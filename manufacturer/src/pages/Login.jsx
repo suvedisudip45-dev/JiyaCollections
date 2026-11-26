@@ -86,7 +86,12 @@ const Login = () => {
   const [showRegister, setShowRegister] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [registrationType, setRegistrationType] = useState("MANUFACTURER");
-  const [loginPortal, setLoginPortal] = useState("MANUFACTURER");
+  const [loginPortal, setLoginPortal] = useState(() =>
+    window.location.pathname === "/distributor/login" ||
+    window.location.pathname.startsWith("/distributor/")
+      ? "DISTRIBUTOR"
+      : "MANUFACTURER"
+  );
   const [distributorForm, setDistributorForm] = useState(defaultDistributorForm);
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);

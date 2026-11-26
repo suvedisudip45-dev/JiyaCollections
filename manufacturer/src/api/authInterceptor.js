@@ -10,13 +10,15 @@ import {
   REFRESH_EXPIRY_KEY,
   storeAuthTokens,
 } from "../auth/tokenStorage";
+import { getWorkspaceBasePath } from "../utils/workspaceRoutes";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
+const requestBasePath = getWorkspaceBasePath(import.meta.env.BASE_URL, window.location.pathname);
 let installed = false;
 let refreshPromise = null;
 let expiryTimer = null;
 let redirecting = false;
-let loginPath = "/";
+let loginPath = `${requestBasePath === "/" ? "" : requestBasePath}/login`;
 
 const MAX_TIMEOUT = 2147483647;
 

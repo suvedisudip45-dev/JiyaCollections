@@ -1,0 +1,12 @@
+/admin /admin/index.html 200
+/admin/assets/* /404.html 404
+/admin/* /admin/index.html 200
+/manufacturer /manufacturer/index.html 200
+/manufacturer/assets/* /404.html 404
+/manufacturer/* /manufacturer/index.html 200
+/distributor /manufacturer/index.html 200
+/distributor/assets/* /404.html 404
+/distributor/* /manufacturer/index.html 200
+/marketing /marketing/index.html 200
+/marketing/assets/* /404.html 404
+/marketing/* /marketing/index.html 200

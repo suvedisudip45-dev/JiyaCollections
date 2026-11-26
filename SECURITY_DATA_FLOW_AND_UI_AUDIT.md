@@ -132,6 +132,9 @@ These observations are based on source code, not a penetration test or productio
 
 ## 4. Deployment and operational checklist
 
+- For the mixed Admin/Manufacturer/Distributor/Marketing deployment, configure the exact production HTTPS origin in backend `CORS_ALLOWED_ORIGINS`; the backend must allow credentialed requests from that origin. Keep the existing portal-specific HttpOnly refresh cookies, Secure/SameSite production settings, session validation, and server-side authorization. Do not treat a URL prefix, client-selected portal, or `VITE_HMAC_SECRET` as authorization or a confidential secret.
+- The mixed deployment keeps the existing browser storage keys separate (`token`, `manufacturerToken`, and `mp_token`) and uses the existing Manufacturer/Distributor workspace API. Verify login, refresh, logout, session restoration, MFA, and cross-portal authorization in staging with separate test accounts; a successful static build is not security verification.
+- Build the mixed portal from the repository root with `npm run build:mixed-portals`; deploy only `mixed-portal-dist/` to Netlify or an Apache/cPanel host configured for HTTPS. The customer storefront and backend remain separate deployments.
 - Customer disable is enforced through the retained `User.isDisabled` flag, CUSTOMER workspace validation on login/access/refresh, revoked sessions, and registration/profile-activation checks. The action is gated by `customer:account_manage` and recorded through the system-audit outbox.
 - The admin customer search requires an explicit query; customer records are not loaded into the page before search. Customer notification history is matched to stored contact addresses, excludes authentication/verification messages, and returns only selected message text rather than raw payloads.
 - Apply the audit/outbox Prisma migration and regenerate Prisma Client.

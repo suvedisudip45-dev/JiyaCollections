@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { getDistributorPath } from "../utils/workspaceRoutes";
 import {
   ArrowLeft,
   Package,
@@ -746,7 +747,9 @@ const OrderDetail = () => {
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-xs text-amber-950">
             <p className="font-bold">Order held for {assignment.deliveryType === "NCM" ? "NCM batch booking" : "self-delivery"}.</p>
             <Link
-              to={assignment.deliveryType === "NCM" ? "/ncm" : "/distributor/deliveries"}
+              to={assignment.deliveryType === "NCM"
+                ? "/ncm"
+                : getDistributorPath(import.meta.env.BASE_URL, "/deliveries")}
               className="mt-2 inline-flex font-bold underline underline-offset-2"
             >
               Open {assignment.deliveryType === "NCM" ? "NCM deliveries" : "self-delivery management"}

@@ -6,7 +6,7 @@ import { PermissionsProvider, usePermissions } from "./auth/PermissionsContext";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import Breadcrumbs from "./components/Breadcrumbs";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, matchPath, useLocation, useNavigate } from "react-router-dom";
 import Add from "./pages/Add";
 import List from "./pages/List";
 import Orders, { AdminOrderDetail } from "./pages/Orders";
@@ -73,7 +73,7 @@ import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { installAuthInterceptor } from "./api/authInterceptor";
 
-installAuthInterceptor();
+installAuthInterceptor("/admin/login");
 
 export const backendUrl = import.meta.env.VITE_BACKEND_URL ;
 export const currency = "Rs ";
@@ -88,8 +88,22 @@ const withPermission = (path, element) => (
   <AccessRoute requiredPermissions={ADMIN_ROUTE_PERMISSIONS[path]}>{element}</AccessRoute>
 );
 
+const ADMIN_KNOWN_ROUTES = [
+  ...Object.keys(ADMIN_ROUTE_PERMISSIONS),
+  "/",
+  "/login",
+  "/add-order",
+  "/change-password",
+  "/orders/:orderId",
+  "/stock-transfers/:transferId",
+];
+
+const isKnownAdminRoute = (pathname) =>
+  ADMIN_KNOWN_ROUTES.some((path) => matchPath({ path, end: true }, pathname));
+
 const App = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   // Retrieve the token from localStorage only on the initial render
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -99,6 +113,12 @@ const App = () => {
   const [permissions, setPermissions] = useState([]);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const sessionValidated = useRef(false);
+
+  useEffect(() => {
+    if (token && location.pathname === "/login") {
+      navigate("/orders", { replace: true });
+    }
+  }, [location.pathname, navigate, token]);
 
   // Store token in localStorage whenever it changes
   useEffect(() => {
@@ -176,7 +196,9 @@ const App = () => {
       {authLoading ? (
         <div className="min-h-[70vh] flex items-center justify-center text-sm text-slate-500">Checking session...</div>
       ) : token === "" ? (
-        <Login setToken={setToken} />
+        location.pathname === "/login" || isKnownAdminRoute(location.pathname)
+          ? <Login setToken={setToken} />
+          : <NotFound />
       ) : (
         <PermissionsProvider account={sessionAccount} permissions={permissions}>
           <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />

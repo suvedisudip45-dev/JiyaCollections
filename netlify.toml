@@ -1,0 +1,6 @@
+[build]
+  command = "npm run build:mixed-portals"
+  publish = "mixed-portal-dist"
+
+[build.environment]
+  NODE_VERSION = "20.19.0"

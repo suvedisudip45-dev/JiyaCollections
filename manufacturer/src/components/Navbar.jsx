@@ -1,8 +1,8 @@
 import React from "react";
 import axios from "axios";
-import { useNavigate } from "react-router-dom";
 import { toast } from "react-toastify";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
+import { getWorkspaceHomePath } from "../utils/workspaceRoutes";
 import { LogOut, MapPin, Star, ShieldCheck, ArrowLeftRight, Building, Wifi, WifiOff } from "lucide-react";
 
 const Navbar = () => {
@@ -17,8 +17,6 @@ const Navbar = () => {
     availableWorkspaces,
     switchWorkspace,
   } = useManufacturer();
-
-  const navigate = useNavigate();
 
   if (!activeProfile && !manufacturer && !distributor) return null;
 
@@ -35,10 +33,10 @@ const Navbar = () => {
   const isDualRole = hasDistributor && hasManufacturer;
 
   const handleSwitch = async () => {
-    await switchWorkspace();
-    // Navigate to the correct home for the new workspace
     const targetRole = activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER";
-    navigate(targetRole === "DISTRIBUTOR" ? "/distributor" : "/");
+    if (await switchWorkspace(targetRole)) {
+      window.location.assign(getWorkspaceHomePath(import.meta.env.BASE_URL, targetRole));
+    }
   };
 
   const isDistributorView = activeWorkspace === "DISTRIBUTOR";

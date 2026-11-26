@@ -11,6 +11,9 @@ import {
 } from "../auth/tokenStorage";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL;
+const marketingBasePath = import.meta.env.BASE_URL === "/"
+  ? ""
+  : import.meta.env.BASE_URL.replace(/\/$/, "");
 const installedClients = new WeakSet();
 let refreshPromise = null;
 let expiryTimer = null;
@@ -84,7 +87,7 @@ const scheduleSessionExpiry = () => {
   expiryTimer = window.setTimeout(scheduleSessionExpiry, Math.min(remaining, MAX_TIMEOUT));
 };
 
-export const installAuthInterceptor = (client = axios, redirectPath = "/login") => {
+export const installAuthInterceptor = (client = axios, redirectPath = `${marketingBasePath}/login`) => {
   if (installedClients.has(client)) return;
   installedClients.add(client);
   loginPath = redirectPath;

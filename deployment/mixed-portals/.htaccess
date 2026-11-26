@@ -1,0 +1,26 @@
+Options -MultiViews
+DirectoryIndex index.html
+ErrorDocument 404 /404.html
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(?:admin|manufacturer|marketing)/assets/ - [E=IMMUTABLE_ASSET:1]
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  RewriteRule ^(?:admin|manufacturer|marketing)/assets/ - [R=404,L]
+  RewriteRule ^admin(?:/.*)?$ /admin/index.html [L]
+  RewriteRule ^manufacturer(?:/.*)?$ /manufacturer/index.html [L]
+  RewriteRule ^distributor(?:/.*)?$ /manufacturer/index.html [L]
+  RewriteRule ^marketing(?:/.*)?$ /marketing/index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header set Cache-Control "public, max-age=31536000, immutable" env=IMMUTABLE_ASSET
+  <FilesMatch "^index\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "^404\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>

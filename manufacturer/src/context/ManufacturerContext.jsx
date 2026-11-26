@@ -140,8 +140,12 @@ export const ManufacturerProvider = ({ children }) => {
     }
   }, [setActiveWorkspace, token]);
 
-  const switchWorkspace = useCallback(async () => {
-    const targetRole = activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER";
+  const switchWorkspace = useCallback(async (requestedRole) => {
+    const targetRole = requestedRole || (activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER");
+    if (targetRole !== "MANUFACTURER" && targetRole !== "DISTRIBUTOR") {
+      throw new Error("Unsupported partner workspace.");
+    }
+    if (targetRole === activeWorkspace) return true;
     try {
       const response = await axios.post(`${backendUrl}/api/auth/workspace`, { role: targetRole });
       if (!response.data?.success || !(response.data.accessToken || response.data.token)) {
@@ -150,8 +154,10 @@ export const ManufacturerProvider = ({ children }) => {
       storeAuthTokens(response.data);
       setActiveWorkspace(targetRole);
       toast.success(`Switched to ${targetRole === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} view.`);
+      return true;
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "Workspace could not be changed.");
+      return false;
     }
   }, [activeWorkspace, setActiveWorkspace]);
 
