@@ -160,14 +160,15 @@ const Sidebar = ({ isOpen = false, onClose }) => {
       {/* Scrollable nav area */}
           <div className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden px-3 py-4" style={{ scrollbarWidth: "thin", scrollbarColor: "#cbd5e1 transparent" }}>
 
-        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
+        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:driver_users_manage", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
           <>
             <SectionGroup
               label="Access Control"
               icon={Icon.lock}
-              routes={["/access-control/users", "/access-control/roles", "/access-control/permissions", "/audit-history"]}
+              routes={["/access-control/users", "/access-control/drivers", "/access-control/roles", "/access-control/permissions", "/audit-history"]}
             >
               {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"]) && <NavItem to="/access-control/users" icon={Icon.customers} label="Portal Users" />}
+              {can("access:driver_users_manage") && <NavItem to="/access-control/drivers" icon={Icon.shipping} label="Driver Access" />}
               {can("access:roles_read") && <NavItem to="/access-control/roles" icon={Icon.partners} label="Admin Roles" />}
               {can("access:permissions_read") && <NavItem to="/access-control/permissions" icon={Icon.lock} label="Permissions" />}
               {can("access:audit_read") && <NavItem to="/audit-history" icon={Icon.lock} label="Audit History" />}

@@ -5,6 +5,7 @@ const PORTAL_COOKIE_SUFFIXES = {
   ADMIN: "admin",
   MANUFACTURER: "manufacturer",
   DISTRIBUTOR: "distributor",
+  DRIVER: "driver",
   MARKETING: "marketing_partner",
   MARKETING_PARTNER: "marketing_partner",
 };

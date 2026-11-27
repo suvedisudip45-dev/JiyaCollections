@@ -71,7 +71,7 @@ const defaultDistributorForm = {
 const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
 const Login = () => {
-  const { setToken, setManufacturer, backendUrl } = useManufacturer();
+  const { setToken, backendUrl } = useManufacturer();
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -254,7 +254,7 @@ const Login = () => {
         } else if (response.data.success && (response.data.accessToken || response.data.token)) {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
-          toast.success(`Welcome back, ${loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
+          toast.success(`Welcome back, ${loginPortal === "DRIVER" ? "driver" : loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid credentials");
         }
@@ -276,7 +276,7 @@ const Login = () => {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
           setOtp("");
-          toast.success(`Welcome back, ${loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
+          toast.success(`Welcome back, ${loginPortal === "DRIVER" ? "driver" : loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid or expired verification code.");
         }
@@ -939,7 +939,7 @@ const Login = () => {
               {loginStep === "otp" ? <ShieldCheck className="w-8 h-8" /> : <Factory className="w-8 h-8" />}
             </div>
             <h1 className="text-2xl font-black text-white">{loginStep === "otp" ? "Verify your identity" : "Choose a delivery method"}</h1>
-            <p className="text-sm text-slate-400 mt-2">{loginPortal === "DISTRIBUTOR" ? "Distributor Hub access verification" : "Manufacturer Hub access verification"}</p>
+            <p className="text-sm text-slate-400 mt-2">{loginPortal === "DRIVER" ? "Driver workspace access verification" : loginPortal === "DISTRIBUTOR" ? "Distributor Hub access verification" : "Manufacturer Hub access verification"}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
             {loginStep === "method" ? (
@@ -984,7 +984,7 @@ const Login = () => {
                   <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-emerald-300" : "text-rose-300"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
                 </div>
                 <button type="submit" disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-50">
-                  {loading ? "Checking code..." : `Verify and enter ${loginPortal === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} Workspace`}
+                  {loading ? "Checking code..." : `Verify and enter ${loginPortal === "DRIVER" ? "Driver" : loginPortal === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} Workspace`}
                 </button>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-slate-400">Didn&apos;t receive the code?</span>
@@ -1016,10 +1016,10 @@ const Login = () => {
             <Factory className="w-8 h-8" />
           </div>
           <h1 className="text-2xl font-black text-white tracking-tight">
-            {loginPortal === "DISTRIBUTOR" ? "Distributor Workspace" : "Manufacturer Hub"}
+            {loginPortal === "DRIVER" ? "Driver Workspace" : loginPortal === "DISTRIBUTOR" ? "Distributor Workspace" : "Manufacturer Hub"}
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Sign in to manage your {loginPortal === "DISTRIBUTOR" ? "distribution" : "manufacturing"} operations
+            {loginPortal === "DRIVER" ? "Sign in to view and complete assigned deliveries" : `Sign in to manage your ${loginPortal === "DISTRIBUTOR" ? "distribution" : "manufacturing"} operations`}
           </p>
         </div>
 
@@ -1036,6 +1036,7 @@ const Login = () => {
                 >
                   <option value="MANUFACTURER">Manufacturer</option>
                   <option value="DISTRIBUTOR">Distributor</option>
+                  <option value="DRIVER">Delivery Driver</option>
                 </select>
               </label>
             )}
@@ -1098,31 +1099,33 @@ const Login = () => {
             </button>
           </form>
 
-          <div className="mt-6 pt-6 border-t border-slate-800 text-center">
-            <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aama Clothings</p>
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={() => { setRegistrationType("MANUFACTURER"); setShowRegister(true); }}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Register as manufacturer</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => { setRegistrationType("DISTRIBUTOR"); setShowRegister(true); }}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Register as distributor</span>
-              </button>
+          {loginPortal !== "DRIVER" && (
+            <div className="mt-6 pt-6 border-t border-slate-800 text-center">
+              <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aama Clothings</p>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => { setRegistrationType("MANUFACTURER"); setShowRegister(true); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Register as manufacturer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRegistrationType("DISTRIBUTOR"); setShowRegister(true); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Register as distributor</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-center gap-2 text-slate-500 text-xs">
             <Shield className="w-3.5 h-3.5" />
-            <span>Encrypted &amp; secure partner portal</span>
+            <span>Encrypted &amp; secure {loginPortal === "DRIVER" ? "driver" : "partner"} portal</span>
           </div>
         </div>
       </div>

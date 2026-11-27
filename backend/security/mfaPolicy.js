@@ -3,6 +3,7 @@ export const MFA_REQUIRED_PORTALS = Object.freeze([
   "MARKETING_PARTNER",
   "MANUFACTURER",
   "DISTRIBUTOR",
+  "DRIVER",
 ]);
 
 export const normalizePortal = (portal) => String(portal || "").trim().toUpperCase();

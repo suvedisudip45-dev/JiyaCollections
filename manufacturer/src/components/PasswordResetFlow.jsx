@@ -4,22 +4,29 @@ import { ArrowLeft, ArrowRight, CheckCircle2, KeyRound, Loader2, MessageSquareTe
 import OtpInput from "./OtpInput";
 
 const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
+  const portalLabel = {
+    DISTRIBUTOR: "distributor",
+    DRIVER: "driver",
+    MANUFACTURER: "manufacturer",
+  }[portal] || "account";
   const [step, setStep] = useState("phone");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [maskedPhone, setMaskedPhone] = useState("");
   const [challengeId, setChallengeId] = useState("");
   const [otp, setOtp] = useState("");
-  const [otpLength, setOtpLength] = useState(6);
+  const [otpLength, setOtpLength] = useState(8);
   const [tfaToken, setTfaToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async (event) => {
     event.preventDefault();
     setError("");
+    setNotice("");
     setLoading(true);
     try {
       if (step === "phone") {
@@ -30,7 +37,7 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
         });
         setChallengeId(response.data.challengeId);
         setMaskedPhone(response.data.maskedPhone);
-        setOtpLength(response.data.otpLength || 6);
+        setOtpLength(response.data.otpLength || 8);
         setStep("otp");
       } else if (step === "otp") {
         const response = await axios.post(`${backendUrl}/api/auth/password-reset/verify`, {
@@ -57,6 +64,23 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
     }
   };
 
+  const resendCode = async () => {
+    setError("");
+    setNotice("");
+    setLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/auth/password-reset/resend`, {
+        challengeId,
+        portal,
+      });
+      setNotice(response.data.message || "If the request is valid, a new code will be sent.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || "A new code could not be requested. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
       <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -69,10 +93,11 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
           <div className="rounded-xl bg-emerald-500/10 p-3 text-emerald-400"><KeyRound className="h-5 w-5" /></div>
           <div>
             <h1 className="text-xl font-bold text-white">Reset your password</h1>
-            <p className="mt-1 text-xs text-slate-400">SMS verification for your {portal === "DISTRIBUTOR" ? "distributor" : "manufacturer"} account</p>
+            <p className="mt-1 text-xs text-slate-400">SMS verification for your {portalLabel} account</p>
           </div>
         </div>
         {error && <p role="alert" className="mb-4 rounded-xl border border-rose-900 bg-rose-950/60 px-3 py-2.5 text-sm text-rose-300">{error}</p>}
+        {notice && <p role="status" className="mb-4 rounded-xl border border-emerald-900 bg-emerald-950/40 px-3 py-2.5 text-sm text-emerald-200">{notice}</p>}
         <form onSubmit={submit} className="space-y-4">
           {step === "phone" && (
             <>
@@ -102,7 +127,7 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
                 placeholder="98XXXXXXXX"
                 className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none focus:border-emerald-500"
               />
-              <p className="text-xs leading-5 text-slate-400">Both details must match an active {portal === "DISTRIBUTOR" ? "distributor" : "manufacturer"} account. We send a one-time code by SMS. Password reset is limited to once every 7 days and three times per month.</p>
+              <p className="text-xs leading-5 text-slate-400">If an eligible account matches both details, recovery instructions will be sent by SMS. Password reset is limited to once every 7 days and three times per month.</p>
             </>
           )}
           {step === "otp" && (
@@ -119,6 +144,9 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
                 onChange={setOtp}
                 length={otpLength}
               />
+              <button type="button" onClick={resendCode} disabled={loading} className="min-h-11 text-sm font-semibold text-emerald-400 underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-50">
+                Resend code
+              </button>
             </>
           )}
           {step === "password" && (

@@ -30,6 +30,19 @@ const redirectToLogin = () => {
 const readHeader = (headers, name) =>
   headers?.get?.(name) || headers?.[name] || headers?.[name.toLowerCase()] || "";
 
+const isTransientDriverRefreshFailure = (error) => (
+  getActiveWorkspace() === "DRIVER" &&
+  (!error?.response || error.response.status >= 500 || error.response.status === 429)
+);
+
+const handleScheduledRefreshFailure = (error) => {
+  if (isTransientDriverRefreshFailure(error)) {
+    console.warn("Driver session refresh is temporarily unavailable; local driver data remains read-only.");
+    return;
+  }
+  redirectToLogin();
+};
+
 const getRequestAccessToken = (headers) => {
   const tokenHeader = readHeader(headers, "token");
   const authorization = readHeader(headers, "Authorization");
@@ -72,12 +85,16 @@ const scheduleSessionExpiry = () => {
 
   const expiresAt = getRefreshTokenExpiresAt();
   if (!expiresAt) {
-    refreshAccessToken().catch(redirectToLogin);
+    refreshAccessToken().catch(handleScheduledRefreshFailure);
     return;
   }
 
   const remaining = expiresAt - Date.now();
   if (remaining <= 0) {
+    if (getActiveWorkspace() === "DRIVER" && !navigator.onLine) {
+      console.warn("Driver refresh session expired while offline; cached driver data remains read-only.");
+      return;
+    }
     redirectToLogin();
     return;
   }
@@ -135,6 +152,9 @@ export const installAuthInterceptor = (redirectPath = "/") => {
         originalRequest.headers.token = accessToken;
         return axios(originalRequest);
       } catch (refreshError) {
+        if (isTransientDriverRefreshFailure(refreshError)) {
+          return Promise.reject(refreshError);
+        }
         redirectToLogin();
         return Promise.reject(refreshError);
       }
@@ -161,6 +181,7 @@ export const installAuthInterceptor = (redirectPath = "/") => {
     }
   });
   window.addEventListener("focus", scheduleSessionExpiry);
+  window.addEventListener("online", scheduleSessionExpiry);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) scheduleSessionExpiry();
   });

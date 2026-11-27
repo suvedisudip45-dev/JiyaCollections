@@ -54,3 +54,71 @@ export const deleteEvidenceImage = async (publicId) => {
     console.error("Could not remove unreferenced evidence image:", error);
   }
 };
+
+export const uploadPrivateEvidenceImage = async (file, folder) => {
+  if (!file) throw Object.assign(new Error("A valid evidence image is required."), {
+    statusCode: 400,
+    code: "EVIDENCE_IMAGE_REQUIRED",
+  });
+  try {
+    return await cloudinary.uploader.upload(file.path, {
+      resource_type: "image",
+      type: "authenticated",
+      access_mode: "authenticated",
+      folder,
+      allowed_formats: ["jpg", "jpeg", "png"],
+      overwrite: false,
+      timeout: EVIDENCE_UPLOAD_TIMEOUT_MS,
+    });
+  } finally {
+    await fs.unlink(file.path).catch(() => {});
+  }
+};
+
+export const uploadPrivateEvidenceDataUrl = async (dataUrl, folder) => {
+  if (typeof dataUrl !== "string" || !/^data:image\/(?:png|jpeg);base64,/i.test(dataUrl)) {
+    throw Object.assign(new Error("Signature evidence must be a base64 JPEG or PNG data URL."), {
+      statusCode: 400,
+      code: "INVALID_SIGNATURE_EVIDENCE",
+    });
+  }
+  const base64Length = dataUrl.length - dataUrl.indexOf(",") - 1;
+  if (base64Length > 8 * 1024 * 1024) {
+    throw Object.assign(new Error("Signature evidence is too large."), {
+      statusCode: 413,
+      code: "SIGNATURE_EVIDENCE_TOO_LARGE",
+    });
+  }
+  return cloudinary.uploader.upload(dataUrl, {
+    resource_type: "image",
+    type: "authenticated",
+    access_mode: "authenticated",
+    folder,
+    allowed_formats: ["jpg", "jpeg", "png"],
+    overwrite: false,
+    timeout: EVIDENCE_UPLOAD_TIMEOUT_MS,
+  });
+};
+
+export const deletePrivateEvidenceImage = async (publicId) => {
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, {
+      resource_type: "image",
+      type: "authenticated",
+      invalidate: true,
+    });
+  } catch (error) {
+    console.error("Could not remove private evidence image:", error);
+  }
+};
+
+export const getPrivateEvidenceDownloadUrl = (publicId, kind = "photo") => {
+  if (!publicId) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + 300;
+  return cloudinary.utils.private_download_url(publicId, kind === "signature" ? "png" : "jpg", {
+    type: "authenticated",
+    attachment: false,
+    expires_at: expiresAt,
+  });
+};

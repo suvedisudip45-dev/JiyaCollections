@@ -471,6 +471,7 @@ export const updateSelfDeliveryStatus = async ({
   accrueDeliveryEarning = accrueDistributorDeliveryEarning,
   accrueStockTransferEarning = accrueDistributorStockTransferEarning,
   client = prisma,
+  executeInTransaction = false,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
   if (!assignmentIdOrOrderId) throw fail("Order or Assignment ID is required.", 400);
@@ -502,7 +503,7 @@ export const updateSelfDeliveryStatus = async ({
   const { canonicalStatus, internalStatus } = transition;
   const now = new Date();
 
-  const result = await client.$transaction(async (tx) => {
+  const execute = async (tx) => {
     let accountingStatus = null;
     const order = await tx.order.findUnique({
       where: { id: assignment.orderId },
@@ -686,7 +687,10 @@ export const updateSelfDeliveryStatus = async ({
       order: serializeOrder(updatedOrder),
       ...(accountingStatus ? { accountingStatus } : {}),
     };
-  });
+  };
+  const result = executeInTransaction
+    ? await execute(client)
+    : await client.$transaction(execute, { isolationLevel: "Serializable" });
   if (result?.deliveryOtpError) throw result.deliveryOtpError;
   return result;
 };

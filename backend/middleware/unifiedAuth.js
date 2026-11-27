@@ -1,6 +1,11 @@
 import { prisma } from "../config/db.js";
 import { hasVerifiedMfa, verifyAccessToken } from "../services/tokenService.js";
-import { accountHasWorkspaceRole, getActiveWorkspaceRoles, isWorkspaceProfileActive } from "../services/authService.js";
+import {
+  accountHasWorkspaceRole,
+  getActiveWorkspaceRoles,
+  hydrateDeliveryDriverProfile,
+  isWorkspaceProfileActive,
+} from "../services/authService.js";
 import { isMfaEnforced } from "../security/mfaPolicy.js";
 
 export { authorize, authorizeAny } from "./authorize.js";
@@ -81,6 +86,7 @@ export const createAuthenticate = (client = prisma, env = process.env) => async 
         ADMIN: () => client.admin.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         MANUFACTURER: () => client.manufacturer.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         DISTRIBUTOR: () => client.distributor.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        DRIVER: () => client.deliveryDriver.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         MARKETING_PARTNER: () => client.marketingPartner.findUnique({ where: { id: profileId }, select: { accountId: true } }),
       }[role];
       const profile = profileLookup ? await profileLookup() : null;
@@ -127,6 +133,9 @@ export const createAuthenticate = (client = prisma, env = process.env) => async 
           },
         })
       : null;
+    if (account) {
+      account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(account, client))?.deliveryDriverProfile || null;
+    }
     if (!account || !accountHasWorkspaceRole(account, role)) {
       return res.status(401).json({
         success: false,
@@ -175,6 +184,7 @@ export const createAuthenticate = (client = prisma, env = process.env) => async 
       ADMIN: account.adminProfile?.id,
       MANUFACTURER: account.manufacturerProfile?.id,
       DISTRIBUTOR: account.distributorProfile?.id,
+      DRIVER: account.deliveryDriverProfile?.id,
       MARKETING_PARTNER: account.marketingPartnerProfile?.id,
     }[role] || account.id;
     if (profileId !== canonicalProfileId && profileId !== account.id) {
@@ -202,6 +212,8 @@ export const createAuthenticate = (client = prisma, env = process.env) => async 
       mustChangePassword: account.mustChangePassword,
       manufacturerId: manufacturer?.id || null,
       distributorId: distributor?.id || null,
+      driverId: roles.includes("DRIVER") ? account.deliveryDriverProfile?.id || null : null,
+      driver: roles.includes("DRIVER") ? account.deliveryDriverProfile : null,
       manufacturer,
       distributor,
       partnerId: decoded.partnerId || null,
@@ -223,6 +235,9 @@ export const createAuthenticate = (client = prisma, env = process.env) => async 
     } else if (role === "DISTRIBUTOR") {
       req.distributorId = req.auth.distributorId || profileId;
       req.body.distributorId = req.distributorId;
+    } else if (role === "DRIVER") {
+      req.driverId = req.auth.driverId;
+      req.distributorId = account.deliveryDriverProfile.distributorId;
     } else if (role === "MARKETING_PARTNER") {
       req.partnerId = profileId;
       req.body.partnerId = profileId;
@@ -284,6 +299,7 @@ export const requirePortal = (portalName) => {
     ADMIN: ["ADMIN"],
     MANUFACTURER: ["MANUFACTURER"],
     DISTRIBUTOR: ["DISTRIBUTOR"],
+    DRIVER: ["DRIVER"],
     MARKETING: ["MARKETING_PARTNER"],
   };
 
@@ -295,6 +311,7 @@ export const requireAdmin = [authenticate, requireRole("ADMIN")];
 export const requireCustomer = [authenticate, requireRole("CUSTOMER")];
 export const requireManufacturer = [authenticate, requireRole("MANUFACTURER")];
 export const requireDistributor = [authenticate, requireRole("DISTRIBUTOR")];
+export const requireDriver = [authenticate, requireRole("DRIVER")];
 export const requireMarketingPartner = [authenticate, requireRole("MARKETING_PARTNER")];
 
 const hasPortalRole = (req, allowedRoles) => {
@@ -356,6 +373,23 @@ export const setDistributorContext = (req, res, next) => {
   req.distributor = req.auth.distributor;
   req.distributorId = distributorId;
   req.body.distributorId = distributorId;
+  delete req.body.distributorIdOverride;
+  next();
+};
+
+export const setDeliveryDriverContext = (req, res, next) => {
+  if (!req.auth?.accountId || req.auth.role !== "DRIVER" || !req.auth.driverId || !req.auth.driver) {
+    return res.status(403).json({
+      success: false,
+      message: "An active delivery-driver profile is required.",
+      code: "DRIVER_PROFILE_REQUIRED",
+    });
+  }
+  req.driverId = req.auth.driverId;
+  req.driver = req.auth.driver;
+  req.distributorId = req.auth.driver.distributorId;
+  if (!req.body) req.body = {};
+  req.body.distributorId = req.distributorId;
   delete req.body.distributorIdOverride;
   next();
 };

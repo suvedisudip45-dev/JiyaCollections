@@ -55,6 +55,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/platform-features": ["platform:features_manage"],
   "/storefront-content": ["platform:features_manage"],
   "/access-control/users": ["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"],
+  "/access-control/drivers": ["access:driver_users_manage"],
   "/access-control/roles": ["access:roles_read"],
   "/access-control/permissions": ["access:permissions_read"],
   "/audit-history": ["access:audit_read"],

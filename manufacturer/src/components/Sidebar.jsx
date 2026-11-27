@@ -17,11 +17,14 @@ import {
   Truck,
   Building,
   ReceiptText,
+  ArrowLeftRight,
+  ClipboardCheck,
+  ClipboardList,
 } from "lucide-react";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 
 const Sidebar = () => {
-  const { stats, availableWorkspaces, manufacturer, distributor, activeWorkspace, token, platformFeatures } = useManufacturer();
+  const { stats, availableWorkspaces, manufacturer, distributor, driver, activeWorkspace, token, platformFeatures } = useManufacturer();
   const [applying, setApplying] = useState(false);
   const [pendingPreparationCount, setPendingPreparationCount] = useState(0);
   const previousPreparationCount = useRef(null);
@@ -98,6 +101,20 @@ const Sidebar = () => {
 
   const activeProfile = activeWorkspace === "DISTRIBUTOR" ? distributor : manufacturer;
 
+  if (activeWorkspace === "DRIVER") {
+    return (
+      <aside className="w-full shrink-0 border-b border-[#dedbd3] bg-white p-2 lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
+        <p className="mb-2 hidden px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757] lg:block">Driver Workspace</p>
+        <nav aria-label="Driver navigation" className="flex min-w-0 gap-1.5 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible">
+          <NavLink to="/driver" className={navLinkStyle} end>
+            <span className="flex items-center gap-3"><ClipboardCheck className="h-4 w-4 text-emerald-600" />Assigned Deliveries</span>
+          </NavLink>
+        </nav>
+        <p className="mt-4 hidden truncate border-t border-[#dedbd3] px-3 pt-3 text-xs text-[#575757] lg:block">{driver?.name || "Driver"}</p>
+      </aside>
+    );
+  }
+
   // ── DISTRIBUTOR VIEW ─────────────────────────────────────────
   if (activeWorkspace === "DISTRIBUTOR") {
     return (
@@ -139,6 +156,13 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
+              <NavLink to="/wholesale/dealers" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <Building className="w-4 h-4 text-indigo-600" />
+                  <span>Dealer Accounts</span>
+                </div>
+              </NavLink>
+
               <NavLink to="/inventory" className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Boxes className="w-4 h-4 text-emerald-600" />
@@ -150,6 +174,20 @@ const Sidebar = () => {
                 <div className="flex items-center gap-3">
                   <Truck className="w-4 h-4 text-emerald-600" />
                   <span>Self-Delivery Orders</span>
+                </div>
+              </NavLink>
+
+              <NavLink to="/distributor/logistics" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <MapPin className="w-4 h-4 text-emerald-600" />
+                  <span>Delivery Manifests &amp; POD</span>
+                </div>
+              </NavLink>
+
+              <NavLink to="/distributor/peer-transfers" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <ArrowLeftRight className="w-4 h-4 text-sky-700" />
+                  <span>Peer Stock Transfers</span>
                 </div>
               </NavLink>
 
@@ -171,6 +209,13 @@ const Sidebar = () => {
                 <div className="flex items-center gap-3">
                   <Wallet className="w-4 h-4 text-emerald-600" />
                   <span>Distributor Finance</span>
+                </div>
+              </NavLink>
+
+              <NavLink to="/distributor/operations" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <ClipboardList className="w-4 h-4 text-amber-700" />
+                  <span>Operations Reconciliation</span>
                 </div>
               </NavLink>
 

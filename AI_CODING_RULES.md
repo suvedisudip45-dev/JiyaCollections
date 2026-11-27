@@ -37,6 +37,7 @@ The backend is the real source of truth for:
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 - marketing partner analytics are protected by `marketing_card:analytics_read`; partner IDs and report scope are validated server-side, and customer scan reports use province/district snapshots only (never street-level addresses)
 - product sales analytics must use separate bounded aggregate endpoints, derive distributor ownership from authenticated workspace context, and omit revenue fields entirely from distributor responses; validate date ranges, product IDs, pagination, and sort fields in the backend
+- delivery drivers use a separate DRIVER workspace; derive driver and distributor scope from the linked active `DeliveryDriver` profile, enforce assigned-manifest/stop ownership on every API action, and preserve the canonical POD/COD service. Never grant drivers distributor administration permissions or expose private evidence URLs.
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
 
@@ -74,6 +75,14 @@ The codebase consistently uses:
 - route-level permission maps in `admin/src/auth/adminRoutePermissions.js`
 
 When adding a protected feature, add the route permission and ensure the backend permission exists before assuming the UI can access it.
+
+Distributor reconciliation must remain read-only against source records. Reuse
+the owning domain's authoritative loader/analyzer, scope every query from
+authenticated distributor context, cap every collection, and label incomplete
+or unavailable sources. Do not infer COD, wholesale, financial, or
+inventory-wide reconciliation from UI snapshots or unrelated aggregates.
+Acknowledgements may create an idempotent audit event only; they must not
+repair or mark source records resolved.
 
 ### 1.5 Respect existing domain boundaries
 

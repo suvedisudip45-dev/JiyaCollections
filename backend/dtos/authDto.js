@@ -33,6 +33,8 @@ export const serializeSessionProfile = (account, activeRole = account.role) => {
       ? account.manufacturerProfile
       : activeRole === "DISTRIBUTOR"
         ? account.distributorProfile
+        : activeRole === "DRIVER"
+          ? account.deliveryDriverProfile
         : activeRole === "MARKETING_PARTNER"
         ? account.marketingPartnerProfile
         : account.customerProfile;
@@ -42,6 +44,8 @@ export const serializeSessionProfile = (account, activeRole = account.role) => {
       ? ["id", "email", "phone", "name", "pickupAddress", "pickupContactName", "pickupContactPhone", "pickupWindow", "returnInstructions"]
       : activeRole === "DISTRIBUTOR"
         ? ["id", "email", "phone", "name", "address", "city", "status"]
+        : activeRole === "DRIVER"
+          ? ["id", "distributorId", "name", "phone", "status", "vehicleType", "vehicleRegistration"]
         : activeRole === "MARKETING_PARTNER"
         ? ["id", "email", "phone", "name", "status"]
         : ["id", "email", "phone", "name", "firstName", "lastName", "socialCustomerCode", "gender", "addresses"];
@@ -56,6 +60,8 @@ export const serializeSessionProfile = (account, activeRole = account.role) => {
       ? { manufacturer: profile }
       : activeRole === "DISTRIBUTOR"
         ? { distributor: profile }
+        : activeRole === "DRIVER"
+          ? { driver: profile }
         : activeRole === "MARKETING_PARTNER"
         ? { partner: profile }
         : {};

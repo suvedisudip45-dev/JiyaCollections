@@ -109,15 +109,26 @@ const normalizeAuditEvent = (actorContext = {}, payload = {}) => {
   };
 };
 
-export const recordSystemAudit = async (actorContext, payload, { client = prisma } = {}) => {
+export const recordSystemAudit = async (actorContext, payload, { client = prisma, id = null } = {}) => {
   const event = normalizeAuditEvent(actorContext, payload);
   if (!event.action || !event.entityType) {
     throw new Error("System audit events require an action and entity type.");
   }
-  return client.systemAuditOutbox.create({
-    data: { id: randomUUID(), event },
-    select: { id: true },
-  });
+  const eventId = id || randomUUID();
+  try {
+    return await client.systemAuditOutbox.create({
+      data: { id: eventId, event },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (!id || error?.code !== "P2002") throw error;
+    const existing = await client.systemAuditOutbox.findUnique({
+      where: { id: eventId },
+      select: { id: true },
+    });
+    if (!existing) throw error;
+    return { ...existing, duplicate: true };
+  }
 };
 
 const processOutboxEntry = async (id) => {

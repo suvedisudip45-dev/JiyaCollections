@@ -14,6 +14,7 @@ import {
   sendAdminTwoFactor,
   verifyAdminTwoFactor,
   requestPasswordReset,
+  resendPasswordReset,
   verifyPasswordResetOtp,
   resetPasswordWithTfaToken,
 } from "../controllers/authController.js";
@@ -38,6 +39,7 @@ authRouter.post("/2fa/verify", resetLoginRateLimitOnSuccess, verifyPortalTwoFact
 authRouter.post("/admin/2fa/send", sendAdminTwoFactor);
 authRouter.post("/admin/2fa/verify", resetLoginRateLimitOnSuccess, verifyAdminTwoFactor);
 authRouter.post("/password-reset/request", passwordResetRequestRateLimit, requestPasswordReset);
+authRouter.post("/password-reset/resend", passwordResetRequestRateLimit, resendPasswordReset);
 authRouter.post("/password-reset/verify", passwordResetVerifyRateLimit, verifyPasswordResetOtp);
 authRouter.post("/password-reset/complete", passwordResetCompleteRateLimit, resetPasswordWithTfaToken);
 authRouter.post("/logout", authenticate, logout);

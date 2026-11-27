@@ -26,16 +26,18 @@ const Breadcrumbs = () => {
   const { pathname } = useLocation();
   const { activeWorkspace } = useManufacturer();
   const segments = pathname.split("/").filter(Boolean);
-  const root = activeWorkspace === "DISTRIBUTOR" ? "/distributor" : "/";
+  const root = activeWorkspace === "DISTRIBUTOR" ? "/distributor" : activeWorkspace === "DRIVER" ? "/driver" : "/";
   const isDistributorHome = activeWorkspace === "DISTRIBUTOR" && segments.length === 1 && segments[0] === "distributor";
+  const isDriverHome = activeWorkspace === "DRIVER" && segments.length === 1 && segments[0] === "driver";
   const crumbs = [{
-    label: isDistributorHome ? "Distributor Overview" : activeWorkspace === "DISTRIBUTOR" ? "Distributor Home" : "Manufacturer Home",
+    label: isDistributorHome ? "Distributor Overview" : isDriverHome ? "Driver Deliveries" : activeWorkspace === "DISTRIBUTOR" ? "Distributor Home" : "Manufacturer Home",
     to: root,
   }];
   let path = "";
 
   segments.forEach((segment, index) => {
     if (activeWorkspace === "DISTRIBUTOR" && index === 0 && segment === "distributor") return;
+    if (activeWorkspace === "DRIVER" && index === 0 && segment === "driver") return;
     path += `/${segment}`;
     const joined = segments.slice(0, index + 1).join("/");
     const label = LABELS[joined] || LABELS[segment] ||

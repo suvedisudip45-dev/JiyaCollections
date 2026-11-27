@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
+import ApparelMatrixGrid from "../components/ApparelMatrixGrid";
 
 const DirectOrders = () => {
   const { token, backendUrl, currency, distributor } = useManufacturer();
@@ -54,16 +55,27 @@ const DirectOrders = () => {
   const [selectedProductId, setSelectedProductId] = useState("");
   const [selectedVariantIdx, setSelectedVariantIdx] = useState(0);
   const [itemQty, setItemQty] = useState(1);
+  const [barcodeCode, setBarcodeCode] = useState("");
+  const [billingMode, setBillingMode] = useState("RETAIL");
+  const [wholesaleDealers, setWholesaleDealers] = useState([]);
+  const [selectedDealerId, setSelectedDealerId] = useState("");
+  const [wholesaleQuotations, setWholesaleQuotations] = useState([]);
 
   const fetchDirectOrders = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [ordersRes, invRes] = await Promise.all([
+      const [ordersRes, invRes, dealersRes, quotationsRes] = await Promise.all([
         axios.get(`${backendUrl}/api/distributor/orders/direct?page=${page}&limit=10`, {
           headers: { token },
         }),
         axios.get(`${backendUrl}/api/distributor/inventory?page=1&limit=100`, {
+          headers: { token },
+        }),
+        axios.get(`${backendUrl}/api/distributor/wholesale/dealers`, {
+          headers: { token },
+        }),
+        axios.get(`${backendUrl}/api/distributor/wholesale/quotations`, {
           headers: { token },
         }),
       ]);
@@ -103,6 +115,8 @@ const DirectOrders = () => {
         });
         setInventory([...productsById.values()]);
       }
+      if (dealersRes.data.success) setWholesaleDealers(dealersRes.data.dealers || []);
+      if (quotationsRes.data.success) setWholesaleQuotations(quotationsRes.data.quotations || []);
     } catch (err) {
       toast.error("Failed to load direct orders");
     } finally {
@@ -119,6 +133,73 @@ const DirectOrders = () => {
   const selectedProduct = inventory.find((i) => i.productId === selectedProductId);
   const selectedProductVariants = selectedProduct?.variantsStock || [];
   const currentVariant = selectedProductVariants[selectedVariantIdx] || selectedProductVariants[0];
+
+  const handleBarcodeLookup = async (event) => {
+    event.preventDefault();
+    const code = barcodeCode.trim();
+    if (!code) {
+      toast.error("Enter or scan a barcode or QR code.");
+      return;
+    }
+    try {
+      const response = await axios.get(
+        `${backendUrl}/api/distributor/inventory/barcode/${encodeURIComponent(code)}`,
+        { headers: { token } },
+      );
+      const sku = response.data.sku;
+      setSelectedProductId(sku.productId);
+      setBarcodeCode("");
+      const matched = inventory.find((item) => item.productId === sku.productId)?.variantsStock || [];
+      const matchedIndex = matched.findIndex((variant) => variant.inventorySkuId === sku.inventorySkuId);
+      setSelectedVariantIdx(Math.max(0, matchedIndex));
+      toast.success(`Matched ${sku.productName} — ${sku.size} / ${sku.color}.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Barcode or QR code did not match hub stock.");
+    }
+  };
+
+  const applyMatrixQuantities = (matrixLines) => {
+    if (!matrixLines.length) {
+      toast.error("Enter at least one available size/color quantity.");
+      return;
+    }
+    setCartItems((current) => {
+      const next = [...current];
+      for (const line of matrixLines) {
+        const existingIndex = next.findIndex((item) =>
+          item.productId === line.productId &&
+          item.size === line.size &&
+          item.color === line.color
+        );
+        const product = inventory.find((item) => item.productId === line.productId);
+        const unitPrice = product?.product?.price || 0;
+        const availableVariant = product?.variantsStock?.find((variant) =>
+          variant.inventorySkuId === line.inventorySkuId
+        );
+        const available = Math.max(0, (availableVariant?.quantity || 0) - (availableVariant?.reservedQty || 0));
+        if (existingIndex >= 0) {
+          const combined = Number(next[existingIndex].quantity) + line.quantity;
+          if (combined > available) continue;
+          next[existingIndex].quantity = combined;
+          next[existingIndex].lineTotal = combined * unitPrice;
+        } else if (line.quantity <= available) {
+          next.push({
+            productId: line.productId,
+            inventorySkuId: line.inventorySkuId,
+            name: product?.product?.name || product?.productName || "Product",
+            image: product?.product?.image || product?.image,
+            size: line.size,
+            color: line.color,
+            price: unitPrice,
+            quantity: line.quantity,
+            lineTotal: line.quantity * unitPrice,
+            maxAvailable: available,
+          });
+        }
+      }
+      return next;
+    });
+  };
 
   const handleAddToCart = () => {
     if (!selectedProduct) {
@@ -167,6 +248,7 @@ const DirectOrders = () => {
         ...cartItems,
         {
           productId: selectedProduct.productId,
+          inventorySkuId: currentVariant.inventorySkuId,
           name: selectedProduct.product?.name || selectedProduct.productName,
           image: selectedProduct.product?.image || selectedProduct.image,
           size: currentVariant.size,
@@ -196,6 +278,10 @@ const DirectOrders = () => {
       toast.error("Please add at least 1 garment to the order.");
       return;
     }
+    if (billingMode === "WHOLESALE" && !selectedDealerId) {
+      toast.error("Select a dealer or boutique for a wholesale quotation.");
+      return;
+    }
     if (!customerName.trim() || !customerPhone.trim()) {
       toast.error("Customer Name and Phone number are required.");
       return;
@@ -207,6 +293,26 @@ const DirectOrders = () => {
 
     setSubmitting(true);
     try {
+      if (billingMode === "WHOLESALE") {
+        const response = await axios.post(
+          `${backendUrl}/api/distributor/wholesale/quotations`,
+          {
+            dealerId: selectedDealerId,
+            idempotencyKey: `ui:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+            lines: cartItems.map((item) => ({
+              inventorySkuId: item.inventorySkuId,
+              quantity: item.quantity,
+            })),
+          },
+          { headers: { token } },
+        );
+        toast.success("Wholesale quotation created at server-calculated pricing.");
+        setWholesaleQuotations((current) => [response.data.quotation, ...current]);
+        setCreateModalOpen(false);
+        setCartItems([]);
+        fetchDirectOrders();
+        return;
+      }
       const payload = {
         directOrderType: orderType,
         customerName: customerName.trim(),
@@ -215,6 +321,7 @@ const DirectOrders = () => {
         street: streetAddress.trim() || undefined,
         city: city.trim() || distributor?.city || "Kathmandu",
         paymentMethod,
+        billingMode,
         notes: orderNotes.trim(),
         items: cartItems.map((c) => ({
           productId: c.productId,
@@ -323,6 +430,60 @@ const DirectOrders = () => {
           </button>
         </div>
       </div>
+
+      {wholesaleQuotations.length > 0 && (
+        <div className="rounded-2xl border border-indigo-200 bg-white p-4">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-indigo-900">Wholesale quotations</h2>
+          <div className="mt-3 grid gap-2 lg:grid-cols-2">
+            {wholesaleQuotations.slice(0, 6).map((quotation) => (
+              <div key={quotation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">{quotation.quotationNumber}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {quotation.dealer?.businessName || "Dealer"} - {quotation.status} - {currency}{Number(quotation.totalAmount || 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  {quotation.status === "DRAFT" && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await axios.post(`${backendUrl}/api/distributor/wholesale/quotations/${quotation.id}/approve`, {}, { headers: { token } });
+                          toast.success("Quotation approved.");
+                          fetchDirectOrders();
+                        } catch (error) {
+                          toast.error(error.response?.data?.message || "Could not approve quotation.");
+                        }
+                      }}
+                      className="rounded-lg border border-indigo-300 px-2.5 py-1.5 text-[11px] font-bold text-indigo-700"
+                    >
+                      Approve
+                    </button>
+                  )}
+                  {quotation.status === "APPROVED" && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await axios.post(`${backendUrl}/api/distributor/wholesale/quotations/${quotation.id}/convert`, { paymentMethod: "CREDIT" }, { headers: { token } });
+                          toast.success("Quotation converted into a wholesale order.");
+                          fetchDirectOrders();
+                        } catch (error) {
+                          toast.error(error.response?.data?.message || "Could not convert quotation.");
+                        }
+                      }}
+                      className="rounded-lg bg-indigo-700 px-2.5 py-1.5 text-[11px] font-bold text-white"
+                    >
+                      Convert
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -625,6 +786,69 @@ const DirectOrders = () => {
                 Select Garments from Hub Stock
               </label>
 
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <form onSubmit={handleBarcodeLookup} className="flex gap-2">
+                  <input
+                    value={barcodeCode}
+                    onChange={(event) => setBarcodeCode(event.target.value)}
+                    placeholder="Scan or enter barcode / SKU"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-emerald-500"
+                  />
+                  <button type="submit" className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white">
+                    Match
+                  </button>
+                </form>
+                <div className="flex items-center rounded-xl border border-slate-200 bg-white p-1">
+                  {["RETAIL", "WHOLESALE"].map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setBillingMode(mode)}
+                      className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-bold ${
+                        billingMode === mode ? "bg-emerald-600 text-white" : "text-slate-600"
+                      }`}
+                    >
+                      {mode === "RETAIL" ? "Retail billing" : "Wholesale billing"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {billingMode === "WHOLESALE" && (
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+                  <label className="mb-1 block text-[11px] font-semibold text-indigo-900">Dealer / boutique account</label>
+                  <select
+                    value={selectedDealerId}
+                    onChange={(event) => setSelectedDealerId(event.target.value)}
+                    className="w-full rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs text-slate-900"
+                  >
+                    <option value="">Select active dealer</option>
+                    {wholesaleDealers.filter((dealer) => dealer.status === "ACTIVE").map((dealer) => (
+                      <option key={dealer.id} value={dealer.id}>
+                        {dealer.dealerCode} - {dealer.businessName} (Credit: {currency}{Number(dealer.creditLimit || 0).toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {inventory.length > 0 && (
+                <ApparelMatrixGrid
+                  products={inventory.map((item) => ({
+                    id: item.productId,
+                    name: item.product?.name || item.productName,
+                    variants: item.variantsStock.map((variant) => ({
+                      inventorySkuId: variant.inventorySkuId,
+                      size: variant.size,
+                      color: variant.color,
+                      availableQuantity: Math.max(0, (variant.quantity || 0) - (variant.reservedQty || 0)),
+                    })),
+                  }))}
+                  onApply={applyMatrixQuantities}
+                  applyLabel="Add matrix quantities to bill"
+                />
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                 {/* Product Select */}
                 <div className="sm:col-span-6">
@@ -812,7 +1036,11 @@ const DirectOrders = () => {
                   disabled={submitting || cartItems.length === 0}
                   className="px-5 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer disabled:opacity-50 transition-colors"
                 >
-                  {submitting ? "Processing Sale..." : "Complete Sale & Print Receipt"}
+                  {submitting
+                    ? "Processing..."
+                    : billingMode === "WHOLESALE"
+                      ? "Create Wholesale Quotation"
+                      : "Complete Sale & Print Receipt"}
                 </button>
               </div>
             </form>

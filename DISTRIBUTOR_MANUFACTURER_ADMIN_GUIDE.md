@@ -798,6 +798,16 @@ Relevant endpoints:
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
+| `POST /api/distributor/logistics/manifests/:manifestId/optimize` | Distributor | `distributor:logistics_manage` | Preview a stop-order proposal without changing the manifest; currently uses deterministic fallback because no road-routing provider is configured. |
+| `PATCH /api/distributor/logistics/manifests/:manifestId/optimize` | Distributor | `distributor:logistics_manage` | Apply a reviewed fallback order only if the manifest remains undispatched and its source stop order is unchanged. |
+| `GET /api/driver/profile` | Driver | `driver:delivery_read` | Read the authenticated driver's minimal active profile. |
+| `GET /api/driver/manifests` | Driver | `driver:delivery_read` | List only active or recently completed manifests assigned to the authenticated driver, with stops and limited delivery details. |
+| `POST /api/driver/manifests/:manifestId/stops/:stopId/delivery-otp` | Driver | `driver:delivery_complete` | Request COD verification only for a stop assigned to the authenticated driver on an in-transit manifest. |
+| `POST /api/driver/manifests/:manifestId/stops/:stopId/complete` | Driver | `driver:delivery_complete` | Record POD through the existing canonical self-delivery/COD completion service. |
+| `GET /api/driver/manifests/:manifestId/stops/:stopId/evidence/:kind` | Driver | `driver:delivery_read` | Retrieve private evidence after verifying the driver's manifest and stop assignment. |
+| `GET /api/admin/access/driver-provisioning/distributors` | Admin | `access:driver_users_manage` | List active distributors for driver-account onboarding. |
+| `GET /api/admin/access/driver-provisioning/drivers` | Admin | `access:driver_users_manage` | List active, unlinked drivers for a selected distributor. |
+| `POST /api/admin/access/driver-provisioning/accounts` | Admin | `access:driver_users_manage` | In development/test, link an existing active driver to a dedicated DRIVER account; the driver sets a password through recovery. This operation remains disabled in other environments pending verified HTTPS SMS delivery, shared rate limiting, staging checks, and documented recovery operations. |
 | `GET /api/distributor/orders/ncm` | Distributor | `distributor:assignments_read` | List NCM orders by hold, failed, booked (excluding delivered), delivered, or all-NCM filter, optionally filtered by carrier status; includes persisted carrier status and any provided ETA. |
 | `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings, with an optional per-assignment `deliveryTypes` map (`Door2Door` or `Door2Branch`); local distributor destinations only allow door-to-door. |
 | `POST /api/distributor/orders/:id/hold` | Distributor | `distributor:assignments_read` | Select self-delivery or NCM and place a package-complete order on hold. |
@@ -1076,6 +1086,19 @@ story/template delivery records.
    the existing letter/story assignment, so re-enabling resumes the existing
    sequence. Disabling loyalty does not erase customer history or reward
    configuration.
+10. Distributor operators can use `/distributor/operations` to run bounded
+    reconciliation and review scoped stock-transfer, inventory discrepancy,
+    delivered-without-POD, and stale/conflicted offline-sync findings. Finding
+    history is separate control metadata with `OPEN`, `ACKNOWLEDGED`,
+    `RESOLVED`, and `NO_LONGER_PRESENT` states; acknowledgement does not resolve
+    a discrepancy, and failed/partial runs cannot mark absent findings closed.
+    Apply the reconciliation-finding migration before enabling this dashboard.
+    Dedicated `distributor:operations_read`,
+    `distributor:operations_run`, and `distributor:operations_acknowledge`
+    permissions protect the dashboard, manual run, and acknowledgement paths.
+    Acknowledging records lifecycle metadata and an audit event; it does not
+    resolve findings or alter inventory, delivery, COD, wholesale, or accounting
+    source records.
 
 ## 8. Important distinctions and implementation gaps
 
@@ -1092,6 +1115,12 @@ story/template delivery records.
 - Damage/loss reporting exists at distributor receipt, but a full admin
   discrepancy investigation/resolution/financial settlement endpoint was not
   found in the mounted routes.
+- The distributor operations reconciliation dashboard reuses stock-transfer
+  reconciliation evidence and checks inventory discrepancies, delivered manifest
+  stops without POD, and aged/conflicted offline drafts. It does not reconcile
+  inventory-wide balances, dealer receivables, COD settlement, or the general
+  ledger. Incomplete/capped sources are reported as partial; do not treat a
+  partial run as proof that no other exception exists.
 - `DAMAGED`, `LOST`, and `QUARANTINE` are location kinds in the ledger. They
   represent segregated stock states, not proof that compensation or vendor
   recovery has been completed.

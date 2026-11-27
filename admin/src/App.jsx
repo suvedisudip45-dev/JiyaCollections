@@ -64,6 +64,7 @@ import MarketingPartnerDetail from "./pages/MarketingPartnerDetail";
 import ProductAnalytics from "./pages/ProductAnalytics";
 import DiscountAnalytics from "./pages/DiscountAnalytics";
 import AccessUsers from "./pages/AccessUsers";
+import AccessDrivers from "./pages/AccessDrivers";
 import AccessRoles from "./pages/AccessRoles";
 import AccessPermissions from "./pages/AccessPermissions";
 import AuditHistory from "./pages/AuditHistory";
@@ -260,6 +261,7 @@ const App = () => {
                   <Route path="/storefront-content" element={withPermission("/storefront-content", <StorefrontContentSettings token={token} />)} />
                   <Route path="/change-password" element={<ChangePassword token={token} />} />
                   <Route path="/access-control/users" element={withPermission("/access-control/users", <AccessUsers token={token} />)} />
+                  <Route path="/access-control/drivers" element={withPermission("/access-control/drivers", <AccessDrivers token={token} />)} />
                   <Route path="/access-control/roles" element={withPermission("/access-control/roles", <AccessRoles token={token} />)} />
                   <Route path="/access-control/permissions" element={withPermission("/access-control/permissions", <AccessPermissions token={token} />)} />
                   <Route path="/audit-history" element={withPermission("/audit-history", <AuditHistory token={token} />)} />

@@ -7,11 +7,11 @@ export const WORKSPACE_KEY = "manufacturerWorkspace";
 export const getAccessToken = () => localStorage.getItem(ACCESS_TOKEN_KEY) || "";
 export const getActiveWorkspace = () => {
   const role = String(localStorage.getItem(WORKSPACE_KEY) || "MANUFACTURER").toUpperCase();
-  return role === "DISTRIBUTOR" ? role : "MANUFACTURER";
+  return ["DISTRIBUTOR", "DRIVER"].includes(role) ? role : "MANUFACTURER";
 };
 export const storeActiveWorkspace = (role) => {
   const normalized = String(role || "").toUpperCase();
-  if (normalized !== "MANUFACTURER" && normalized !== "DISTRIBUTOR") {
+  if (!["MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(normalized)) {
     throw new Error("Unsupported partner workspace.");
   }
   localStorage.setItem(WORKSPACE_KEY, normalized);

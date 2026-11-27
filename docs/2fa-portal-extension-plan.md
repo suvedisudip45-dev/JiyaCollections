@@ -1,5 +1,14 @@
 # Portal 2FA Extension: Discovery and Iteration Plan
 
+> Historical discovery plan: the initial Admin-only OTP and portal coverage
+> gaps described below have since been addressed. Current portal MFA uses
+> purpose-bound challenges and random codes (except the explicitly configured
+> development-only Admin override); DRIVER is also covered. Password recovery
+> shares the challenge table but uses a distinct purpose and HMAC domain. See
+> [Architecture and Backend](../ARCHITECTURE_AND_BACKEND.md) and the
+> [Security Data Flow Audit](../SECURITY_DATA_FLOW_AND_UI_AUDIT.md) for current
+> behavior and production limitations.
+
 ## Scope and status
 
 Extend the existing Admin login verification to Marketing Partner and Manufacturer. Customer authentication and the Customer frontend are explicitly excluded. Changes stay within authentication, sessions, middleware, notifications, and portal login UI; product, order, inventory, payment, and other business behavior is out of scope.

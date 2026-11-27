@@ -258,9 +258,10 @@ test("successful MFA verification routes reset the associated login quota", () =
   }
 });
 
-test("password reset endpoints use separate request, OTP verification and completion limiters", () => {
+test("password reset and resend endpoints use their IP limiters", () => {
   const routes = [
     ["/password-reset/request", passwordResetRequestRateLimit],
+    ["/password-reset/resend", passwordResetRequestRateLimit],
     ["/password-reset/verify", passwordResetVerifyRateLimit],
     ["/password-reset/complete", passwordResetCompleteRateLimit],
   ];

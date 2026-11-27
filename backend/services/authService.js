@@ -54,7 +54,7 @@ export const resolvePassword = (body = {}) => {
 export const resolveTargetPortal = (rawTargetPortal) => {
   if (!rawTargetPortal) return null;
   const normalized = String(rawTargetPortal).trim().toUpperCase();
-  const knownPortals = new Set(["CUSTOMER", "ADMIN", "MANUFACTURER", "DISTRIBUTOR", "MARKETING_PARTNER"]);
+  const knownPortals = new Set(["CUSTOMER", "ADMIN", "MANUFACTURER", "DISTRIBUTOR", "DRIVER", "MARKETING_PARTNER"]);
   if (knownPortals.has(normalized)) return normalized;
 
   try {
@@ -83,6 +83,25 @@ export const getAccountWorkspaceRoles = (account) => {
 export const accountHasWorkspaceRole = (account, role) =>
   getAccountWorkspaceRoles(account).includes(String(role || "").trim().toUpperCase());
 
+export const hydrateDeliveryDriverProfile = async (account, client = prisma) => {
+  if (!account || !getAccountWorkspaceRoles(account).includes("DRIVER")) return account;
+  const profile = await client.deliveryDriver.findUnique({
+    where: { accountId: account.id },
+    select: {
+      id: true,
+      accountId: true,
+      distributorId: true,
+      name: true,
+      phone: true,
+      status: true,
+      vehicleType: true,
+      vehicleRegistration: true,
+      distributor: { select: { id: true, name: true, status: true, isActive: true } },
+    },
+  });
+  return { ...account, deliveryDriverProfile: profile };
+};
+
 export const getAccountProfile = (account, activeRole = account.role) => {
   if (activeRole === "ADMIN") {
     return account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
@@ -95,6 +114,9 @@ export const getAccountProfile = (account, activeRole = account.role) => {
   if (activeRole === "DISTRIBUTOR") {
     return account.distributorProfile || { id: account.id, email: account.email, phone: account.phone };
   }
+  if (activeRole === "DRIVER") {
+    return account.deliveryDriverProfile || { id: account.id, email: account.email, phone: account.phone };
+  }
   if (activeRole === "MARKETING_PARTNER") {
     return account.marketingPartnerProfile || { id: account.id, email: account.email };
   }
@@ -102,6 +124,16 @@ export const getAccountProfile = (account, activeRole = account.role) => {
 };
 
 export const isWorkspaceProfileActive = (account, role) => {
+  const normalizedRole = String(role || "").toUpperCase();
+  if (normalizedRole === "DRIVER") {
+    const driver = account.deliveryDriverProfile;
+    return Boolean(
+      driver?.status === "ACTIVE" &&
+      driver.distributor?.status === "ACTIVE" &&
+      driver.distributor.isActive,
+    );
+  }
+  if (getAccountWorkspaceRoles(account).includes("DRIVER")) return false;
   if (role === "DISTRIBUTOR") {
     return account.distributorProfile?.status === "ACTIVE";
   }
@@ -260,6 +292,9 @@ export const rotateRefreshToken = async ({
       roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
     },
   });
+  if (account) {
+    account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(account))?.deliveryDriverProfile || null;
+  }
   if (!account || account.status !== "ACTIVE") {
     throw new Error("Account is not active.");
   }
@@ -425,7 +460,7 @@ export const switchAccountWorkspace = async ({
   correlationId = null,
 }) => {
   const role = String(targetRole || "").trim().toUpperCase();
-  if (!["MANUFACTURER", "DISTRIBUTOR"].includes(role)) {
+  if (!["MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(role)) {
     const error = new Error("A valid manufacturer or distributor workspace is required.");
     error.statusCode = 400;
     error.code = "WORKSPACE_INVALID";
@@ -443,11 +478,12 @@ export const switchAccountWorkspace = async ({
       roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
     },
   });
+  const accountWithDriver = await hydrateDeliveryDriverProfile(account);
   if (
-    !account ||
-    account.status !== "ACTIVE" ||
-    !accountHasWorkspaceRole(account, role) ||
-    !isWorkspaceProfileActive(account, role)
+    !accountWithDriver ||
+    accountWithDriver.status !== "ACTIVE" ||
+    !accountHasWorkspaceRole(accountWithDriver, role) ||
+    !isWorkspaceProfileActive(accountWithDriver, role)
   ) {
     const error = new Error("This workspace is not approved for the account.");
     error.statusCode = 403;
@@ -461,7 +497,7 @@ export const switchAccountWorkspace = async ({
     throw error;
   }
 
-  const profile = getAccountProfile(account, role);
+  const profile = getAccountProfile(accountWithDriver, role);
   return prisma.$transaction(async (tx) => {
     const revoked = await tx.authSession.updateMany({
       where: {
@@ -661,7 +697,9 @@ export const authenticateAccount = async ({
       roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
     },
   });
-
+  if (account) {
+    account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(account))?.deliveryDriverProfile || null;
+  }
   if (!account) {
     await logAuthEvent({
       identifier: normalized.value,

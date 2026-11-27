@@ -9,6 +9,7 @@ import {
   createLoginTokenPair,
   getAccountProfile,
   getAccountWorkspaceRoles,
+  hydrateDeliveryDriverProfile,
   isWorkspaceProfileActive,
   logAuthEvent,
 } from "./authService.js";
@@ -98,7 +99,7 @@ const isDevStaticOtpEligible = (env = process.env, portal = null) => {
 
   if (!devOtpConfigured) return false;
   if (!portal) return true;
-  return ["ADMIN", "MANUFACTURER", "DISTRIBUTOR"].includes(portal);
+  return ["ADMIN", "MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(portal);
 };
 
 const compareOtp = (challengeId, otp, storedHash, secret, portal = null, env = process.env) => {
@@ -117,6 +118,7 @@ const portalLabelFor = (portal) => ({
   MARKETING_PARTNER: "marketing partner",
   MANUFACTURER: "manufacturer",
   DISTRIBUTOR: "distributor",
+  DRIVER: "driver",
 })[portal];
 
 const generateConfiguredOtp = (config, env = process.env, portal) => {
@@ -189,6 +191,9 @@ export const createPortalTwoFactorChallenge = async ({
     where: { id: accountId },
     select: safeAccountSelect,
   });
+  if (account) {
+    account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(account, client))?.deliveryDriverProfile || null;
+  }
   if (
     !account ||
     !accountHasWorkspaceRole(account, targetPortal) ||
@@ -290,6 +295,9 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
       where: { id: challengeId },
       include: { account: { select: safeAccountSelect } },
     });
+    if (challenge?.account) {
+      challenge.account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(challenge.account, tx))?.deliveryDriverProfile || null;
+    }
     if (
       !challenge ||
       challenge.status !== "PENDING" ||
@@ -380,6 +388,9 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
       where: { id: challengeId },
       include: { account: { select: safeAccountSelect } },
     });
+    if (challenge?.account) {
+      challenge.account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(challenge.account, tx))?.deliveryDriverProfile || null;
+    }
     if (
       !challenge ||
       challenge.status !== "PENDING" ||
@@ -498,6 +509,9 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
       },
     },
   });
+  if (challenge?.account) {
+    challenge.account.deliveryDriverProfile = (await hydrateDeliveryDriverProfile(challenge.account, client))?.deliveryDriverProfile || null;
+  }
   if (
     !challenge ||
     challenge.status !== "PENDING" ||
@@ -560,6 +574,7 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
     MARKETING_PARTNER: "marketingPartnerProfile",
     MANUFACTURER: "manufacturerProfile",
     DISTRIBUTOR: "distributorProfile",
+    DRIVER: "deliveryDriverProfile",
   }[challenge.targetPortal];
   const profile = challenge.account[profileField] || getAccountProfile(challenge.account, challenge.targetPortal);
   const tokenPair = await client.$transaction(async (tx) => {

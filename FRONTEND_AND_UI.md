@@ -97,7 +97,7 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 
 Product-detail breadcrumbs follow actual storefront routes (`Home > Shop > product name`). Product category and subcategory are classification/filter fields, not separate breadcrumb pages.
 
-Customer, manufacturer, and distributor login screens expose a **Forgot password?** flow. Recovery collects the account email and phone number, which must both match the active account for the selected portal. It shows the masked SMS destination returned by the API, verifies the SMS code, requires matching new-password and confirmation fields, and returns the user to normal sign-in. It does not offer email recovery or automatically log the user in.
+Customer, manufacturer, distributor, and driver login screens expose a **Forgot password?** flow. Recovery collects the account email and phone number, which must both match the active account for the selected portal; driver recovery also requires an active linked driver and distributor. It shows the masked SMS destination returned by the API, verifies the SMS code, requires matching new-password and confirmation fields, and returns the user to normal sign-in. It does not offer email recovery or automatically log the user in. Driver recovery and provisioning remain restricted outside development and test until production SMS delivery, shared rate limiting, staging verification, and the operational recovery procedure are complete.
 
 ### Key client state
 
@@ -350,6 +350,10 @@ Turning a flag off does not delete loyalty or personalized-letter history. Its r
 | `/orders` | Assigned customer-order queue (distributor workspace only) |
 | `/orders/:id` | Distributor customer-order fulfillment workflow |
 | `/distributor/deliveries` | Self-delivery tracking and parcel slip printing |
+| `/distributor/logistics` | Delivery manifest management, reviewable deterministic route-order proposals, route dispatch, POD capture, COD verification, and authenticated private evidence retrieval |
+| `/distributor/peer-transfers` | Peer-distributor stock requests, approvals, dispatch, receipt, discrepancy evidence, disputes, cancellation, and custody history |
+| `/distributor/operations` | Distributor-scoped reconciliation history with category, severity, lifecycle, and date filters; bounded pagination; finding age and safe workflow links; manual runs with source-coverage status; acknowledgement without source-record mutation |
+| `/driver` | Mobile-first assigned manifest and stop workflow, canonical POD/COD completion, saved-address navigation, and authenticated private evidence retrieval; available only in the restricted DRIVER workspace |
 | `/ncm` | NCM booking/tracking and parcel slip printing |
 | `/direct-orders` | Distributor direct hub orders at admin catalog prices; manual distributor discounts are disabled (distributor workspace only) |
 | `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
@@ -360,6 +364,46 @@ Turning a flag off does not delete loyalty or personalized-letter history. Its r
 | `/customer-loyalty` | Distributor customer loyalty and promotion view |
 | `/gift-inventory` | Distributor gift-stock acceptance/rejection with counted received quantity and available/reserved counts |
 | `/marketing-cards` | Distributor card receipt and processing |
+
+The operations page obtains the distributor identity from authenticated backend
+context. It displays bounded stock-transfer, inventory-discrepancy,
+missing-POD, and stale/conflicted-offline findings with source coverage and run
+status. Acknowledgement changes only the audit trail; it does not resolve a
+discrepancy or mutate inventory, delivery, or accounting records. The page
+explicitly excludes unsupported wholesale, COD-settlement, general-ledger, and
+inventory-wide ledger/balance comparisons.
+
+Logistics users can preview a route-order proposal for an undispatched manifest,
+review its ordered stops and any stops without routable coordinates, then apply
+or decline it. Until a documented routing provider is selected and configured,
+the proposal is marked `DETERMINISTIC_FALLBACK` and uses the existing
+priority/time-window/district/city ordering; it omits distance, duration,
+traffic, and ETA fields. The displayed current order is unchanged until the user
+applies the proposal.
+
+The driver screen stores assigned-manifest snapshots and unsent POD drafts in
+account-scoped IndexedDB, including photo/signature evidence as blobs. It stores
+neither access tokens, OTP values, private evidence URLs, nor COD amounts.
+Cached data is local to the browser and is not encrypted by the application;
+use a device/browser profile controlled by the driver and clear local data on
+shared devices. Confirmed local drafts are removed after 30 days; unresolved
+drafts remain until explicitly removed. Local records are not server delivery
+records. A connection is required to verify COD or finalize COD collection;
+queued COD outcomes are not synchronized as completed deliveries. Other queued
+outcomes sync only through the assigned-driver route and canonical POD service.
+Uncertain requests require an authoritative manifest refresh and explicit
+reconciliation before retry. The service worker caches only the app shell and
+static assets, never API responses; this is not full offline synchronization.
+POD photo and signature evidence may accompany delivered, partial, or failed
+outcomes; delivered outcomes still require evidence.
+
+Admin users with `access:driver_users_manage` can open `/access-control/drivers`
+to link an existing active unlinked driver to restricted DRIVER login access.
+The screen does not generate or expose a password; drivers use the existing
+Forgot password flow to set one. Password recovery uses random per-challenge
+codes, but account provisioning remains disabled outside development and test
+until HTTPS SMS delivery, shared rate limiting, staging verification, and an
+operational recovery procedure have been verified.
 
 These hub pages are gated to `activeWorkspace === "DISTRIBUTOR"`; they are not manufacturer features. Distributor order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. It also records whether the customer requested a physical bill and, when requested, the number attached to the parcel; the backend resolves PAN/VAT document type from the company's tax registration and blocks delivery handoff without the bill choice. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action. Historical manufacturer gift/card/order records remain available in storage but new hub activity uses distributor ownership and backend authorization.
 The exchange panel retains the original physical bill for equal-value exchanges; if the customer requested a bill and an exchange changes the value, it requires the distributor to enter a new number from the active allocation before dispatching the replacement.

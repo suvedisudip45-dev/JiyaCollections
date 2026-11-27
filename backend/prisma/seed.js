@@ -11,6 +11,7 @@ const roleDefinitions = [
   { code: "CUSTOMER", name: "Customer", description: "Customer account access.", portalScope: "CUSTOMER" },
   { code: "MANUFACTURER", name: "Manufacturer", description: "Manufacturer portal access.", portalScope: "MANUFACTURER" },
   { code: "DISTRIBUTOR", name: "Distributor", description: "Distributor portal workspace access.", portalScope: "DISTRIBUTOR" },
+  { code: "DRIVER", name: "Delivery Driver", description: "Restricted assigned-delivery driver workspace access.", portalScope: "DRIVER" },
   { code: "MARKETING_PARTNER", name: "Marketing Partner", description: "Marketing partner portal access.", portalScope: "MARKETING_PARTNER" },
 ];
 
@@ -22,6 +23,7 @@ const permissionDefinitions = [
   ["access:marketing_users_read", "List and view Marketing Partner accounts."], ["access:marketing_users_update", "Update Marketing Partner account profiles."], ["access:marketing_users_deactivate", "Activate or deactivate Marketing Partner accounts."],
   ["access:manufacturer_users_read", "List and view Manufacturer accounts."], ["access:manufacturer_users_update", "Update Manufacturer account profiles."], ["access:manufacturer_users_deactivate", "Activate or deactivate Manufacturer accounts."],
   ["access:customer_users_read", "List and view Customer accounts."], ["access:customer_users_update", "Update Customer account profiles."], ["access:customer_users_deactivate", "Activate or deactivate Customer accounts."],
+  ["access:driver_users_manage", "Provision delivery driver workspace accounts."],
   ["access:roles_read", "List and view Admin portal roles."], ["access:roles_create", "Create Admin portal roles."], ["access:roles_update", "Update Admin portal roles."], ["access:roles_deactivate", "Activate or deactivate Admin portal roles."], ["access:roles_assign_permissions", "Assign permissions to Admin portal roles."], ["access:permissions_read", "View the system permission catalog."],
   ["admin:change_password", "Change an administrator password."],
   ["product:create", "Create products."], ["product:update", "Update products."], ["product:delete", "Delete products."], ["product:list_admin", "Read unpublished products in the administrative catalog."], ["product:sales_analytics_read", "Read administrative product sales, revenue, returns, and geographic analytics."],
@@ -49,6 +51,13 @@ const permissionDefinitions = [
   ["distributor:inventory_decrease", "Report a distributor inventory decrease for damaged or lost stock."],
   ["distributor:inventory_read", "Read inventory at the active distributor hub."],
   ["distributor:direct_order_create", "Create direct distributor hub orders."], ["distributor:direct_order_read", "Read direct distributor hub orders."], ["distributor:direct_order_status_update", "Update direct distributor hub order status."],
+  ["distributor:dealer_manage", "Create and update distributor-owned B2B dealer accounts."], ["distributor:wholesale_manage", "Manage wholesale tiers, contract prices, quotations, orders, and invoices."], ["distributor:credit_approve", "Record dealer credit payments and credit approvals."], ["distributor:statement_read", "Read distributor-owned dealer statements."],
+  ["distributor:logistics_manage", "Manage distributor routes, drivers, manifests, proof of delivery, and logistics analytics."],
+  ["distributor:operations_read", "Read tenant-scoped distributor reconciliation findings and run history."],
+  ["distributor:operations_run", "Run bounded, read-only distributor operational reconciliation."],
+  ["distributor:operations_acknowledge", "Acknowledge distributor reconciliation findings without changing source records."],
+  ["driver:delivery_read", "Read only assigned delivery manifests, stops, and private delivery evidence."],
+  ["driver:delivery_complete", "Complete deliveries on manifests assigned to the authenticated driver."],
   ["distributor:finance_dashboard", "Read the distributor financial dashboard."], ["distributor:product_sales_read", "Read product sales quantities and province/district locations for the authenticated distributor; excludes revenue."], ["distributor:settlement_request", "Request distributor financial settlement."],
   ["distributor:letter_status_read", "Read personalized letter status at distributor hub."], ["distributor:letter_print", "Print personalized letters at distributor hub."],
   ["distributor:loyalty_lookup", "Look up loyalty customers for distributors."], ["distributor:hub_customers_read", "Read distributor hub customer records."], ["distributor:hub_gift_record", "Record distributor hub gifts."], ["distributor:hub_gifts_read", "Read distributor hub gifts."],
@@ -83,6 +92,7 @@ const rolePermissionCodes = {
     "manufacturer:hub_gifts_read",
   ].includes(code)) || code === "finance:manufacturer_summary" || code === "transfer:manufacturer_read" || code === "transfer:manufacturer_dispatch"),
   DISTRIBUTOR: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("distributor:") && !code.startsWith("distributor:admin_")) || code === "distributor:assignment_detail" || code.startsWith("marketing_card:distributor") || code === "transfer:distributor_request" || code === "transfer:distributor_read" || code === "transfer:distributor_receive" || code === "returns:customer_read" || code === "returns:supplier_read" || code === "returns:supplier_create"),
+  DRIVER: ["driver:delivery_read", "driver:delivery_complete"],
   MARKETING_PARTNER: permissionDefinitions.map(([code]) => code).filter((code) => code.startsWith("partner:") || code.startsWith("marketing_card:partner")),
 };
 

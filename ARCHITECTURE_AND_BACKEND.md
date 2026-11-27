@@ -43,7 +43,8 @@ The separate notification worker is monitored with
 consumer counts and depth, notification counts by channel/status, and the age
 of the oldest queued notification; schedule it externally and alert on
 backlog or unresolved `FAILED`, `DEAD_LETTERED`, and `UNKNOWN` states. It does
-not retry ambiguous provider outcomes or change the fixed password-reset OTP.
+not retry ambiguous provider outcomes. Password-reset codes are random and
+challenge-bound; driver production recovery remains explicitly gated.
 `npm run ops:exceptions` reports locally tracked carrier/accounting exceptions
 without exposing customer data; it cannot enumerate carrier-only NCM orders.
 See the [Operations Runbook](docs/operations/operations-runbook.md) for owner,
@@ -107,6 +108,80 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/features` | Public feature flags and admin-only platform feature updates |
 | `/api/storefront-content` | Public storefront announcement, shared header/footer logo, card, footer, About, and terms content with permission-protected admin updates/image uploads |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
+
+Distributor logistics routes add manifest/POD and peer-transfer operations under
+`/api/distributor/logistics` and `/api/distributor/peer-transfers`. Manifest stop
+completion must use the canonical self-delivery/COD workflow and signed,
+authenticated evidence upload/retrieval endpoints. Peer stock transfer approval,
+dispatch, receipt, discrepancy, dispute, cancellation, and custody operations
+remain ledger-backed and tenant-scoped; the UI must not create inventory
+movements directly.
+
+Manifest route-order proposals use `POST /api/distributor/logistics/manifests/:manifestId/optimize`
+and apply only after explicit review through `PATCH` on the same path. Both
+operations require `distributor:logistics_manage` and active distributor
+context. No road-routing provider or credentials are configured, so every
+current preview is explicitly marked `DETERMINISTIC_FALLBACK` and uses the
+existing deterministic priority/time-window/district/city ordering. Fallback
+responses omit road-distance and duration fields. The provider-neutral routing
+contract sends only random opaque waypoint IDs and validated latitude/longitude;
+customer names, contact details, addresses, order/COD details, OTPs, and
+evidence are excluded. Provider output must partition every routable waypoint
+exactly once and pass metric validation; duplicate, missing, or foreign
+waypoints are rejected. Provider failures fall back without exposing provider
+details. Applying a proposal rechecks the tenant, manifest state, and
+exact source stop order in the existing serializable reorder transaction, so a
+stale proposal cannot overwrite a manual reorder or a dispatched route. Manual
+reorders continue through the existing endpoint and are marked in
+`optimizationSnapshot.lastAppliedOrdering`. No schema migration is required.
+
+Distributor Operations Reconciliation is exposed under
+`/api/distributor/operations/reconciliation`, with a bounded manual run at
+`POST /runs` and idempotent acknowledgement at
+`POST /findings/:findingId/acknowledge`. Routes require the dedicated
+`distributor:operations_read`, `distributor:operations_run`, and
+`distributor:operations_acknowledge` permissions plus authenticated distributor
+context. Checks reuse the stock-transfer reconciliation loader/analyzer and
+read scoped discrepancy, manifest/POD, and offline-draft records. Manual runs
+use a distributor-row lock and a Serializable transaction so concurrent
+source changes cannot be reported as a successful stale absence; conflicts fail
+the run instead of closing findings. Query caps/partial coverage are reported
+explicitly. Run summaries and acknowledgements use the existing
+transactional audit outbox. Stable finding occurrences are persisted in
+`DistributorReconciliationFinding`; this control/history metadata does not
+replace or modify source records. A successful complete run can close missing
+findings as `NO_LONGER_PRESENT`; failed or partial runs never close absent
+findings. Acknowledgement remains distinct from resolution. The additive
+`20261127184000_distributor_reconciliation_findings` migration is required
+before enabling the updated dashboard. No new scheduled-job infrastructure is
+introduced.
+Wholesale receivables, COD settlement, GL-to-subledger balances, and
+inventory-wide ledger/balance totals remain outside this report because those
+comparisons require additional authoritative source-link checks.
+
+The separate `/api/driver` workspace is restricted to active `DeliveryDriver`
+profiles linked by `DeliveryDriver.accountId`. Driver manifest and stop reads
+derive both driver and distributor IDs from the authenticated account, and
+stop-completion, COD OTP, and private-evidence requests verify the assigned
+manifest/stop before calling existing delivery services. Driver completion reuses
+`completeRouteStop` and its atomic self-delivery/COD behavior; no driver route
+exposes distributor management permissions. Admin provisioning is limited to
+linking an existing active, unlinked driver to an account with the seeded
+`DRIVER` role and `access:driver_users_manage` permission. No schema migration
+is required. Drivers set their initial password through the existing password
+recovery flow in development and test; no initial password is displayed or
+logged. Provisioning is rejected in staging, production, and unspecified
+environments pending verification of HTTPS SMS delivery, shared rate limiting,
+staging checks, and documented recovery operations.
+
+The driver offline-sync endpoint is separate from the distributor-scoped route
+and rechecks the authenticated driver, distributor, manifest, stop, and
+self-delivery assignment before each synchronization. It records an idempotent
+`OfflineDeliverySyncDraft` and calls the existing `completeRouteStop`; it does
+not create an alternate delivery, inventory, or accounting workflow. Only
+sanitized reconciliation fields and private evidence identifiers are persisted
+server-side; OTP values and raw signature data are excluded. The model was
+already present, so this addition requires no schema migration.
 
 The canonical inventory architecture and movement contract are specified in
 [P6-R2](docs/phase-6/02-canonical-inventory-architecture-and-movement-specification.md).
@@ -592,9 +667,9 @@ Own Store percentage discounts may set an optional `MarketingBenefit.maxDiscount
 
 ### Password recovery
 
-`POST /api/auth/password-reset/request`, `/verify`, and `/complete` implement SMS-only password recovery for CUSTOMER, MANUFACTURER, and DISTRIBUTOR accounts. Requests require both the login email and contact number to match the same active account, and the account's primary role and active profile must match the selected portal; an alternate workspace role does not authorize cross-portal recovery. An ineligible request returns a portal-specific not-found response; this intentionally identifies account/portal eligibility to help users select the correct login portal. Eligible requests enqueue an encrypted SMS through the notification outbox. Before creating the challenge or queuing an SMS, the backend atomically enforces one request per rolling seven days and at most three per UTC calendar month. The last-request timestamp and monthly quota are stored on `AuthAccount`; quota violations return HTTP 429 and do not issue a challenge or SMS. IP rate limits also cover request, OTP verification, and completion routes.
+`POST /api/auth/password-reset/request`, `/resend`, `/verify`, and `/complete` implement SMS-only password recovery for CUSTOMER, MANUFACTURER, DISTRIBUTOR, and DRIVER accounts. Requests require both the login email and contact number to match the same active account, and the account's primary role and active profile must match the selected portal; driver recovery additionally requires an active linked driver and active distributor. Alternate workspace roles do not authorize cross-portal recovery. Eligible and ineligible requests return the same generic response shape and message. Requests enqueue encrypted SMS through the notification outbox. Before creating the challenge or queuing SMS, the backend atomically enforces one request per rolling seven days and at most three per UTC calendar month. Quota limits suppress challenge creation while retaining the generic response; IP rate limits return HTTP 429 and cover request, resend, OTP verification, and completion.
 
-OTP verification consumes the challenge and issues a random, short-lived `tfaToken`; its lifetime is controlled by `PASSWORD_RESET_TFA_TOKEN_LIFETIME_MINUTES` (default 5, range 1–30). `PASSWORD_RESET_MAX_ATTEMPTS` controls OTP attempts per challenge (default 5, range 1–10). Password completion requires the token and atomically consumes it once. Password reset updates the bcrypt hash and revokes all active account sessions in one transaction. The UI returns to the ordinary login flow; it does not create a session automatically. The OTP remains the fixed six-digit code `111111`; password recovery is enabled only in `development` and `test`, and is unavailable in staging, production, and unspecified environments. Do not enable it in other environments or change the code without an explicit decision. The quota fields are in the checked-in `0_init` baseline; older notes citing `20261016000000_add_password_reset_limits` refer to an absent historical migration ID, not a deployment command.
+Each challenge uses a cryptographically random eight-digit OTP (`crypto.randomInt`), persisted only as an HMAC-SHA256 hash bound to the challenge ID and password-reset purpose. The code is valid for `OTP_EXPIRY_MINUTES`, allows `PASSWORD_RESET_MAX_ATTEMPTS` attempts (default 5, range 1–10), and can be resent after `PASSWORD_RESET_RESEND_COOLDOWN_SECONDS` (default 60) up to `PASSWORD_RESET_MAX_RESENDS` times (default 3). Resend invalidates the previous code. Atomic conditional updates enforce one-time OTP verification and attempt limits. Verification issues a random, short-lived `tfaToken`; its lifetime is controlled by `PASSWORD_RESET_TFA_TOKEN_LIFETIME_MINUTES` (default 5, range 1–30), and only its keyed hash is persisted. Password completion consumes the token once, updates the bcrypt hash, and revokes all active account sessions in one transaction. The UI returns to the ordinary login flow; it does not create a session automatically. Password-reset and portal-MFA challenges have distinct purposes and HMAC domains. Development/test recovery is supported; driver production recovery is default-off and requires the explicit `PASSWORD_RESET_DRIVER_ENABLED=true` flag plus complete environment configuration. Admin driver provisioning remains blocked until production SMS delivery, shared rate limiting, and recovery operations are verified. The existing quota fields are in the checked-in `0_init` baseline; no new migration is required.
 
 ### Security features currently active
 

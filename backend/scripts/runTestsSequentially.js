@@ -2,9 +2,13 @@ import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertIntegrationDatabaseSafety } from "../utils/integrationDatabaseSafety.js";
+import {
+  assertIntegrationDatabaseSafety,
+  verifyConfiguredIntegrationDatabase,
+} from "../utils/integrationDatabaseSafety.js";
 
-assertIntegrationDatabaseSafety();
+const integrationTarget = assertIntegrationDatabaseSafety();
+if (integrationTarget) await verifyConfiguredIntegrationDatabase("integration");
 
 const backendDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testsDirectory = path.join(backendDirectory, "tests");

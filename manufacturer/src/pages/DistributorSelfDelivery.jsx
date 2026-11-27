@@ -56,6 +56,10 @@ const DistributorSelfDelivery = () => {
   const [deliveryOtpCode, setDeliveryOtpCode] = useState("");
   const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState("CASH");
   const [deliveryCollectionConfirmed, setDeliveryCollectionConfirmed] = useState(false);
+  const [routeDrivers, setRouteDrivers] = useState([]);
+  const [routeManifests, setRouteManifests] = useState([]);
+  const [selectedRouteDriverId, setSelectedRouteDriverId] = useState("");
+  const [creatingManifest, setCreatingManifest] = useState(false);
 
   // Return QA Modal state
   const [returnOrder, setReturnOrder] = useState(null);
@@ -110,9 +114,11 @@ const DistributorSelfDelivery = () => {
       setOrders(response.data.orders || []);
       setPagination(response.data.pagination || null);
       setSelectedIds(new Set());
-      const [returnsResult, exchangesResult] = await Promise.allSettled([
+      const [returnsResult, exchangesResult, driversResult, manifestsResult] = await Promise.allSettled([
         axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }),
         axios.get(`${backendUrl}/api/returns/exchange/distributor`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/distributor/logistics/drivers`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/distributor/logistics/manifests`, { headers: { token } }),
       ]);
       if (returnsResult.status === "fulfilled") {
         setCustomerReturnRequests(returnsResult.value.data.returns || []);
@@ -126,6 +132,8 @@ const DistributorSelfDelivery = () => {
         setExchangeRequests([]);
         toast.error(exchangesResult.reason?.response?.data?.message || "Could not load approved exchange requests.");
       }
+      if (driversResult.status === "fulfilled") setRouteDrivers(driversResult.value.data.drivers || []);
+      if (manifestsResult.status === "fulfilled") setRouteManifests(manifestsResult.value.data.manifests || []);
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not load assigned deliveries.");
     } finally {
@@ -240,6 +248,35 @@ const DistributorSelfDelivery = () => {
       toast.error(error.response?.data?.message || "Failed to dispatch selected orders.");
     } finally {
       setDispatching(false);
+    }
+  };
+
+  const handleCreateManifest = async () => {
+    const assignmentIds = orders
+      .filter(({ assignmentId }) => selectedIds.has(assignmentId))
+      .map(({ assignmentId }) => assignmentId);
+    if (!assignmentIds.length) {
+      toast.error("Select at least one assigned order.");
+      return;
+    }
+    setCreatingManifest(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/logistics/manifests`,
+        {
+          name: `Local route ${new Date().toLocaleDateString()}`,
+          driverId: selectedRouteDriverId || undefined,
+          assignmentIds,
+          idempotencyKey: `ui-manifest-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        },
+        { headers: { token } },
+      );
+      toast.success(`Manifest ${response.data.manifest.manifestCode} created.`);
+      await loadOrders({ preserveBatchResults: true });
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not create the delivery manifest.");
+    } finally {
+      setCreatingManifest(false);
     }
   };
 
@@ -715,6 +752,59 @@ const DistributorSelfDelivery = () => {
           </button>
         ))}
       </div>
+
+      <div className="flex flex-col gap-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-56 flex-1">
+          <p className="text-xs font-bold text-sky-950">Route manifest</p>
+          <p className="mt-1 text-[11px] text-sky-900">
+            Group selected deliveries into a printable, sequenced driver run.
+          </p>
+          <select
+            value={selectedRouteDriverId}
+            onChange={(event) => setSelectedRouteDriverId(event.target.value)}
+            className="mt-2 w-full max-w-sm rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs"
+          >
+            <option value="">Assign later</option>
+            {routeDrivers.filter((driver) => driver.status === "ACTIVE").map((driver) => (
+              <option key={driver.id} value={driver.id}>{driver.name} — {driver.phone}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          onClick={handleCreateManifest}
+          disabled={!selectedIds.size || creatingManifest}
+          className="inline-flex items-center gap-2 rounded-xl bg-sky-800 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
+        >
+          <Printer className="h-4 w-4" />
+          {creatingManifest ? "Creating..." : "Create route manifest"}
+        </button>
+      </div>
+
+      {routeManifests.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-700">Recent route manifests</p>
+          <div className="mt-3 grid gap-2 lg:grid-cols-2">
+            {routeManifests.slice(0, 6).map((manifest) => (
+              <div key={manifest.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 p-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">{manifest.manifestCode}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    {manifest.status} · {manifest.stops?.length || 0} stops · {manifest.driver?.name || "Unassigned"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-[11px] font-bold text-slate-700"
+                >
+                  <Printer className="h-3 w-3" /> Print
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {(dispatchableOrders.length > 0 || selectedIds.size > 0) && (
         <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">

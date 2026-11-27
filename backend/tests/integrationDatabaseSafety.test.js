@@ -8,10 +8,11 @@ import {
   assertDatabaseToolSafety,
   assertDatabaseToolTargets,
   assertIntegrationDatabaseSafety,
+  verifyIntegrationDatabaseIdentity,
 } from "../utils/integrationDatabaseSafety.js";
 
 const backendDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const safeUrl = "mysql://tester:secret@127.0.0.1:3307/accounting_sandbox";
+const safeUrl = "mysql://tester_test:secret@127.0.0.1:3307/accounting_sandbox_test";
 
 const profileDefinitions = {
   integration: {
@@ -21,6 +22,26 @@ const profileDefinitions = {
     host: "ACCOUNTING_TEST_DATABASE_HOST",
     port: "ACCOUNTING_TEST_DATABASE_PORT",
     name: "ACCOUNTING_TEST_DATABASE_NAME",
+    user: "ACCOUNTING_TEST_DATABASE_USER",
+    profileName: "ACCOUNTING_TEST_DATABASE_PROFILE",
+    serverHost: "ACCOUNTING_TEST_DATABASE_SERVER_HOST",
+    serverPort: "ACCOUNTING_TEST_DATABASE_SERVER_PORT",
+    serverUuid: "ACCOUNTING_TEST_DATABASE_SERVER_UUID",
+    instanceId: "ACCOUNTING_TEST_DATABASE_INSTANCE_ID",
+  },
+  testMigration: {
+    authorization: "RUN_DATABASE_TEST_MIGRATION",
+    url: "ACCOUNTING_TEST_DATABASE_URL",
+    verified: "ACCOUNTING_TEST_DATABASE_VERIFIED",
+    host: "ACCOUNTING_TEST_DATABASE_HOST",
+    port: "ACCOUNTING_TEST_DATABASE_PORT",
+    name: "ACCOUNTING_TEST_DATABASE_NAME",
+    user: "ACCOUNTING_TEST_DATABASE_USER",
+    profileName: "ACCOUNTING_TEST_DATABASE_PROFILE",
+    serverHost: "ACCOUNTING_TEST_DATABASE_SERVER_HOST",
+    serverPort: "ACCOUNTING_TEST_DATABASE_SERVER_PORT",
+    serverUuid: "ACCOUNTING_TEST_DATABASE_SERVER_UUID",
+    instanceId: "ACCOUNTING_TEST_DATABASE_INSTANCE_ID",
   },
   maintenance: {
     authorization: "RUN_DATABASE_MAINTENANCE",
@@ -49,7 +70,17 @@ const makeEnvironment = (purpose, overrides = {}) => {
     [profile.verified]: "1",
     [profile.host]: "127.0.0.1",
     [profile.port]: "3307",
-    [profile.name]: "accounting_sandbox",
+    [profile.name]: "accounting_sandbox_test",
+    ...(purpose === "integration" || purpose === "testMigration"
+      ? {
+          [profile.user]: "tester_test",
+          [profile.profileName]: "disposable-mysql-v1",
+          [profile.serverHost]: "mysql-test-01",
+          [profile.serverPort]: "3306",
+          [profile.serverUuid]: "123e4567-e89b-42d3-a456-426614174000",
+          [profile.instanceId]: "123e4567-e89b-42d3-a456-426614174001",
+        }
+      : {}),
     ...overrides,
   };
 };
@@ -70,6 +101,12 @@ test("integration opt-in fails closed when any explicit verified target field is
     "ACCOUNTING_TEST_DATABASE_HOST",
     "ACCOUNTING_TEST_DATABASE_PORT",
     "ACCOUNTING_TEST_DATABASE_NAME",
+    "ACCOUNTING_TEST_DATABASE_USER",
+    "ACCOUNTING_TEST_DATABASE_PROFILE",
+    "ACCOUNTING_TEST_DATABASE_SERVER_HOST",
+    "ACCOUNTING_TEST_DATABASE_SERVER_PORT",
+    "ACCOUNTING_TEST_DATABASE_SERVER_UUID",
+    "ACCOUNTING_TEST_DATABASE_INSTANCE_ID",
   ];
 
   for (const field of missingFields) {
@@ -166,7 +203,7 @@ test("all database modes require exact independently verified host, port, and da
 });
 
 test("maintenance and migration operations require their own explicit authorization flags", () => {
-  for (const purpose of ["maintenance", "migration"]) {
+  for (const purpose of ["maintenance", "migration", "testMigration"]) {
     const profile = profileDefinitions[purpose];
     const env = makeEnvironment(purpose);
     delete env[profile.authorization];
@@ -183,8 +220,8 @@ test("combined migration and seed operations validate both profiles against one 
     ...makeEnvironment("maintenance"),
   };
   assert.deepEqual(assertDatabaseToolTargets(["migration", "maintenance"], env), [
-    { host: "127.0.0.1", port: "3307", databaseName: "accounting_sandbox" },
-    { host: "127.0.0.1", port: "3307", databaseName: "accounting_sandbox" },
+    { host: "127.0.0.1", port: "3307", databaseName: "accounting_sandbox_test" },
+    { host: "127.0.0.1", port: "3307", databaseName: "accounting_sandbox_test" },
   ]);
 });
 
@@ -192,8 +229,88 @@ test("accepted target validation is configuration-only and returns identity with
   assert.deepEqual(assertIntegrationDatabaseSafety(makeEnvironment("integration")), {
     host: "127.0.0.1",
     port: "3307",
-    databaseName: "accounting_sandbox",
+    databaseName: "accounting_sandbox_test",
   });
+});
+
+test("integration profiles require a disposable name, dedicated user, marker, server UUID, and instance ID", () => {
+  const nonTestDatabaseUrl = "mysql://tester_test:secret@127.0.0.1:3307/accounting_sandbox";
+  const rootUserUrl = "mysql://root:secret@127.0.0.1:3307/accounting_sandbox_test";
+  const cases = [
+    {
+      DATABASE_URL: nonTestDatabaseUrl,
+      ACCOUNTING_TEST_DATABASE_URL: nonTestDatabaseUrl,
+      ACCOUNTING_TEST_DATABASE_NAME: "accounting_sandbox",
+    },
+    {
+      DATABASE_URL: rootUserUrl,
+      ACCOUNTING_TEST_DATABASE_URL: rootUserUrl,
+      ACCOUNTING_TEST_DATABASE_USER: "root",
+    },
+    { ACCOUNTING_TEST_DATABASE_PROFILE: "production" },
+    { ACCOUNTING_TEST_DATABASE_SERVER_UUID: "not-a-uuid" },
+    { ACCOUNTING_TEST_DATABASE_INSTANCE_ID: "not-a-uuid" },
+    { NODE_ENV: "production" },
+    { APP_ENV: "staging" },
+  ];
+  for (const overrides of cases) {
+    assert.throws(
+      () => assertIntegrationDatabaseSafety(makeEnvironment("integration", overrides)),
+      /disposable-mysql-v1 profile/,
+    );
+  }
+});
+
+test("connected database identity must match the test user, server UUID, and provisioned marker", async () => {
+  const env = makeEnvironment("integration");
+  const identity = {
+    databaseName: "accounting_sandbox_test",
+    currentUser: "tester_test@%",
+    serverHost: "mysql-test-01",
+    serverPort: 3306,
+    serverUuid: env.ACCOUNTING_TEST_DATABASE_SERVER_UUID,
+  };
+  const marker = {
+    profile: "disposable-mysql-v1",
+    instanceId: env.ACCOUNTING_TEST_DATABASE_INSTANCE_ID,
+  };
+  const makeClient = (actualIdentity, actualMarker) => ({
+    $queryRaw: async (parts) => parts.join("").includes("DATABASE()")
+      ? [actualIdentity]
+      : [actualMarker],
+  });
+
+  await verifyIntegrationDatabaseIdentity(makeClient(identity, marker), "integration", env);
+  for (const [actualIdentity, actualMarker] of [
+    [{ ...identity, databaseName: "production" }, marker],
+    [{ ...identity, currentUser: "root@%" }, marker],
+    [{ ...identity, serverHost: "production" }, marker],
+    [{ ...identity, serverPort: 3307 }, marker],
+    [{ ...identity, serverUuid: "untrusted" }, marker],
+    [identity, { ...marker, profile: "production" }],
+    [identity, { ...marker, instanceId: "untrusted" }],
+  ]) {
+    await assert.rejects(
+      verifyIntegrationDatabaseIdentity(makeClient(actualIdentity, actualMarker), "integration", env),
+      /connected MySQL identity does not match/,
+    );
+  }
+});
+
+test("test migration preflight requires its separate explicit authorization flag", () => {
+  const result = spawnSync(process.execPath, ["scripts/assertDatabaseToolTarget.js", "testMigration"], {
+    cwd: backendDirectory,
+    env: {
+      PATH: process.env.PATH || "",
+      SystemRoot: process.env.SystemRoot || "",
+      RUN_DATABASE_TEST_MIGRATION: "",
+      DATABASE_URL: "",
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RUN_DATABASE_TEST_MIGRATION=1/);
+  assert.doesNotMatch(result.stdout, /accounting_sandbox_test/);
 });
 
 test("maintenance entry point guard refuses to proceed before any database client is loaded", () => {
@@ -280,7 +397,8 @@ test("direct Prisma integration test and sequential runner preflight before runn
   assert.ok(directTest.indexOf('import "../utils/requireIntegrationDatabaseSafety.js";') <
     directTest.indexOf('import { PrismaClient }'));
   const runner = source("scripts/runTestsSequentially.js");
-  assert.ok(runner.indexOf("assertIntegrationDatabaseSafety();") < runner.indexOf("const result = spawnSync("));
+  assert.ok(runner.indexOf("assertIntegrationDatabaseSafety()") < runner.indexOf("if (integrationTarget) await verifyConfiguredIntegrationDatabase"));
+  assert.ok(runner.indexOf("if (integrationTarget) await verifyConfiguredIntegrationDatabase") < runner.indexOf("const result = spawnSync("));
   assert.match(runner, /\.integration\\\.\(test\|spec\)/);
 
   const databaseTestFiles = [
@@ -341,6 +459,7 @@ test("package migration, reset, push, and seed commands invoke the preflight wra
   const packageJson = JSON.parse(source("package.json"));
   const { scripts } = packageJson;
   assert.match(scripts["db:migrate:deploy"], /assertDatabaseToolTarget\.js migration/);
+  assert.match(scripts["db:migrate:test"], /assertDatabaseToolTarget\.js testMigration/);
   assert.match(scripts["db:sync"], /assertDatabaseToolTarget\.js migration/);
   assert.match(scripts["db:reset"], /assertDatabaseToolTarget\.js migration/);
   assert.match(scripts["db:push"], /assertDatabaseToolTarget\.js migration maintenance/);

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
+import ApparelMatrixGrid from "../components/ApparelMatrixGrid";
 
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
 const TRANSFER_PAGE_SIZE = 10;
@@ -54,10 +55,12 @@ const DistributorDemandReceipt = () => {
     evidence: "",
     note: "",
   });
+  const [receiveScanCode, setReceiveScanCode] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editingTransferId, setEditingTransferId] = useState("");
   const [editLines, setEditLines] = useState([]);
+  const [prePackCount, setPrePackCount] = useState(1);
 
   const selectedManufacturer = useMemo(
     () => catalog.find((item) => item.id === manufacturerId),
@@ -164,6 +167,25 @@ const DistributorDemandReceipt = () => {
       line.inventorySkuId === inventorySkuId ? { ...line, quantity } : line
     )));
   };
+  const applyMatrixQuantities = (matrixLines) => {
+    if (!matrixLines.length) {
+      toast.error("Enter at least one available size/color quantity.");
+      return;
+    }
+    setRequestLines((current) => {
+      const next = [...current.filter((line) => line.inventorySkuId)];
+      for (const line of matrixLines) {
+        const existing = next.find((item) => item.inventorySkuId === line.inventorySkuId);
+        if (existing) {
+          existing.quantity = Number(existing.quantity || 0) + line.quantity;
+        } else {
+          next.push({ inventorySkuId: line.inventorySkuId, quantity: line.quantity });
+        }
+      }
+      return next;
+    });
+    toast.success(`Added ${matrixLines.reduce((sum, line) => sum + line.quantity, 0)} units to the request.`);
+  };
   const removeSku = (inventorySkuId) => setRequestLines((current) =>
     current.filter((line) => line.inventorySkuId !== inventorySkuId)
   );
@@ -267,6 +289,7 @@ const DistributorDemandReceipt = () => {
     );
     const remaining = Math.max(0, shipmentLine.quantity - alreadyReceived);
     setReceivingLine({ ...shipmentLine, shipmentId, remaining });
+    setReceiveScanCode("");
     setReceiptDraft({
       goodQuantity: remaining,
       damagedQuantity: 0,
@@ -275,6 +298,39 @@ const DistributorDemandReceipt = () => {
       evidence: "",
       note: "",
     });
+  };
+
+  const verifyReceiveScan = async (event) => {
+    event.preventDefault();
+    if (!receivingLine || !receiveScanCode.trim()) {
+      toast.error("Enter or scan the package barcode or QR code.");
+      return;
+    }
+    const expectedSkuId = receivingLine.stockTransferLine?.inventorySkuId;
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/warehouse/scans`,
+        {
+          scanCode: receiveScanCode.trim(),
+          operation: "RECEIVE",
+          quantity: 1,
+          referenceType: "STOCK_TRANSFER_SHIPMENT",
+          referenceId: receivingLine.shipmentId,
+          expectedInventorySkuId: expectedSkuId,
+        },
+        {
+          headers: {
+            token,
+            "Idempotency-Key": `receive-${receivingLine.shipmentId}-${receivingLine.id}-${Date.now()}`,
+          },
+        },
+      );
+      if (response.data.success) {
+        toast.success("Barcode/QR matches the received SKU.");
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || "The scanned SKU could not be verified.");
+    }
   };
 
   const submitReceiptQA = async (e) => {
@@ -427,6 +483,37 @@ const DistributorDemandReceipt = () => {
                       />
                     </label>
                   </div>
+
+                  {products.length ? (
+                    <div className="space-y-3">
+                      <ApparelMatrixGrid
+                        products={products}
+                        onApply={applyMatrixQuantities}
+                        applyLabel="Add matrix quantities to request"
+                        prePackRatios={{ S: 1, M: 2, L: 2, XL: 1 }}
+                        prePackCount={prePackCount}
+                      />
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] px-3 py-2">
+                        <div>
+                          <p className="text-[11px] font-bold text-[#171717]">Ratio pack: 1S / 2M / 2L / 1XL</p>
+                          <p className="text-[10px] text-[#666]">Enter pack count, then use the matrix above to add the requested units.</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            step="1"
+                            value={prePackCount}
+                            onChange={(event) => setPrePackCount(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
+                            aria-label="Pre-pack count"
+                            className="h-9 w-20 rounded-lg border border-[#dedbd3] bg-white text-center text-xs font-bold"
+                          />
+                          <span className="text-[11px] font-semibold text-[#575757]">{prePackCount * 6} units</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
                   {products.length ? (
                     <div className="grid gap-3 xl:grid-cols-2">
@@ -823,6 +910,18 @@ const DistributorDemandReceipt = () => {
                   {receivingLine.stockTransferLine?.inventorySku?.size} / {receivingLine.stockTransferLine?.inventorySku?.color} • Expected Intake: <strong>{receivingLine.remaining}</strong> units
                 </p>
               </div>
+
+              <form onSubmit={verifyReceiveScan} className="flex gap-2">
+                <input
+                  value={receiveScanCode}
+                  onChange={(event) => setReceiveScanCode(event.target.value)}
+                  placeholder="Scan barcode / QR for this SKU"
+                  className="min-w-0 flex-1 rounded-lg border border-[#dedbd3] px-3 py-2"
+                />
+                <button type="submit" className="rounded-lg bg-[#171717] px-3 py-2 font-bold text-white">
+                  Verify
+                </button>
+              </form>
 
               <div className="grid grid-cols-3 gap-2">
                 <div>

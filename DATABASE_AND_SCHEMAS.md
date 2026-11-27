@@ -40,7 +40,7 @@ on its name, edit an already-deployed migration, or use `db push`, `db:sync`, or
 | Domain | Representative models | Purpose |
 | --- | --- | --- |
 | Authentication | `AuthAccount`, `AuthSession`, `Role`, `Permission`, `OtpChallenge`, `AdminTwoFactorChallenge`, `AuthAuditLog` | identity, sessions, RBAC, MFA, audit |
-| Users & profiles | `User`, `Admin`, `Manufacturer`, `Distributor`, `MarketingPartner` | customer and portal profiles; `User.isDisabled` and its audit metadata retain an administratively disabled customer identity |
+| Users & profiles | `User`, `Admin`, `Manufacturer`, `Distributor`, `DeliveryDriver`, `MarketingPartner` | customer and portal profiles; `DeliveryDriver.accountId` is the optional unique link for restricted driver authentication; `User.isDisabled` and its audit metadata retain an administratively disabled customer identity |
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
@@ -65,6 +65,7 @@ Customer disable state is stored on `User`, not by deleting or replacing the ide
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `AuthAccount` | `id`, `email`, `phone`, `passwordHash`, `role`, `status`, `failedLoginAttempts`, `passwordResetLastRequestedAt`, `passwordResetMonthlyKey`, `passwordResetMonthlyCount`, `lastLoginAt`, etc. | Base identity; password recovery quota is stored per account |
+| `DeliveryDriver` | `distributorId`, optional unique `accountId`, name, phone, status, vehicle details | Existing profile optionally links to a dedicated DRIVER account; authentication derives ownership from this profile and assigned manifests. No model or migration was added for the driver workspace. |
 | `AuthSession` | `accountId`, `tokenFamilyId`, `jti`, `tokenType`, `expiresAt`, `revokedAt` | Tracks login sessions and JWT lifecycle |
 | `AdminTwoFactorChallenge` | `accountId`, `targetPortal`, `purpose`, `method`, `otpHash`, `status`, `attemptCount`, `expiresAt`, `consumedAt` | Also stores the SMS password-reset OTP and its one-use TFA-token lifecycle |
 | `Role` | `code`, `name`, `portalScope`, `permissions` | Portal-specific role definitions |
@@ -213,6 +214,60 @@ limited to known local NCM order IDs.
 | --- | --- | --- |
 | `SystemAuditLog` | actor/role, action, entity type/ID, JSON before/after diff, portal/IP/user-agent, status, failure reason, correlation ID, timestamp | Admin-facing cross-domain audit history; indexed by entity, actor, creation time, and correlation ID. Sensitive fields in state diffs are redacted before storage. Includes selected authentication/MFA, rate-limit, refresh-reuse, and RBAC-denial security signals; these are not confirmed breach records. |
 | `SystemAuditOutbox` | JSON event, status, attempts, availability/claim/process timestamps, last error | Durable enqueue record created in the same transaction as a business mutation. A retrying worker writes the log row and marks the outbox row processed atomically; `SystemAuditLog.outboxId` is unique for idempotency. |
+
+`DistributorReconciliationFinding` stores stable, distributor-scoped finding
+occurrences and lifecycle metadata; it is not a source of truth for inventory,
+delivery, or accounting. Its unique key is
+`(distributorId, findingKey, occurrence)`; the required distributor FK uses
+`RESTRICT` on delete and update so removal or key changes cannot silently
+cascade away finding history. Source record references remain safe identifiers
+in JSON and are validated by tenant-scoped service queries rather than
+polymorphic SQL foreign keys. The additive
+`20261127184000_distributor_reconciliation_findings` migration must be applied
+before deploying the updated dashboard. Run summaries and acknowledgements
+continue through the existing audit outbox and materialize in
+`SystemAuditLog`; acknowledgement event IDs are deterministic per
+distributor/finding. A successful complete run marks an absent active finding
+`NO_LONGER_PRESENT`; source records explicitly marked `RESOLVED` or `REJECTED`
+are represented as `RESOLVED`. Failed/partial runs do not close absent
+findings, and a later reappearance starts a new occurrence. Runs use a
+distributor-row lock and Serializable transaction isolation; concurrent source
+changes must serialize with the run or abort it rather than allow a stale
+absence to close a finding.
+
+Supported sources are `StockTransfer`/shipment/receipt/ledger/balance snapshots
+via the existing reconciliation loader, `InventoryDiscrepancy` rows, delivered
+`DeliveryManifestStop` records missing `DeliveryProofOfDelivery`, and
+`OfflineDeliverySyncDraft` records in conflict or pending for at least 24
+hours. No `payloadSnapshot`, evidence URL, signature, OTP, customer contact, or
+COD data is selected. This is not a reconciliation of all inventory,
+wholesale, COD, or accounting subledgers.
+
+The migration creates one new table with no existing-table alterations,
+backfill, or data rewrite. Apply it only after the parent `Distributor` table
+exists and after taking a verified, recoverable backup. It should be a short
+DDL operation because it creates an empty table and its indexes, but MySQL may
+wait for metadata locks and the duration has not been measured on the target
+engine/data volume. Test the exact migration chain in a disposable database
+first. The old application can run before or after this additive table exists;
+the new reconciliation service requires the table, so deploy the migration
+before enabling the new application code.
+
+There is no automatic down migration. Dropping this table after findings have
+been written irreversibly loses finding occurrences and their lifecycle
+metadata; audit-outbox entries are not a full replacement for that state.
+Prefer a forward corrective migration or restore from the verified backup
+under the recovery plan. After migration, verify `SHOW CREATE TABLE`,
+the required indexes and FK in `information_schema`, zero orphaned distributor
+IDs, and uniqueness of `(distributorId, findingKey, occurrence)`. Then confirm
+the authorized distributor dashboard loads and a controlled isolated test run
+persists/reloads an occurrence and acknowledgement.
+
+The timestamp columns are `DATETIME(3)`, matching Prisma MySQL `DateTime`
+precision. MySQL `DATETIME` has no timezone metadata; application timestamps
+are treated as UTC. Verify the target server/session timezone is UTC so the
+`CURRENT_TIMESTAMP(3)` defaults for record creation are consistent with
+application-supplied UTC `Date` values.
 
 ### 3.6 Inventory and manufacturer operations
 

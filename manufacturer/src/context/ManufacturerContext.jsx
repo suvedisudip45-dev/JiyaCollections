@@ -9,6 +9,11 @@ import {
   storeAuthTokens,
   storeActiveWorkspace,
 } from "../auth/tokenStorage";
+import {
+  getCachedDriverProfile,
+  getDriverOfflineTokenRole,
+  saveCachedDriverProfile,
+} from "../offline/driverOfflineStore";
 
 const ManufacturerContext = createContext();
 
@@ -21,6 +26,7 @@ export const ManufacturerProvider = ({ children }) => {
   const [companyContact, setCompanyContact] = useState({ email: "", phone: "" });
   const [manufacturer, setManufacturer] = useState(null);    // active manufacturer profile (null if distributor-only view)
   const [distributor, setDistributor] = useState(null);      // active distributor profile (null if manufacturer-only view)
+  const [driver, setDriver] = useState(null);
   const [activeWorkspace, setActiveWorkspaceState] = useState(() => getActiveWorkspace());
   const [availableWorkspaces, setAvailableWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -68,6 +74,7 @@ export const ManufacturerProvider = ({ children }) => {
     setToken("");
     setManufacturer(null);
     setDistributor(null);
+    setDriver(null);
     setAvailableWorkspaces([]);
     toast.info("Logged out successfully");
   };
@@ -87,12 +94,24 @@ export const ManufacturerProvider = ({ children }) => {
         headers: { token },
       });
       const role = String(sessionResponse.data?.account?.role || "").toUpperCase();
-      if (!sessionResponse.data?.success || !["MANUFACTURER", "DISTRIBUTOR"].includes(role)) {
-        throw new Error("An active manufacturer or distributor workspace is required.");
+      if (!sessionResponse.data?.success || !["MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(role)) {
+        throw new Error("An active manufacturer, distributor, or driver workspace is required.");
       }
       setActiveWorkspace(role);
       const allRoles = sessionResponse.data.account.roles || [];
       setAvailableWorkspaces(allRoles);
+      if (role === "DRIVER") {
+        const response = await axios.get(`${backendUrl}/api/driver/profile`, { headers: { token } });
+        if (!response.data?.success || !response.data.driver) throw new Error("Driver profile could not be loaded.");
+        setDriver(response.data.driver);
+        saveCachedDriverProfile(token, response.data.driver).catch((error) => {
+          console.warn("Driver profile could not be saved for offline use:", error.message);
+        });
+        setManufacturer(null);
+        setDistributor(null);
+        return;
+      }
+      setDriver(null);
 
       // Always fetch both profiles if available roles include both
       const hasMfr = allRoles.some((w) => (typeof w === "string" ? w : w.code) === "MANUFACTURER") || role === "MANUFACTURER";
@@ -130,10 +149,27 @@ export const ManufacturerProvider = ({ children }) => {
       }
     } catch (err) {
       console.error("Failed to fetch profile:", err);
+      const temporarilyUnavailable = !err.response || err.response.status >= 500 || err.response.status === 429;
+      if (temporarilyUnavailable && getDriverOfflineTokenRole(token) === "DRIVER") {
+        try {
+          const cachedDriver = await getCachedDriverProfile(token);
+          if (cachedDriver) {
+            setActiveWorkspace("DRIVER");
+            setAvailableWorkspaces(["DRIVER"]);
+            setDriver(cachedDriver);
+            setManufacturer(null);
+            setDistributor(null);
+            return;
+          }
+        } catch (cacheError) {
+          console.warn("Cached driver profile could not be restored:", cacheError.message);
+        }
+      }
       clearAuthTokens();
       setToken("");
       setManufacturer(null);
       setDistributor(null);
+      setDriver(null);
       setAvailableWorkspaces([]);
     } finally {
       setLoading(false);
@@ -204,7 +240,11 @@ export const ManufacturerProvider = ({ children }) => {
   }, [token, fetchProfile]);
 
   // Active profile: the one for the current workspace
-  const activeProfile = activeWorkspace === "DISTRIBUTOR" ? distributor : manufacturer;
+  const activeProfile = activeWorkspace === "DISTRIBUTOR"
+    ? distributor
+    : activeWorkspace === "DRIVER"
+      ? driver
+      : manufacturer;
 
   return (
     <ManufacturerContext.Provider
@@ -215,6 +255,8 @@ export const ManufacturerProvider = ({ children }) => {
         setManufacturer,
         distributor,
         setDistributor,
+        driver,
+        setDriver,
         activeProfile,
         activeWorkspace,
         availableWorkspaces,

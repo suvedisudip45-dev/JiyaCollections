@@ -29,6 +29,7 @@ import manufacturerInventoryRouter from "./routes/manufacturerInventoryRoute.js"
 import manufacturerProductionRouter from "./routes/manufacturerProductionRoute.js";
 import orderAssignmentRouter from "./routes/orderAssignmentRoute.js";
 import distributorRouter from "./routes/distributorRoute.js";
+import driverRouter from "./routes/driverRoute.js";
 import adminDistributorApplicationRouter from "./routes/adminDistributorApplicationRoute.js";
 import adminDistributorRateRouter, { adminDistributorFinanceRouter } from "./routes/adminDistributorRateRoute.js";
 import adminDistributorDetailRouter from "./routes/adminDistributorDetailRoute.js";
@@ -154,6 +155,7 @@ app.get("/health/ready", createReadinessHandler());
 //  Api Endpoints
 app.use("/api/auth", authRouter);
 app.use("/api/distributor", distributorRouter);
+app.use("/api/driver", driverRouter);
 app.use("/api/admin/distributor-applications", adminDistributorApplicationRouter);
 app.use("/api/admin/distributor-rates", adminDistributorRateRouter);
 app.use("/api/admin/distributor-finance", adminDistributorFinanceRouter);

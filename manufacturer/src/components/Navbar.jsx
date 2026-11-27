@@ -10,6 +10,7 @@ const Navbar = () => {
     token,
     manufacturer,
     distributor,
+    driver,
     activeProfile,
     toggleDistributorAvailability,
     logout,
@@ -20,7 +21,7 @@ const Navbar = () => {
 
   const navigate = useNavigate();
 
-  if (!activeProfile && !manufacturer && !distributor) return null;
+  if (!activeProfile && !manufacturer && !distributor && !driver) return null;
 
   const profile = activeProfile || manufacturer || distributor;
 
@@ -42,6 +43,7 @@ const Navbar = () => {
   };
 
   const isDistributorView = activeWorkspace === "DISTRIBUTOR";
+  const isDriverView = activeWorkspace === "DRIVER";
   const isOnline = distributor?.isActive;
 
   return (
@@ -49,9 +51,9 @@ const Navbar = () => {
       {/* Left: Brand / Hub Identity */}
       <div className="flex min-w-0 items-center gap-3">
         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg font-black text-white shadow-xs ${
-          isDistributorView ? "bg-emerald-700" : "bg-[#171717]"
+          isDriverView ? "bg-sky-700" : isDistributorView ? "bg-emerald-700" : "bg-[#171717]"
         }`}>
-          {isDistributorView ? "D" : "M"}
+          {isDriverView ? "D" : isDistributorView ? "D" : "M"}
         </div>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -60,13 +62,13 @@ const Navbar = () => {
             </h1>
             <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#f8f7f4] text-[#171717] text-[11px] font-semibold border border-[#dedbd3]">
               <ShieldCheck className="w-3 h-3 text-emerald-600" />
-              {isDistributorView ? "Distributor Hub" : "Verified Partner"}
+              {isDriverView ? "Driver Workspace" : isDistributorView ? "Distributor Hub" : "Verified Partner"}
             </span>
           </div>
           <div className="flex min-w-0 items-center gap-2 text-xs text-[#575757]">
             <span className="flex min-w-0 items-center gap-1">
               <MapPin className="w-3 h-3 text-emerald-600" />
-              <span className="truncate">{profile?.city || "Nepal"}</span>
+              <span className="truncate">{profile?.city || (isDriverView ? "Assigned delivery operations" : "Nepal")}</span>
             </span>
             {!isDistributorView && manufacturer?.qualityRating && (
               <>
@@ -118,7 +120,7 @@ const Navbar = () => {
             <span className="sm:hidden">Switch</span>
           </button>
         ) : (
-          !hasDistributor && (
+          !isDriverView && !hasDistributor && (
             <button
               type="button"
               onClick={async () => {

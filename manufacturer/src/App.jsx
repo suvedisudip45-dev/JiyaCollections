@@ -25,10 +25,15 @@ const Finance = lazy(() => import("./pages/Finance"));
 const MarketingCards = lazy(() => import("./pages/MarketingCards"));
 const DistributorHome = lazy(() => import("./pages/DistributorHome"));
 const DistributorSelfDelivery = lazy(() => import("./pages/DistributorSelfDelivery"));
+const DistributorLogistics = lazy(() => import("./pages/DistributorLogistics"));
+const DistributorPeerTransfers = lazy(() => import("./pages/DistributorPeerTransfers"));
 const NcmDeliveries = lazy(() => import("./pages/NcmDeliveries"));
 const DistributorDemandReceipt = lazy(() => import("./pages/DistributorDemandReceipt"));
 const DistributorFinanceDashboard = lazy(() => import("./pages/DistributorFinanceDashboard"));
+const DistributorOperations = lazy(() => import("./pages/DistributorOperations"));
 const DistributorPaperBills = lazy(() => import("./pages/DistributorPaperBills"));
+const WholesaleDealers = lazy(() => import("./pages/WholesaleDealers"));
+const DriverDeliveries = lazy(() => import("./pages/DriverDeliveries"));
 
 installAuthInterceptor();
 
@@ -40,7 +45,7 @@ const PortalLoader = () => (
 );
 
 const MainLayout = () => {
-  const { token, loading, manufacturer, distributor, activeWorkspace, platformFeatures } = useManufacturer();
+  const { token, loading, manufacturer, distributor, driver, activeWorkspace, platformFeatures } = useManufacturer();
 
   if (loading) {
     return <PortalLoader />;
@@ -51,7 +56,7 @@ const MainLayout = () => {
   }
 
   // Wait until at least one profile is loaded
-  if (!manufacturer && !distributor) {
+  if (!manufacturer && !distributor && !driver) {
     return <PortalLoader />;
   }
 
@@ -71,40 +76,47 @@ const MainLayout = () => {
                   element={
                     activeWorkspace === "DISTRIBUTOR"
                       ? <Navigate to="/distributor" replace />
-                      : <Dashboard />
+                      : activeWorkspace === "DRIVER"
+                        ? <Navigate to="/driver" replace />
+                        : <Dashboard />
                   }
                 />
-                <Route path="/production" element={<Production />} />
-                <Route path="/bulk-transfers" element={<FactoryTransfers />} />
-                <Route path="/bulk-transfers/:transferId" element={<FactoryTransfers />} />
-                <Route path="/performance" element={<Performance />} />
-                <Route path="/finance" element={<Finance />} />
+                <Route path="/production" element={activeWorkspace === "MANUFACTURER" ? <Production /> : <Navigate to="/" replace />} />
+                <Route path="/bulk-transfers" element={activeWorkspace === "MANUFACTURER" ? <FactoryTransfers /> : <Navigate to="/" replace />} />
+                <Route path="/bulk-transfers/:transferId" element={activeWorkspace === "MANUFACTURER" ? <FactoryTransfers /> : <Navigate to="/" replace />} />
+                <Route path="/performance" element={activeWorkspace === "MANUFACTURER" ? <Performance /> : <Navigate to="/" replace />} />
+                <Route path="/finance" element={activeWorkspace === "MANUFACTURER" ? <Finance /> : <Navigate to="/" replace />} />
 
                 {/* ── Shared (Pickup Profile works for both roles) ────────── */}
-                <Route path="/pickup-profile" element={<PickupProfile />} />
+                <Route path="/pickup-profile" element={["MANUFACTURER", "DISTRIBUTOR"].includes(activeWorkspace) ? <PickupProfile /> : <Navigate to="/" replace />} />
 
                 {/* ── Distributor Portal Routes ───────────────────────────── */}
-                <Route path="/distributor" element={<DistributorHome />} />
+                <Route path="/distributor" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorHome /> : <Navigate to="/" replace />} />
                 <Route path="/orders" element={activeWorkspace === "DISTRIBUTOR" ? <Orders /> : <Navigate to="/" replace />} />
                 <Route path="/orders/:id" element={activeWorkspace === "DISTRIBUTOR" ? <OrderDetail /> : <Navigate to="/" replace />} />
                 <Route path="/direct-orders" element={activeWorkspace === "DISTRIBUTOR" ? <DirectOrders /> : <Navigate to="/" replace />} />
+                <Route path="/wholesale/dealers" element={activeWorkspace === "DISTRIBUTOR" ? <WholesaleDealers /> : <Navigate to="/" replace />} />
                 <Route path="/inventory" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorInventory /> : <Navigate to="/" replace />} />
-                <Route path="/distributor/deliveries" element={<DistributorSelfDelivery />} />
+                <Route path="/distributor/deliveries" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorSelfDelivery /> : <Navigate to="/" replace />} />
+                <Route path="/distributor/logistics" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorLogistics /> : <Navigate to="/" replace />} />
+                <Route path="/distributor/peer-transfers" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorPeerTransfers /> : <Navigate to="/" replace />} />
                 <Route path="/ncm" element={activeWorkspace === "DISTRIBUTOR" ? <NcmDeliveries /> : <Navigate to="/" replace />} />
-                <Route path="/distributor/demand" element={<DistributorDemandReceipt />} />
-                <Route path="/distributor/demand/:transferId" element={<DistributorDemandReceipt />} />
-                <Route path="/distributor/finance" element={<DistributorFinanceDashboard />} />
+                <Route path="/distributor/demand" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorDemandReceipt /> : <Navigate to="/" replace />} />
+                <Route path="/distributor/demand/:transferId" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorDemandReceipt /> : <Navigate to="/" replace />} />
+                <Route path="/distributor/finance" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorFinanceDashboard /> : <Navigate to="/" replace />} />
+                <Route path="/distributor/operations" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorOperations /> : <Navigate to="/" replace />} />
                 <Route path="/distributor/paper-bills" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorPaperBills /> : <Navigate to="/" replace />} />
                 <Route path="/customer-loyalty" element={activeWorkspace === "DISTRIBUTOR" && platformFeatures?.loyaltyEnabled !== undefined ? (platformFeatures.loyaltyEnabled ? <CustomerLoyalty /> : <Navigate to="/" replace />) : null} />
                 <Route path="/gift-inventory" element={activeWorkspace === "DISTRIBUTOR" ? <GiftInventory /> : <Navigate to="/" replace />} />
                 <Route path="/marketing-cards" element={activeWorkspace === "DISTRIBUTOR" && platformFeatures?.marketingCardsEnabled !== undefined ? (platformFeatures.marketingCardsEnabled ? <MarketingCards /> : <Navigate to="/" replace />) : null} />
+                <Route path="/driver" element={activeWorkspace === "DRIVER" ? <DriverDeliveries /> : <Navigate to="/" replace />} />
 
                 {/* ── Fallback ─────────────────────────────────────────────── */}
                 <Route
                   path="*"
                   element={
                     <Navigate
-                      to={activeWorkspace === "DISTRIBUTOR" ? "/distributor" : "/"}
+                      to={activeWorkspace === "DISTRIBUTOR" ? "/distributor" : activeWorkspace === "DRIVER" ? "/driver" : "/"}
                       replace
                     />
                   }

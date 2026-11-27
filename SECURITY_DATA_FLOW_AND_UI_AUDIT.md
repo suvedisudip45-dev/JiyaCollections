@@ -18,11 +18,11 @@ The customer, admin, manufacturer, and marketing portals attach the documented l
 
 ### SMS password recovery
 
-1. Customer, manufacturer, and distributor portals submit the login email, phone number, and portal to the public recovery endpoint. Both identifiers must match the same active account, and its primary role and active profile must match the selected portal; alternate workspace roles cannot be used for cross-portal recovery. If they do not, the API returns the corresponding customer, manufacturer, or distributor not-found message; this intentionally discloses portal eligibility to help users identify the correct login portal.
-2. For an eligible account, before issuing an OTP or queuing an SMS, the backend atomically enforces one password-reset request per rolling seven days and at most three requests per UTC calendar month. Limit violations return HTTP 429 without creating a challenge or sending SMS. Allowed requests create a bounded `PASSWORD_RESET` challenge and queue only an encrypted SMS payload. No email recovery is provided.
-3. OTP challenges expire and allow a configured number of attempts (`PASSWORD_RESET_MAX_ATTEMPTS`, default 5). Successful verification consumes the OTP and returns a random TFA token whose lifetime is controlled by `PASSWORD_RESET_TFA_TOKEN_LIFETIME_MINUTES` (default 5); the backend persists only its keyed hash.
+1. Customer, manufacturer, distributor, and driver portals submit the login email, phone number, and portal to the public recovery endpoint. Both identifiers must match the same active account, and its primary role and active profile must match the selected portal; driver recovery additionally requires an active linked driver and active distributor. Alternate workspace roles cannot be used for cross-portal recovery. Eligible and ineligible requests return the same generic response shape and message; no account-eligibility details are returned.
+2. Allowed requests create a bounded `PASSWORD_RESET` challenge and queue an encrypted SMS payload. OTPs are eight digits generated with `crypto.randomInt`; only an HMAC-SHA256 hash bound to the challenge ID and password-reset purpose is persisted. Account quotas (one request per rolling seven days and three per UTC month) suppress challenge creation while retaining the generic response. IP limits return HTTP 429. No email recovery is provided.
+3. OTP challenges expire and allow a configured number of attempts (`PASSWORD_RESET_MAX_ATTEMPTS`, default 5). Resends use the same challenge, invalidate the prior code, and are limited by a cooldown and bounded resend count (`PASSWORD_RESET_RESEND_COOLDOWN_SECONDS`, default 60; `PASSWORD_RESET_MAX_RESENDS`, default 3). Conditional transactional updates enforce single-use verification and attempt limits. Successful verification returns a random 32-byte TFA token whose lifetime is controlled by `PASSWORD_RESET_TFA_TOKEN_LIFETIME_MINUTES` (default 5); the backend persists only its keyed hash.
 4. Password completion requires the TFA token, matching confirmation, and a single-use conditional state transition. It updates the bcrypt password hash and revokes all current sessions atomically, then the user returns to ordinary login.
-5. OTP verification, TFA token, and password values are not written to audit metadata. Password recovery retains the fixed code `111111` only in `development` and `test` at the user's request. The request, verification, and completion operations return HTTP 503 in staging, production, and unspecified environments until random per-challenge OTPs are implemented and verified.
+5. OTP verification, TFA token, and password values are not written to audit metadata. Password-reset challenges use a distinct purpose and HMAC domain from portal MFA; neither flow accepts the other flow's code. Recovery is available in development/test for supported portals. Driver production recovery remains off by default and requires an explicit feature flag plus complete configuration; admin driver provisioning remains blocked pending verified production SMS delivery, shared rate limiting, and an operational recovery procedure.
 
 ### Customer checkout and fulfillment
 
@@ -34,6 +34,34 @@ The customer, admin, manufacturer, and marketing portals attach the documented l
 6. Admin NCM tools call the server-side client only after delivery permissions are checked. Mutating operations enqueue redacted audit metadata; customer/contact and bank payloads are not logged. The client retries read-only GET requests on bounded 5xx responses, but does not automatically retry POST operations because their carrier outcome can be ambiguous. Ticket summaries and latest activity are persisted in `NcmSupportTicket` after successful create/detail/reply/close operations; the permission-protected active/closed list reads only this table and does not call NCM.
 
 When notifications and SMS are enabled, distributor self-delivery COD is gated by a hashed, expiring, order/distributor/amount-bound OTP before delivery and sale-accounting enqueue. If either setting is disabled, delivery requires an explicit distributor confirmation of collection and records the collection event as pending verification, not OTP-verified. The sale posts to distributor receivable (1190), not company cash. A distributor remittance remains pending until Admin review; verification atomically rechecks available receivable, records treasury inflow, creates the journal/cash transaction, and allocates the subledger document. Distributor-paid refunds use the inverse control: exact Admin-approved amount, distributor evidence submission, explicit Admin verification, and a distinct distributor payable (2190). Rejected evidence cannot post accounting; Admin payout is separately authorized, idempotent, balance-checked, and allocated to that payable. Gross AR/AP are only offset after explicit Admin approval; the amount is capped by open verified balances less pending remittance reservations and posts a balanced journal with allocations to both subledgers and a transactional audit record. The distributor profile is taken from authenticated workspace context for distributor actions.
+
+Driver access uses an isolated `DRIVER` portal scope with only
+`driver:delivery_read` and `driver:delivery_complete`. An active linked driver
+cannot switch into manufacturer or distributor workspaces. `/api/driver`
+manifest reads filter by the authenticated driver and distributor; stop actions
+also verify the manifest assignment and self-delivery assignment server-side.
+The driver OTP endpoint is stop-scoped, and private evidence is retrieved only
+through the authenticated evidence route. COD, inventory, and accounting remain
+inside their existing canonical backend workflows. Admin account provisioning
+requires `access:driver_users_manage`, links only an existing active unlinked
+driver, creates no reusable/shared password, and is audited without logging
+credentials. Driver accounts require MFA like other privileged workspaces.
+
+### Driver offline delivery data
+
+The driver portal keeps a minimal assigned-manifest snapshot and unsent POD
+drafts in browser IndexedDB, partitioned by account, driver, and distributor.
+Address/contact fields needed for delivery and photo/signature evidence are
+stored locally; the browser database is not application-encrypted, so device
+access controls remain part of the privacy boundary. Access tokens, OTP values,
+COD amounts, and private evidence URLs are not stored there. The offline cache
+is presentation/draft data only: it never authorizes an API request, confirms a
+payment, or changes server state. On reconnect, the dedicated driver endpoint
+revalidates current assignment and reuses the canonical completion service.
+COD delivery completion stays online-only. The service worker caches the
+application shell/static assets and excludes API responses. Confirmed local
+copies expire after 30 days; queued/conflicted drafts remain until explicitly
+cleared. Drivers on shared devices should clear local data after reconciliation.
 
 ### Marketing partner reporting
 
@@ -109,7 +137,7 @@ The Admin Audit History screen supports filtering by result (`SUCCESS`, `FAILED`
 - Routine read-only page views and every API request are not copied into the audit log. Capturing all reads would create high volume and could expose sensitive usage patterns; use structured request logs and targeted access telemetry for that purpose.
 - Credentials, OTP values, tokens, and full request bodies are not audit event fields. Existing authentication storage may retain an identifier in its separate `AuthAuditLog`; avoid exporting that table broadly.
 - `ADMIN_2FA_DEVELOPMENT_OTP` is an optional fixed value for Admin MFA in local development only; it is accepted only when `NODE_ENV=development` and rejected in other environments. Other privileged portals continue to receive random codes. With the variable absent, Admin send and resend also use random codes.
-- Password recovery retains fixed OTP `111111` only in `development` and `test` at the user's request. Staging, production, and unspecified environments are gated with HTTP 503 until random per-challenge OTPs are implemented and verified. The flow still requires `OTP_SERVER_SECRET` and the outbound SMS notification subsystem, and the notification worker must remain operational.
+- Driver production recovery is default-off. Even with the opt-in flag and required environment settings, production readiness is not established: the documented SMS endpoint is HTTP, provider delivery has not been verified, the IP limiter is process-local, and no complete recovery operations procedure has been exercised. Keep driver provisioning blocked until these prerequisites are closed.
 - IP and user-agent context can be personal data. Define access controls and a retention schedule before enabling production collection at scale.
 - Audit rows are append-only by application convention, not cryptographically immutable against a database administrator. Production-grade tamper evidence requires separate restricted storage or an independently controlled archive.
 - The in-memory auth limiter is per backend process. Durable denial events improve observability but do not make the limiter distributed across replicas.
@@ -118,12 +146,13 @@ The Admin Audit History screen supports filtering by result (`SUCCESS`, `FAILED`
 
 | Priority | Finding | Recommendation |
 | --- | --- | --- |
-| Critical if publicly reachable | Password-recovery OTP remains fixed to `111111` in development and test. Other environment names, including staging, production, and unset `NODE_ENV`, fail closed with HTTP 503. | Keep recovery disabled outside development/test until random OTP generation, expiry/attempt limits, and the actual SMS-delivery path pass staging tests. |
+| High | Driver recovery has a random, challenge-bound OTP implementation, but production delivery and distributed abuse controls are not verified; driver recovery is default-off and admin provisioning remains blocked. | Keep the opt-in disabled until HTTPS SMS delivery, shared/gateway rate limiting, staging end-to-end checks, and an operational recovery procedure are verified. |
 | High | Privileged MFA enforcement is controlled by backend `MFA_ENABLED` and defaults to enabled. Setting it to `false` intentionally permits password-only sign-in for privileged portals; notification settings do not implicitly bypass MFA. | Keep MFA enabled in production unless password-only privileged access is an explicitly accepted policy; configure and verify the notification worker and delivery channels. |
 | High | `VITE_AES_KEY` and `VITE_AES_IV` are bundled into browser code. A browser-delivered key is not a secret; client-side AES must not be treated as protection for a password or API request. | Enforce HTTPS and use a coordinated migration to standard TLS-only credential submission. Remove the custom client encryption contract only after all portal clients and the server have been updated and tested. |
 | High | Access tokens are stored in local storage in the portal token helpers. XSS could expose a bearer token. | Reduce XSS risk with a restrictive Content Security Policy and dependency hygiene; plan a migration to short-lived in-memory access tokens and an HttpOnly refresh/session design. |
 | High if misconfigured | A fixed OTP for Admin MFA is permitted only by setting `ADMIN_2FA_DEVELOPMENT_OTP` with `NODE_ENV=development`. The service rejects that setting for any other environment; production must not carry the variable. | Use random codes by default. Keep the fixed value only in an untracked, local development environment and verify the variable is absent from staging/production secrets. |
 | Medium | Authentication rate-limit state is held in per-process `Map`s and resets on restart. | Use a shared limiter (for example, Redis) or equivalent gateway enforcement before horizontal scaling; honor trusted-proxy configuration when deriving client IPs. |
+| Medium | Driver offline snapshots include delivery contact/address details and POD evidence in browser IndexedDB, which is not encrypted by the application and may remain on a shared device until cleared. | Use protected device/browser profiles, clear local driver data after reconciliation, and avoid using shared or unmanaged devices for offline delivery work. |
 | Medium | Authentication, RBAC-denial, and rate-limit events that occur outside a business transaction are queued asynchronously to preserve response latency. A process failure before the enqueue completes can lose an event. | Monitor queue/worker health, retain host logs, and decide whether high-severity events need a durable synchronous path or external security event sink. |
 | Medium | The audit outbox retries failures, but production alerting, retention, and archival are not configured by this code change. | Alert on sustained `PENDING`/`FAILED` rows and worker inactivity; define retention, archival, and restricted audit-reader roles. |
 | Follow-up | UI filters expose technical entity/action values and do not yet provide a dedicated incident queue or aggregate trends. | Add an incident-focused view only after event taxonomy, triage ownership, thresholds, and alert expectations are agreed. Keep the existing audit table as the source of individual event detail. |

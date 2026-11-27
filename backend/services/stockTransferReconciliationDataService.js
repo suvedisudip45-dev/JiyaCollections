@@ -110,7 +110,7 @@ export const loadStockTransferReconciliationSources = async ({
   };
 
   try {
-    const result = await client.$transaction(async (tx) => {
+    const loadSources = async (tx) => {
       let rawTransfers;
       try {
         rawTransfers = await tx.stockTransfer.findMany({
@@ -575,7 +575,10 @@ export const loadStockTransferReconciliationSources = async ({
         page: { limit: normalizedLimit, hasMore, lastTransfer },
         snapshotConsistency: "REPEATABLE_READ",
       };
-    }, { isolationLevel: "RepeatableRead" });
+    };
+    const result = typeof client.$transaction === "function"
+      ? await client.$transaction(loadSources, { isolationLevel: "RepeatableRead" })
+      : await loadSources(client);
     return {
       ...result,
       sourceErrors: [...new Set(result.sourceErrors)].sort(),

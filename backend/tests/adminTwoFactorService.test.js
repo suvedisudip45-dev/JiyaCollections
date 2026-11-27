@@ -54,6 +54,12 @@ const createHarness = (role = "ADMIN") => {
       distributorProfile: role === "DISTRIBUTOR" ? { status: "ACTIVE", isActive: true } : null,
       marketingPartnerProfile: role === "MARKETING_PARTNER" ? { id: "marketing-profile-1" } : null,
       manufacturerProfile: role === "MANUFACTURER" ? { id: "manufacturer-profile-1" } : null,
+      deliveryDriverProfile: role === "DRIVER" ? {
+        id: "driver-profile-1",
+        accountId: `${role.toLowerCase()}-account-1`,
+        status: "ACTIVE",
+        distributor: { id: "distributor-1", status: "ACTIVE", isActive: true },
+      } : null,
     },
     challenge: null,
     notification: null,
@@ -84,6 +90,11 @@ const createHarness = (role = "ADMIN") => {
   const client = {
     authAccount: {
       findUnique: async ({ select }) => applySelect(state.account, select),
+    },
+    deliveryDriver: {
+      findUnique: async ({ where }) => (
+        where.accountId === state.account.id ? state.account.deliveryDriverProfile : null
+      ),
     },
     adminTwoFactorChallenge: {
       findUnique: async ({ include }) => state.challenge && ({
@@ -194,10 +205,22 @@ test("MFA challenge selects the profile needed to validate each privileged works
 
     assert.ok(selectedAccountFields[profileField], `${portal} profile must be selected`);
   }
+
+  const driverHarness = createHarness("DRIVER");
+  let hydratedDriverAccountId;
+  driverHarness.client.deliveryDriver.findUnique = async ({ where }) => {
+    hydratedDriverAccountId = where.accountId;
+    return driverHarness.state.account.deliveryDriverProfile;
+  };
+  await createPortalTwoFactorChallenge({
+    accountId: driverHarness.state.account.id,
+    portal: "DRIVER",
+  }, { client: driverHarness.client, notificationConfig, env: environment });
+  assert.equal(hydratedDriverAccountId, driverHarness.state.account.id);
 });
 
-test("Marketing Partner and Manufacturer challenges issue only portal-bound MFA sessions", async () => {
-  for (const portal of ["MARKETING_PARTNER", "MANUFACTURER"]) {
+test("Marketing Partner, Manufacturer, and Driver challenges issue only portal-bound MFA sessions", async () => {
+  for (const portal of ["MARKETING_PARTNER", "MANUFACTURER", "DRIVER"]) {
     const harness = createHarness(portal);
     const challenge = await createChallengeAndSendCode(harness, new Date(), portal);
     const result = await verifyPortalTwoFactorCode(challenge, {
@@ -252,6 +275,7 @@ test("OTP challenge limits are per account and allow up to the configured IP lim
 test("MFA policy excludes Customer and rejects cross-portal challenge binding", async () => {
   assert.equal(requiresMfa("CUSTOMER"), false);
   assert.equal(requiresMfa("MARKETING_PARTNER"), true);
+  assert.equal(requiresMfa("DRIVER"), true);
 
   const harness = createHarness("MANUFACTURER");
   const challenge = await createChallengeAndSendCode(harness, new Date(), "MANUFACTURER");
@@ -261,6 +285,20 @@ test("MFA policy excludes Customer and rejects cross-portal challenge binding", 
     env: environment,
     now: challenge.now,
   }), /Invalid or expired/);
+  assert.equal(harness.state.sessions.length, 0);
+});
+
+test("password-recovery challenges cannot be used for portal MFA", async () => {
+  const harness = createHarness("DRIVER");
+  const challenge = await createChallengeAndSendCode(harness, new Date(), "DRIVER");
+  harness.state.challenge.purpose = "PASSWORD_RESET";
+
+  await assert.rejects(() => verifyPortalTwoFactorCode(challenge, {
+    client: harness.client,
+    env: environment,
+    now: challenge.now,
+  }), /Invalid or expired/);
+  assert.equal(harness.state.challenge.status, "PENDING");
   assert.equal(harness.state.sessions.length, 0);
 });
 

@@ -109,8 +109,17 @@ export const createDistributorDirectOrder = async (req, res) => {
       isPaid = false,
       discountAmount = "0",
       notes = "",
+      billingMode = "RETAIL",
       applyLoyaltyDiscount = false,
     } = req.body || {};
+    if (!["RETAIL", "WHOLESALE"].includes(String(billingMode).toUpperCase())) {
+      return res.status(400).json({
+        success: false,
+        message: "billingMode must be RETAIL or WHOLESALE.",
+        code: "INVALID_BILLING_MODE",
+      });
+    }
+    const serverBillingMode = String(billingMode).toUpperCase();
     const receiptDeclarationError = directOrderReceiptRequiredError(isPaid);
     if (receiptDeclarationError) {
       return res.status(receiptDeclarationError.statusCode).json({
@@ -327,7 +336,10 @@ export const createDistributorDirectOrder = async (req, res) => {
           distributorId,
           loyaltyDiscount: toLegacyFloatMirror(loyaltyDiscount, "Legacy loyalty discount mirror"),
           rewardApplied: loyaltyRewardApplied,
-          directNotes: String(notes || "").trim() || (
+          directNotes: [
+            `Billing mode: ${serverBillingMode}`,
+            String(notes || "").trim(),
+          ].filter(Boolean).join("\n") || (
             isWalkIn
               ? "In-person distributor hub counter sale."
               : "Direct phone order for distributor hub fulfillment."
