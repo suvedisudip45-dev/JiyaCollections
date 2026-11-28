@@ -2,6 +2,9 @@
   command = "npm run build"
   publish = "dist"
 
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "VITE_AES_KEY,VITE_AES_IV,VITE_HMAC_SECRET"
+
 # SPA redirect — required for React Router to work on page refresh / direct URL access
 [[redirects]]
   from = "/*"
