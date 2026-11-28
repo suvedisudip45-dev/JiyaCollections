@@ -3,6 +3,10 @@ import { recordSystemAudit } from "./auditService.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
 import { releaseGiftRewardOnOrderCancellation } from "./giftService.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "./portalNotificationService.js";
 
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -314,6 +318,32 @@ const cancelOrderBeforeHandoff = async ({
           cancellationReason,
         },
       }, { client: tx });
+    }
+
+    if (actorRole === "CUSTOMER") {
+      await createAdminPortalNotifications(tx, {
+        category: "ORDER_CANCELLATION",
+        title: "Customer cancelled an order",
+        message: `Order ${order.id} was cancelled by the customer.`,
+        href: `/orders/${encodeURIComponent(order.id)}`,
+        entityType: "Order",
+        entityId: order.id,
+        dedupeKey: `CUSTOMER_ORDER_CANCELLED:${order.id}`,
+      });
+      if (assignment?.distributorId) {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: assignment.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "ORDER_CANCELLATION",
+          title: "Customer cancelled an order",
+          message: `Order ${order.id} was cancelled by the customer.`,
+          href: `/orders/${encodeURIComponent(order.id)}`,
+          entityType: "Order",
+          entityId: order.id,
+          dedupeKey: `CUSTOMER_ORDER_CANCELLED:${order.id}:${assignment.distributorId}`,
+        });
+      }
     }
 
     return {

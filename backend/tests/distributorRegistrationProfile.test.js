@@ -161,6 +161,7 @@ test("approving manufacturer distributor access copies the business and pickup p
     role: { findUnique: async () => ({ id: "role-distributor", isActive: true }) },
     authAccountRoleMapping: { upsert: async () => ({}) },
     authAuditLog: { create: async () => ({}) },
+    portalNotification: { createMany: async () => ({ count: 0 }) },
     systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
   };
   stubMethod(t, prisma, "$transaction", async (callback) => callback(tx));
@@ -207,7 +208,9 @@ test("distributor registration persists manufacturer-equivalent location and pic
         calls.account = data;
         return { id: "account-1" };
       },
+      findMany: async () => [],
     },
+    portalNotification: { createMany: async () => ({ count: 0 }) },
     distributor: {
       create: async ({ data }) => {
         calls.distributor = data;

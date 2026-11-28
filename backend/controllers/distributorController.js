@@ -8,6 +8,10 @@ import { recordSystemAudit } from "../services/auditService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
 import { resolveLocationEntry } from "../utils/nepalLocationData.js";
 import { getLocationLookupData, validateNcmLocationSelection } from "../services/locationLookupService.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "../services/portalNotificationService.js";
 
 const clean = (value) => String(value || "").trim();
 
@@ -95,6 +99,15 @@ const createDistributorApplication = async ({
   });
   await tx.distributorLocation.create({
     data: { distributorId: distributor.id, province, district, isActive: true },
+  });
+  await createAdminPortalNotifications(tx, {
+    category: "DISTRIBUTOR_APPLICATION",
+    title: "New distributor application",
+    message: `${name} submitted a distributor application for review.`,
+    href: "/distributor-applications",
+    entityType: "Distributor",
+    entityId: distributor.id,
+    dedupeKey: `DISTRIBUTOR_APPLICATION_CREATED:${distributor.id}`,
   });
   return distributor;
 });
@@ -239,21 +252,33 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
       });
     }
 
-    const application = await prisma.manufacturer.update({
-      where: { id: manufacturer.id },
-      data: { distributorApplicationStatus: "REQUESTED" },
-      select: { id: true, distributorApplicationStatus: true, updatedAt: true },
-    });
-    await logAuthEvent({
-      accountId: req.auth.accountId,
-      identifier: req.auth.email,
-      action: "MANUFACTURER_DISTRIBUTOR_ACCESS_REQUESTED",
-      role: "MANUFACTURER",
-      portal: "MANUFACTURER",
-      ipAddress: req.ip || "",
-      userAgent: req.headers["user-agent"] || "",
-      correlationId: req.correlationId || null,
-      metadata: { manufacturerId: manufacturer.id },
+    const application = await prisma.$transaction(async (tx) => {
+      const updated = await tx.manufacturer.update({
+        where: { id: manufacturer.id },
+        data: { distributorApplicationStatus: "REQUESTED" },
+        select: { id: true, distributorApplicationStatus: true, updatedAt: true },
+      });
+      await createAdminPortalNotifications(tx, {
+        category: "DISTRIBUTOR_APPLICATION",
+        title: "Manufacturer requested distributor access",
+        message: `${manufacturer.name} submitted a distributor access request.`,
+        href: "/distributor-applications",
+        entityType: "Manufacturer",
+        entityId: manufacturer.id,
+        dedupeKey: `MANUFACTURER_DISTRIBUTOR_ACCESS_REQUESTED:${manufacturer.id}:${updated.updatedAt.toISOString()}`,
+      });
+      await logAuthEvent({
+        accountId: req.auth.accountId,
+        identifier: req.auth.email,
+        action: "MANUFACTURER_DISTRIBUTOR_ACCESS_REQUESTED",
+        role: "MANUFACTURER",
+        portal: "MANUFACTURER",
+        ipAddress: req.ip || "",
+        userAgent: req.headers["user-agent"] || "",
+        correlationId: req.correlationId || null,
+        metadata: { manufacturerId: manufacturer.id },
+      }, { client: tx });
+      return updated;
     });
     return res.status(202).json({
       success: true,
@@ -357,6 +382,7 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
         throw error;
       }
 
+      const reviewedAt = new Date();
       const claimed = await tx.manufacturer.updateMany({
         where: { id: manufacturer.id, distributorApplicationStatus: "REQUESTED" },
         data: { distributorApplicationStatus: targetStatus },
@@ -466,6 +492,21 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
           status: targetStatus,
         },
       }, { client: tx });
+
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: manufacturer.id,
+        recipientRole: "MANUFACTURER",
+        category: "DISTRIBUTOR_APPLICATION",
+        title: targetStatus === "APPROVED" ? "Distributor access approved" : "Distributor access declined",
+        message: targetStatus === "APPROVED"
+          ? "Admin approved distributor access for your account. Switch to the distributor workspace to continue."
+          : "Admin declined the distributor access request for your account.",
+        href: targetStatus === "APPROVED" ? "/" : "/pickup-profile",
+        entityType: "Manufacturer",
+        entityId: manufacturer.id,
+        dedupeKey: `MANUFACTURER_DISTRIBUTOR_ACCESS_REVIEWED:${manufacturer.id}:${targetStatus}:${reviewedAt.getTime()}`,
+      });
 
       return { manufacturerId: manufacturer.id, accountId: manufacturer.accountId, status: targetStatus, distributor };
     });
@@ -857,12 +898,13 @@ export const reviewDistributorApplication = async (req, res) => {
         throw error;
       }
 
+      const reviewedAt = new Date();
       const updated = await tx.distributor.update({
         where: { id: distributor.id },
         data: {
           status: targetStatus,
           isActive: targetStatus === "ACTIVE",
-          approvedAt: targetStatus === "ACTIVE" ? new Date() : null,
+          approvedAt: targetStatus === "ACTIVE" ? reviewedAt : null,
           approvedBy: targetStatus === "ACTIVE" ? req.auth.profileId : null,
         },
       });
@@ -891,6 +933,20 @@ export const reviewDistributorApplication = async (req, res) => {
         correlationId: req.correlationId || null,
         metadata: { distributorId: distributor.id, previousStatus: distributor.status, status: targetStatus },
       }, { client: tx });
+      if (targetStatus === "ACTIVE") {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: distributor.id,
+          recipientRole: "DISTRIBUTOR",
+          category: "DISTRIBUTOR_APPLICATION",
+          title: "Distributor application approved",
+          message: "Admin approved your distributor application. Your distributor workspace is ready.",
+          href: "/distributor",
+          entityType: "Distributor",
+          entityId: distributor.id,
+          dedupeKey: `DISTRIBUTOR_APPLICATION_REVIEWED:${distributor.id}:ACTIVE:${reviewedAt.getTime()}`,
+        });
+      }
       return updated;
     });
 

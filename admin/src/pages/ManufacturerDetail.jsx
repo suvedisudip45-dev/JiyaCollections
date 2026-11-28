@@ -1,7 +1,7 @@
 /* eslint-disable react/prop-types */
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
 import { usePermissions } from "../auth/PermissionsContext";
@@ -28,10 +28,22 @@ const tabs = [
 const ManufacturerDetail = ({ token }) => {
   const { manufacturerId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { can } = usePermissions();
   const [manufacturer, setManufacturer] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("profile");
+  const requestedTab = searchParams.get("tab");
+  const activeTab = tabs.some(([key, , permission]) => key === requestedTab && can(permission))
+    ? requestedTab
+    : "profile";
+
+  const selectTab = (key) => {
+    setSearchParams((params) => {
+      if (key === "profile") params.delete("tab");
+      else params.set("tab", key);
+      return params;
+    }, { replace: true });
+  };
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -89,7 +101,7 @@ const ManufacturerDetail = ({ token }) => {
 
       <nav aria-label="Manufacturer details" className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm">
         {tabs.filter(([, , permission]) => can(permission)).map(([key, label]) => (
-          <button key={key} type="button" onClick={() => setActiveTab(key)} className={`whitespace-nowrap rounded-lg px-3.5 py-2.5 text-xs font-bold transition ${activeTab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          <button key={key} type="button" onClick={() => selectTab(key)} className={`whitespace-nowrap rounded-lg px-3.5 py-2.5 text-xs font-bold transition ${activeTab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
             {label}
           </button>
         ))}

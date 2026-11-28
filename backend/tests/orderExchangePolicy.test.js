@@ -672,6 +672,10 @@ test("admin approval routes a manufacturer-less self-delivery exchange to its di
   let findRequestCount = 0;
 
   stubMethod(t, prisma, "$transaction", (callback) => callback({
+    distributor: {
+      findUnique: async () => ({ accountId: "distributor-account-1" }),
+    },
+    portalNotification: { createMany: async () => ({ count: 1 }) },
     shippingConfig: {
       findFirst: async () => ({ distributorExchangeSettlementRate: 29 }),
     },
@@ -727,6 +731,10 @@ test("admin approval routes a self-delivery return to the original distributor w
   stubMethod(t, prisma.customerReturn, "findUnique", async () => ({ ...current, ...updateData }));
 
   stubMethod(t, prisma, "$transaction", (callback) => callback({
+    distributor: {
+      findUnique: async () => ({ accountId: "distributor-account-1" }),
+    },
+    portalNotification: { createMany: async () => ({ count: 1 }) },
     shippingConfig: {
       findFirst: async () => ({ distributorReturnSettlementRate: 17 }),
     },

@@ -1138,6 +1138,11 @@ story/template delivery records.
 - **Palette**: Paper background (`#f8f7f4`), ink typography (`#171717`), and border tokens (`#dedbd3`).
 - **Feedback**: Integrated `react-toastify` for reactive, asynchronous user notifications.
 
+### Portal notification inbox
+- Admin, Manufacturer, and Distributor users see a bell in the top navigation with a periodically refreshed unread count.
+- Notifications are scoped by authenticated account and active workspace role. The inbox loads newest-first in batches of ten while scrolling, uses a light-blue background for unread entries, and marks an entry read when opened.
+- Supported events include customer order assignments/cancellations, return and exchange requests, stock-transfer requests/reviews/receipts, manufacturer production requests/reviews, onboarding decisions, and manufacturer/distributor settlement updates. Marketing Partner and Driver inboxes are not included.
+
 ### Dynamic Navigation & Role Switcher
 - **Single-Dashboard Dual-Role Switcher (`manufacturer/src/components/Sidebar.jsx` & `Navbar.jsx`)**:
   - Automatically identifies whether the active authenticated user has dual roles (`MANUFACTURER` + `DISTRIBUTOR`).

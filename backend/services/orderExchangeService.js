@@ -11,6 +11,10 @@ import {
   postReturnExchangeSettlementAccounting,
   resolveReturnExchangeSettlementRate,
 } from "./returnExchangeSettlementService.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "./portalNotificationService.js";
 
 const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "APPROVED_FOR_DISTRIBUTOR", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
 const REASONS = new Set(["SIZE_OR_FIT", "DEFECTIVE", "WRONG_ITEM", "DAMAGED_IN_TRANSIT", "STITCHING_DEFECT", "THREADING_ISSUE", "OTHER"]);
@@ -503,6 +507,31 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       },
       idempotencyKey: `EXCHANGE:${created.id}:REQUESTED`,
     });
+    if (actorRole === "CUSTOMER") {
+      await createAdminPortalNotifications(tx, {
+        category: "CUSTOMER_EXCHANGE",
+        title: "New customer exchange request",
+        message: `A customer submitted an exchange request for order ${orderId}.`,
+        href: "/returns",
+        entityType: "OrderExchangeRequest",
+        entityId: created.id,
+        dedupeKey: `CUSTOMER_EXCHANGE_REQUESTED:${created.id}`,
+      });
+      if (delivery.route === "DISTRIBUTOR" && delivery.distributorId) {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: delivery.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "CUSTOMER_EXCHANGE",
+          title: "New customer exchange request",
+          message: `A customer submitted an exchange request for order ${orderId}.`,
+          href: "/distributor/operations",
+          entityType: "OrderExchangeRequest",
+          entityId: created.id,
+          dedupeKey: `CUSTOMER_EXCHANGE_REQUESTED:${created.id}:${delivery.distributorId}`,
+        });
+      }
+    }
     return { request: created, duplicate: false };
     }, { isolationLevel: "Serializable" });
   } catch (error) {
@@ -898,6 +927,20 @@ export const decideCustomerExchangeRequest = async ({
       } : undefined,
       idempotencyKey: `EXCHANGE:${current.id}:${nextStatus}`,
     });
+    if (current.deliveryRoute === "DISTRIBUTOR" && current.distributorId) {
+      await createPortalNotificationForProfile(tx, {
+        profileType: "distributor",
+        profileId: current.distributorId,
+        recipientRole: "DISTRIBUTOR",
+        category: "CUSTOMER_EXCHANGE",
+        title: normalizedDecision === "APPROVE" ? "Exchange request approved" : "Exchange request declined",
+        message: `The exchange request for order ${current.orderId} was ${normalizedDecision === "APPROVE" ? "approved" : "declined"} by Admin.`,
+        href: "/distributor/operations",
+        entityType: "OrderExchangeRequest",
+        entityId: current.id,
+        dedupeKey: `CUSTOMER_EXCHANGE_REVIEWED:${current.id}:${nextStatus}`,
+      });
+    }
     return updated;
   }, { isolationLevel: "Serializable" });
 

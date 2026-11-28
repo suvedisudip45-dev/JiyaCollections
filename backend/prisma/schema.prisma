@@ -42,6 +42,7 @@ model AuthAccount {
   auditLogs                AuthAuditLog[]
   sessions                 AuthSession[]
   roleMappings             AuthAccountRoleMapping[]
+  portalNotifications      PortalNotification[]
   accessManagementEvents   AccessManagementAuditLog[] @relation("AccessManagementActor")
   accessManagementTargets  AccessManagementAuditLog[] @relation("AccessManagementTarget")
 
@@ -293,6 +294,27 @@ model Notification {
   @@index([channel, status, createdAt])
   @@index([provider, providerMessageId])
   @@index([status, claimExpiresAt])
+}
+
+model PortalNotification {
+  id                 String      @id @default(uuid()) @db.VarChar(36)
+  recipientAccountId String      @db.VarChar(191)
+  recipientRole      String      @db.VarChar(32)
+  category           String      @db.VarChar(64)
+  title              String      @db.VarChar(160)
+  message            String      @db.VarChar(500)
+  href               String?     @db.VarChar(512)
+  entityType         String?     @db.VarChar(64)
+  entityId           String?     @db.VarChar(191)
+  dedupeKey          String      @db.VarChar(191)
+  isRead             Boolean     @default(false)
+  readAt             DateTime?
+  createdAt          DateTime    @default(now())
+  recipient          AuthAccount @relation(fields: [recipientAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([recipientAccountId, recipientRole, dedupeKey], map: "PortalNotification_recipient_role_dedupe_key")
+  @@index([recipientAccountId, recipientRole, createdAt, id], map: "PortalNotification_recipient_role_created_id_idx")
+  @@index([recipientAccountId, recipientRole, isRead, createdAt], map: "PortalNotification_recipient_role_read_created_idx")
 }
 
 model NotificationAttempt {

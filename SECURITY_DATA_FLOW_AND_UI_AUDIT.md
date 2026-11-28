@@ -79,6 +79,17 @@ Admin product reports require the ADMIN role and `product:sales_analytics_read`.
 4. Authorized administrators use `/api/admin/access/audit-logs` and its export endpoint. The UI supports pagination, filters, event details, and CSV export.
 5. RBAC seeding requires `ADMIN_EMAIL` to identify the designated owner account: only that active Admin receives the built-in broad `ADMIN` role. Other Admin accounts retain custom Admin role mappings, while any mapping to the built-in full role is deactivated and audited. Review role assignments and back up existing data before running the updated seed in a deployed environment.
 
+### Portal notification inbox
+
+The separate `/api/portal-notifications` API authenticates every request and
+requires the active `ADMIN`, `MANUFACTURER`, or `DISTRIBUTOR` workspace role.
+List, unread-count, and mark-read queries bind both the recipient account ID
+and active role from `req.auth`; a notification cannot be read or changed by a
+different account or by switching to another workspace on a dual-role account.
+Admin fan-out resolves active Admin role mappings server-side. The inbox does
+not reuse outbound SMS/email notification payloads and does not expose
+notification content through the customer or Marketing Partner portals.
+
 The `all:function` permission is a server-side authorization bypass and must remain excluded from ordinary Admin roles. Generic journal reversal is limited to reasoned, authenticated reversals of `MANUAL_JOURNAL` entries, with the reversal posting, original status update, and audit-outbox event in one transaction. Source-backed payment/accounting journals must be corrected by their originating business workflow so operational cash, Treasury, settlement, and subledger records are not left out of sync.
 
 Payable/receivable corrections and NCM remittance-batch corrections are source-aware workflows, not generic journal edits. They require an authenticated Admin, a correction mode, a reason, and an external evidence reference; their source balances, treasury movements, journals, linked accounting-document allocations, and audit records are updated atomically. Marketing CPA payout correction is restricted to the selected settled payout with verified returned-funds evidence; it restores the bill and Treasury, records a reversal allocation, reverses the payout journal, and marks the payout reversed. It cannot void a confirmed transfer or proceed while another CPA payout is initiated. NCM corrections also restore captured delivery settlement states, cancel the batch-only fee/suspense documents, retain reversed resolution history, and allow a corrected delivery to be settled again. Historical NCM batches without a captured prior delivery state fail closed for manual reconciliation.

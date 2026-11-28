@@ -80,6 +80,8 @@ const makeTransactionClient = ({ available = "10.01", existing = null } = {}) =>
     systemAuditOutbox: {
       create: async () => ({ id: "audit-1" }),
     },
+    authAccount: { findMany: async () => [] },
+    portalNotification: { createMany: async () => ({ count: 0 }) },
   };
   return {
     client,

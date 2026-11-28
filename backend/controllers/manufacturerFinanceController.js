@@ -21,6 +21,10 @@ import {
   reconcileManufacturerLogisticsShipmentPayments,
 } from "../services/manufacturerSettlementService.js";
 import { serializeManufacturerSettlementHistory } from "../services/manufacturerSettlementReportingService.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "../services/portalNotificationService.js";
 
 const actorContext = (req) => ({
   actorId: req.auth?.accountId || null,
@@ -188,6 +192,15 @@ export const createManufacturerSettlementRequest = async (req, res) => {
             entityId: created.id,
             afterState: { requestType: created.requestType, amount: input.amount.toFixed(2), status: created.status },
           }, { client: tx });
+          await createAdminPortalNotifications(tx, {
+            category: "MANUFACTURER_SETTLEMENT",
+            title: "New manufacturer settlement request",
+            message: `${input.requestType.toLowerCase()} settlement request ${created.id} for Rs ${input.amount.toFixed(2)} is awaiting review.`,
+            href: `/manufacturers/${encodeURIComponent(created.manufacturerId)}?tab=settlements`,
+            entityType: "ManufacturerSettlementRequest",
+            entityId: created.id,
+            dedupeKey: `MANUFACTURER_SETTLEMENT_REQUESTED:${created.id}`,
+          });
           return created;
         }, { isolationLevel: "Serializable" });
         break;
@@ -430,6 +443,18 @@ export const payManufacturerSettlement = async (req, res) => {
             bankEvidenceReference: String(req.body.bankEvidenceReference).trim(),
           },
         }, { client: tx });
+        await createPortalNotificationForProfile(tx, {
+          profileType: "manufacturer",
+          profileId: request.manufacturerId,
+          recipientRole: "MANUFACTURER",
+          category: "MANUFACTURER_SETTLEMENT",
+          title: "Settlement payment updated",
+          message: `Admin confirmed Rs ${amount.toFixed(2)} for settlement request ${request.id}. Status: ${nextStatus.toLowerCase()}.`,
+          href: "/finance",
+          entityType: "ManufacturerSettlementRequest",
+          entityId: request.id,
+          dedupeKey: `MANUFACTURER_SETTLEMENT_PAID:${payout.id}`,
+        });
         return { settlementId: request.id, journalEntryId: journal.id, amount, documentAllocation, freightSettlementReconciliation };
       },
     });

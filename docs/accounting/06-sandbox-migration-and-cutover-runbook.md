@@ -218,6 +218,8 @@ Supply these values to the process from an approved secret manager or other auth
 
 `npm run db:push` requires both migration and maintenance profiles because it can change schema and seed data. `npm run db:reset` remains destructive even when its safety preflight accepts a target; this runbook does not authorize running it. Prefer migration deployment against a DBA-provisioned disposable schema. Direct `npx prisma db ...` commands bypass the package-script wrappers and are not an approved execution route.
 
+For a failed migration, inspect the target schema and migration record before recovery. Use the guarded `npm run db:migrate:resolve -- --rolled-back <migration-name>` wrapper only after confirming the failed migration left no partial objects; then rerun `npm run db:migrate:deploy`. Do not mark a migration rolled back based only on the CLI error.
+
 ### Executable isolated-test instructions
 
 After an independent DBA verifies and provisions an isolated target, load the integration variables above into the current PowerShell process from the approved secret mechanism. Set `DATABASE_URL` and `ACCOUNTING_TEST_DATABASE_URL` to the same approved value and supply the matching verified metadata. Then, from `backend/`, run:

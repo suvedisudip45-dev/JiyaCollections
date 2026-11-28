@@ -62,7 +62,9 @@ const createSettlementHarness = ({
   };
   const tx = {
     $queryRaw: async () => [],
-    distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
+    distributor: { findUnique: async () => ({ id: "dist-1", accountId: "distributor-account-1", name: "Distributor One" }) },
+    authAccount: { findMany: async () => [] },
+    portalNotification: { createMany: async ({ data }) => ({ count: data.length }) },
     distributorSettlementRequestToken: {
       findUnique: async ({ where }) => state.requestTokens.find((request) =>
         request.id === where.id || request.idempotencyKey === where.idempotencyKey

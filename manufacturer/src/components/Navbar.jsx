@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "react-toastify";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 import { LogOut, MapPin, Star, ShieldCheck, ArrowLeftRight, Building, Wifi, WifiOff } from "lucide-react";
+import NotificationBell from "./NotificationBell";
 
 const Navbar = () => {
   const {
@@ -85,6 +86,7 @@ const Navbar = () => {
 
       {/* Right: Actions */}
       <div className="flex w-full items-center justify-between gap-1.5 sm:w-auto sm:justify-end sm:gap-3">
+        <NotificationBell key={activeWorkspace} workspace={activeWorkspace} />
 
         {/* Distributor Online/Offline Toggle — only in distributor view */}
         {isDistributorView && (

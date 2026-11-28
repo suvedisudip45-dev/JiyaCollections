@@ -239,6 +239,11 @@ platform/admin settlement, never payable to the manufacturer or distributor.
 
 The admin app is structured as a protected workspace with a sidebar layout (`Sidebar`) and an authenticated session check in `Admin/src/App.jsx`. Access to pages is gated by `ADMIN_ROUTE_PERMISSIONS` and `PermissionsContext`.
 
+The top navigation includes a notification bell backed by `/api/portal-notifications`.
+It polls the unread count, loads newest-first batches of ten as the user scrolls,
+and marks a notification read when opened. Admin inbox entries are account-scoped;
+the notification service fans Admin events out only to active Admin accounts.
+
 ### Admin routes and modules
 
 The application exposes modules such as:
@@ -350,6 +355,13 @@ and letter links/actions follow the public platform feature configuration.
 New database seeds leave these optional features disabled until an admin enables
 them; core production, transfer, ordering, and delivery actions remain available.
 Turning a flag off does not delete loyalty or personalized-letter history. Its route list includes:
+
+The shared top navigation includes a notification bell for Manufacturer and
+Distributor workspaces. It displays the current workspace's unread count and
+loads newest-first batches of ten on scroll; clicking an item marks it read.
+Switching workspaces clears and reloads the inbox so notifications remain
+separated by account and active role. The restricted Driver workspace and
+Marketing Partner portal do not use this inbox.
 
 | Route | Purpose |
 | --- | --- |

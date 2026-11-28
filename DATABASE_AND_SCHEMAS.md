@@ -49,7 +49,7 @@ on its name, edit an already-deployed migration, or use `db push`, `db:sync`, or
 | Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine`, `CollaborationFeeCreditApplication` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled; verified partner credits can be offset against later invoices |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `AccountingActionApproval`, `AccountingActionApprovalEvent`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord`, `NepaliCalendarYear` | double-entry accounting, operational finance, and sequenced maker-checker approval records; admin-defined BS year mappings link month lengths to a Gregorian Baisakh 1 date |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `NcmSettlementBatch`, `NcmSettlementBatchItem`, `NcmSettlementVarianceResolution`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, carrier-fee settlement, bulk COD remittances, and evidenced variance resolution |
-| Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
+| Access & notifications | `Notification`, `PortalNotification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | outbound messaging, role-scoped portal inbox, access governance, and cross-domain audit events |
 | Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content; optional HTTPS `logoImage` is shared by the storefront header/footer, alongside retained, versioned customer Terms & Conditions acceptance events |
 
 ## 3. Major Schemas
@@ -71,6 +71,16 @@ Customer disable state is stored on `User`, not by deleting or replacing the ide
 | `Role` | `code`, `name`, `portalScope`, `permissions` | Portal-specific role definitions |
 | `Permission` | `code`, `description`, `isActive` | Fine-grained permission values |
 | `AuthAuditLog` | `identifier`, `action`, `status`, `metadata` | Security/audit trail |
+
+`PortalNotification` is separate from the outbound SMS/email `Notification`
+pipeline. Each row is scoped to an `AuthAccount` and the workspace role that
+received it; the unique `(recipientAccountId, recipientRole, dedupeKey)` key
+prevents duplicate delivery of the same event to that inbox. List and unread
+queries use the same account/role pair, and the additive
+`20261128202041_add_portal_notifications` migration must be applied before
+deploying code that writes or reads the portal inbox. The model stores a short
+display message and an internal application path, not an external notification
+payload.
 
 The password reset timestamp enforces a rolling seven-day interval, while the monthly quota key uses the UTC calendar month. Recovery requires matching account email and phone plus the active primary role/profile for the selected portal; role mappings for other workspaces do not grant cross-portal recovery. Ineligible accounts return a portal-specific not-found response, intentionally disclosing portal eligibility. Before creating a challenge or SMS, the flow enforces one OTP request per rolling seven days and at most three per month; quota violations return HTTP 429. These quota fields are in the checked-in `0_init` baseline; older notes that refer to `20261016000000_add_password_reset_limits` refer to a migration absent from this repository and must not be used as a deployment command.
 

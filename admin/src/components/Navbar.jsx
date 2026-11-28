@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { assets } from "../assets/assets";
 import { usePermissions } from "../auth/PermissionsContext";
 import { revokeAuthSession } from "../auth/tokenStorage";
+import NotificationBell from "./NotificationBell";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
@@ -86,6 +87,7 @@ const Navbar = ({ setToken, onToggleSidebar }) => {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
+          <NotificationBell />
           <button
             type="button"
             onClick={() => setQuickNavOpen(true)}

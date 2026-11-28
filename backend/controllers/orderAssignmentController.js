@@ -18,6 +18,7 @@ import { isDistributorLocalDeliveryEligible } from "../services/deliveryLocation
 import { resolveLocationEntry } from "../utils/nepalLocationData.js";
 import { resolveSellerTaxTreatment } from "../services/sellerTaxProfileService.js";
 import { validatePaperBillChoice } from "../services/paperBillService.js";
+import { createPortalNotificationForProfile } from "../services/portalNotificationService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -634,6 +635,18 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
         },
       });
       await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "distributor",
+        profileId: selected.id,
+        recipientRole: "DISTRIBUTOR",
+        category: "ORDER_ASSIGNMENT",
+        title: "New order assigned",
+        message: `Order ${orderId} has been assigned to your distributor workspace.`,
+        href: `/orders/${encodeURIComponent(orderId)}`,
+        entityType: "Order",
+        entityId: orderId,
+        dedupeKey: `ORDER_ASSIGNMENT:${orderId}:${selected.id}`,
+      });
       await recordSystemAudit(actor, {
         action: forcePreferredDistributorId ? "ORDER_ADMIN_ASSIGNED_DISTRIBUTOR" : "ORDER_AUTO_ASSIGNED",
         entityType: "Order",

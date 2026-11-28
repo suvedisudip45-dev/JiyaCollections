@@ -19,6 +19,7 @@
     "dev": "nodemon server.js",
     "build": "prisma generate",
     "db:migrate:deploy": "node scripts/assertDatabaseToolTarget.js migration && prisma migrate deploy",
+    "db:migrate:resolve": "node scripts/assertDatabaseToolTarget.js migration && prisma migrate resolve",
     "db:migrate:test": "node scripts/assertDatabaseToolTarget.js testMigration && prisma migrate deploy",
     "db:push": "node scripts/assertDatabaseToolTarget.js migration maintenance && prisma db push && prisma db seed",
     "db:sync": "node scripts/assertDatabaseToolTarget.js migration && prisma migrate dev",

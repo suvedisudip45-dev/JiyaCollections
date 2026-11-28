@@ -9,6 +9,10 @@ import { hasValidVatSupplierIdentity } from "../services/manufacturerTaxIdentity
 import { resolveSellerTaxTreatment } from "../services/sellerTaxProfileService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "../services/portalNotificationService.js";
+import {
   calculateProductionUnitCost,
   calculateFullyLoadedUnitCogs,
   normalizeProductionVatTerms,
@@ -288,6 +292,18 @@ export const createAdminProductionRequest = async (req, res) => {
           batches: plan.batches,
         },
       }, { client: tx });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: manufacturerId,
+        recipientRole: "MANUFACTURER",
+        category: "PRODUCTION_REQUEST",
+        title: "New production order",
+        message: `Admin sent production request ${created.id}. Review the plan and submit your quote.`,
+        href: "/production",
+        entityType: "ManufacturerProductionRequest",
+        entityId: created.id,
+        dedupeKey: `PRODUCTION_REQUEST_CREATED:${created.id}`,
+      });
       return created;
     }, { isolationLevel: "Serializable" });
     return res.status(201).json({ success: true, message: "Production order sent to the manufacturer for a cost quote.", request });
@@ -408,6 +424,18 @@ export const updateAdminProductionRequest = async (req, res) => {
           batches: plan.batches,
         },
       }, { client: tx });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: manufacturerId,
+        recipientRole: "MANUFACTURER",
+        category: "PRODUCTION_REQUEST",
+        title: "Production order updated",
+        message: `Admin updated production request ${requestId}. Review it and submit a new quote.`,
+        href: "/production",
+        entityType: "ManufacturerProductionRequest",
+        entityId: requestId,
+        dedupeKey: `PRODUCTION_REQUEST_UPDATED:${requestId}:${new Date().toISOString()}`,
+      });
       return tx.manufacturerProductionRequest.findUnique({
         where: { id: requestId },
         include: {
@@ -483,6 +511,7 @@ export const submitManufacturerProductionQuote = async (req, res) => {
     if (quote.vatTreatment !== "EXEMPT" && !hasValidVatSupplierIdentity(request.manufacturer)) {
       return res.status(400).json({ success: false, message: "The manufacturer profile must declare VAT and contain a 9-digit VAT ID before VAT can be quoted." });
     }
+    const quoteSubmittedAt = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       const claimed = await tx.manufacturerProductionRequest.updateMany({
         where: { id, manufacturerId: req.manufacturerId, status: "PENDING_MANUFACTURER_QUOTE" },
@@ -510,6 +539,15 @@ export const submitManufacturerProductionQuote = async (req, res) => {
           manufacturerNote: quote.manufacturerNote,
         },
       }, { client: tx });
+      await createAdminPortalNotifications(tx, {
+        category: "PRODUCTION_REQUEST",
+        title: "Manufacturer submitted a production quote",
+        message: `A production quote for request ${id} is waiting for Admin review.`,
+        href: "/manufacturer-production",
+        entityType: "ManufacturerProductionRequest",
+        entityId: id,
+        dedupeKey: `PRODUCTION_QUOTE_SUBMITTED:${id}:${quoteSubmittedAt.getTime()}`,
+      });
       return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
     }, { isolationLevel: "Serializable" });
     return res.json({ success: true, message: "Production quote submitted for admin approval.", request: updated });
@@ -577,6 +615,7 @@ export const reviewProductionRequest = async (req, res) => {
         throw Object.assign(new Error("A valid, non-future supplier VAT invoice date is required when verifying the invoice."), { statusCode: 400 });
       }
       const plannedQuantity = requestedQuantity;
+      const quoteReviewedAt = new Date();
       let inventoryUnitCogs = null;
       if (isApproval) {
         if (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !otherCost.isFinite() || otherCost.isNegative()) {
@@ -604,7 +643,7 @@ export const reviewProductionRequest = async (req, res) => {
           status: decision === "APPROVE" ? "APPROVED" : "REJECTED",
           adminNote: adminNote || null,
           reviewedBy: req.auth?.accountId || null,
-          reviewedAt: new Date(),
+          reviewedAt: quoteReviewedAt,
           ...(decision === "APPROVE" ? {
             approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
             approvedMinimumOrderQuantity: requestedQuantity,
@@ -665,6 +704,18 @@ export const reviewProductionRequest = async (req, res) => {
           } : {}),
         },
       }, { client: tx });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: request.manufacturerId,
+        recipientRole: "MANUFACTURER",
+        category: "PRODUCTION_REVIEW",
+        title: decision === "APPROVE" ? "Production quote approved" : "Production quote declined",
+        message: `Admin ${decision === "APPROVE" ? "approved" : "declined"} the quote for production request ${request.id}.`,
+        href: "/production",
+        entityType: "ManufacturerProductionRequest",
+        entityId: request.id,
+        dedupeKey: `PRODUCTION_QUOTE_REVIEWED:${request.id}:${decision}:${quoteReviewedAt.getTime()}`,
+      });
       return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
     }, { isolationLevel: "Serializable" });
 
@@ -733,12 +784,13 @@ export const submitProductionForAdminAcceptance = async (req, res) => {
       }
       const validatedChecklist = validatePostProductionChecklist(req.body.checklist || req.body, request.lines);
       const status = validatedChecklist.passed ? "PENDING_ADMIN_ACCEPTANCE" : "POST_CHECK_FAILED";
+      const submittedAt = new Date();
       const claimed = await tx.manufacturerProductionRequest.updateMany({
         where: { id, manufacturerId: req.manufacturerId, status: request.status },
         data: {
           status,
           postProductionChecklist: validatedChecklist,
-          postProductionCheckedAt: new Date(),
+          postProductionCheckedAt: submittedAt,
           productionReviewDecision: null,
           productionReviewedBy: null,
           productionReviewedAt: null,
@@ -763,6 +815,17 @@ export const submitProductionForAdminAcceptance = async (req, res) => {
         beforeState: { status: request.status },
         afterState: { status, checklist: validatedChecklist },
       }, { client: tx });
+      if (validatedChecklist.passed) {
+        await createAdminPortalNotifications(tx, {
+          category: "PRODUCTION_REVIEW",
+          title: "Production receipt awaiting acceptance",
+          message: `Production request ${request.id} has passed manufacturer inspection and is waiting for Admin acceptance.`,
+          href: "/manufacturer-production",
+          entityType: "ManufacturerProductionRequest",
+          entityId: request.id,
+          dedupeKey: `PRODUCTION_RECEIPT_SUBMITTED:${request.id}:${submittedAt.getTime()}`,
+        });
+      }
       return { status, requestId: request.id };
     }, { isolationLevel: "Serializable" });
 
@@ -828,13 +891,14 @@ export const completeProduction = async (req, res) => {
       }
 
       if (decision === "REJECT") {
+        const receiptReviewAt = new Date();
         await tx.manufacturerProductionRequest.update({
           where: { id: request.id },
           data: {
             status: "POST_CHECK_FAILED",
             productionReviewDecision: decision,
             productionReviewedBy: req.auth?.accountId || null,
-            productionReviewedAt: new Date(),
+            productionReviewedAt: receiptReviewAt,
             productionReviewNote: reviewNote || null,
           },
         });
@@ -845,6 +909,18 @@ export const completeProduction = async (req, res) => {
           beforeState: { status: request.status, checklist },
           afterState: { status: "POST_CHECK_FAILED", decision, reviewNote: reviewNote || null },
         }, { client: tx });
+        await createPortalNotificationForProfile(tx, {
+          profileType: "manufacturer",
+          profileId: request.manufacturerId,
+          recipientRole: "MANUFACTURER",
+          category: "PRODUCTION_REVIEW",
+          title: "Production receipt needs rework",
+          message: `Admin rejected the inspection for production request ${request.id}. Review the note and resubmit after rework.`,
+          href: "/production",
+          entityType: "ManufacturerProductionRequest",
+          entityId: request.id,
+          dedupeKey: `PRODUCTION_RECEIPT_REVIEWED:${request.id}:REJECT:${receiptReviewAt.getTime()}`,
+        });
         return { rejected: true, requestId: request.id };
       }
 
@@ -1032,6 +1108,18 @@ export const completeProduction = async (req, res) => {
           deliveryOverheadAccrued: request.costTermsVersion >= 2 ? "0.00" : batchOtherCost.toFixed(2),
         },
       }, { client: tx });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: request.manufacturerId,
+        recipientRole: "MANUFACTURER",
+        category: "PRODUCTION_REVIEW",
+        title: "Production receipt accepted",
+        message: `Admin accepted production request ${request.id}; good units were recorded in inventory.`,
+        href: "/production",
+        entityType: "ManufacturerProductionRequest",
+        entityId: request.id,
+        dedupeKey: `PRODUCTION_RECEIPT_REVIEWED:${request.id}:ACCEPT`,
+      });
       return {
         requestId: request.id,
         productId: product.id,

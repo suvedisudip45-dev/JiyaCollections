@@ -95,11 +95,13 @@ const installAllocationMocks = (t, {
   });
   stubMethod(t, prisma, "$transaction", async (callback) => callback({
     distributor: {
+      findUnique: async ({ where }) => ({ id: where.id, accountId: `account-${where.id}` }),
       findFirst: async ({ where }) => {
         const selected = distributors.find((distributor) => distributor.id === where.id);
         return selected && !inactiveInTransaction.includes(selected.id) ? { id: selected.id } : null;
       },
     },
+    portalNotification: { createMany: async () => ({ count: 1 }) },
     order: {
       updateMany: async () => {
         transactionEvents.push("order-claimed");

@@ -459,6 +459,7 @@ test("package migration, reset, push, and seed commands invoke the preflight wra
   const packageJson = JSON.parse(source("package.json"));
   const { scripts } = packageJson;
   assert.match(scripts["db:migrate:deploy"], /assertDatabaseToolTarget\.js migration/);
+  assert.match(scripts["db:migrate:resolve"], /assertDatabaseToolTarget\.js migration/);
   assert.match(scripts["db:migrate:test"], /assertDatabaseToolTarget\.js testMigration/);
   assert.match(scripts["db:sync"], /assertDatabaseToolTarget\.js migration/);
   assert.match(scripts["db:reset"], /assertDatabaseToolTarget\.js migration/);

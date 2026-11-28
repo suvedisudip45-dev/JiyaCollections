@@ -88,6 +88,8 @@ test("Customer order cancellation restores redeemed marketing card benefit to CL
 
   stubMethod(t, prisma, "$transaction", async (callback) => {
     const tx = {
+      authAccount: { findMany: async () => [] },
+      portalNotification: { createMany: async () => ({ count: 0 }) },
       order: {
         findFirst: async () => fakeOrder,
         findUnique: async () => ({ ...fakeOrder, status: "Cancelled" }),

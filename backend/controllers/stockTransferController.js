@@ -7,6 +7,10 @@ import { buildManufacturerStockMovements } from "../services/manufacturerInvento
 import { syncProductStock } from "../services/stockSyncService.js";
 import { postManufacturerLogisticsAccounting } from "../services/accountingPostingEngine.js";
 import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "../services/portalNotificationService.js";
+import {
   normalizeDistributorInboundChecklist,
   normalizeDistributorStockDecrease,
 } from "../services/distributorStockService.js";
@@ -778,7 +782,7 @@ export const createStockTransferRequest = async (req, res) => {
         approvedQuantity: autoApproval.shouldAutoApprove ? line.requestedQuantity : 0,
       }));
 
-      return tx.stockTransfer.create({
+      const created = await tx.stockTransfer.create({
         data: {
           manufacturerId,
           distributorId: req.distributorId,
@@ -793,6 +797,31 @@ export const createStockTransferRequest = async (req, res) => {
         },
         include: transferInclude,
       });
+      if (initialStatus === "PENDING_ADMIN_APPROVAL") {
+        await createAdminPortalNotifications(tx, {
+          category: "STOCK_TRANSFER",
+          title: "New bulk stock request",
+          message: `${created.distributor.name} requested stock from ${created.manufacturer.name}.`,
+          href: `/stock-transfers/${encodeURIComponent(created.id)}`,
+          entityType: "StockTransfer",
+          entityId: created.id,
+          dedupeKey: `STOCK_TRANSFER_REQUESTED:${created.id}`,
+        });
+      } else {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "manufacturer",
+          profileId: created.manufacturerId,
+          recipientRole: "MANUFACTURER",
+          category: "STOCK_TRANSFER",
+          title: "New approved distributor stock request",
+          message: `${created.distributor.name} submitted an approved stock request.`,
+          href: `/bulk-transfers/${encodeURIComponent(created.id)}`,
+          entityType: "StockTransfer",
+          entityId: created.id,
+          dedupeKey: `STOCK_TRANSFER_APPROVED:${created.id}`,
+        });
+      }
+      return created;
     }, { isolationLevel: "Serializable" });
     return res.status(201).json({ success: true, transfer });
   } catch (error) {
@@ -1076,7 +1105,7 @@ export const reviewStockTransferRequest = async (req, res) => {
           where: { stockTransferId: current.id },
           data: { approvedQuantity: 0 },
         });
-        return tx.stockTransfer.update({
+        const rejected = await tx.stockTransfer.update({
           where: { id: current.id },
           data: {
             status: "REJECTED",
@@ -1086,6 +1115,19 @@ export const reviewStockTransferRequest = async (req, res) => {
           },
           include: transferInclude,
         });
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: rejected.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "STOCK_TRANSFER",
+          title: "Stock request declined",
+          message: `Your bulk stock request ${rejected.id} was declined by Admin.`,
+          href: `/distributor/demand/${encodeURIComponent(rejected.id)}`,
+          entityType: "StockTransfer",
+          entityId: rejected.id,
+          dedupeKey: `STOCK_TRANSFER_REVIEWED:${rejected.id}:REJECTED`,
+        });
+        return rejected;
       }
       const approvalLines = normalizeApprovalLines(req.body?.lines, current.lines);
       const balanceBySku = await tx.inventoryBalance.findMany({
@@ -1110,7 +1152,7 @@ export const reviewStockTransferRequest = async (req, res) => {
           data: { approvedQuantity: line.approvedQuantity },
         });
       }
-      return tx.stockTransfer.update({
+      const approved = await tx.stockTransfer.update({
         where: { id: current.id },
         data: {
           status: "APPROVED",
@@ -1120,6 +1162,33 @@ export const reviewStockTransferRequest = async (req, res) => {
         },
         include: transferInclude,
       });
+      await Promise.all([
+        createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: approved.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "STOCK_TRANSFER",
+          title: "Stock request approved",
+          message: `Your bulk stock request ${approved.id} was approved by Admin.`,
+          href: `/distributor/demand/${encodeURIComponent(approved.id)}`,
+          entityType: "StockTransfer",
+          entityId: approved.id,
+          dedupeKey: `STOCK_TRANSFER_REVIEWED:${approved.id}:APPROVED`,
+        }),
+        createPortalNotificationForProfile(tx, {
+          profileType: "manufacturer",
+          profileId: approved.manufacturerId,
+          recipientRole: "MANUFACTURER",
+          category: "STOCK_TRANSFER",
+          title: "New approved distributor stock request",
+          message: `${approved.distributor.name} has an approved stock request ready for preparation.`,
+          href: `/bulk-transfers/${encodeURIComponent(approved.id)}`,
+          entityType: "StockTransfer",
+          entityId: approved.id,
+          dedupeKey: `STOCK_TRANSFER_APPROVED:${approved.id}`,
+        }),
+      ]);
+      return approved;
     }, { isolationLevel: "Serializable" });
     return res.json({ success: true, transfer });
   } catch (error) {
@@ -1195,6 +1264,18 @@ export const dispatchManualStockTransfer = async (req, res) => {
           client: tx,
         });
       }
+      await createPortalNotificationForProfile(tx, {
+        profileType: "distributor",
+        profileId: transfer.distributorId,
+        recipientRole: "DISTRIBUTOR",
+        category: "STOCK_TRANSFER",
+        title: "Stock transfer dispatched",
+        message: `Stock transfer ${transfer.id} has been dispatched by ${deliveryPartner}.`,
+        href: `/distributor/demand/${encodeURIComponent(transfer.id)}`,
+        entityType: "StockTransferShipment",
+        entityId: updatedShipment.id,
+        dedupeKey: `STOCK_TRANSFER_DISPATCHED:${updatedShipment.id}`,
+      });
       return { shipment: updatedShipment, replayed: false };
     }, { isolationLevel: "Serializable" });
     return res.status(outcome.replayed ? 200 : 201).json({ success: true, ...outcome });
@@ -1610,6 +1691,40 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
       },
       select: { id: true, status: true, ncmStatus: true },
     });
+    if (!isStaleEvent && String(status || "").toLowerCase() === "delivered") {
+      const transfer = await tx.stockTransfer.findUnique({
+        where: { id: current.stockTransferId },
+        select: { id: true, manufacturerId: true, distributorId: true },
+      });
+      if (transfer) {
+        await Promise.all([
+          createPortalNotificationForProfile(tx, {
+            profileType: "distributor",
+            profileId: transfer.distributorId,
+            recipientRole: "DISTRIBUTOR",
+            category: "STOCK_TRANSFER",
+            title: "Stock transfer delivered",
+            message: `NCM confirmed delivery for stock transfer ${transfer.id}. Record the receipt checklist.`,
+            href: `/distributor/demand/${encodeURIComponent(transfer.id)}`,
+            entityType: "StockTransferShipment",
+            entityId: current.id,
+            dedupeKey: `STOCK_TRANSFER_NCM_DELIVERED:${current.id}`,
+          }),
+          createPortalNotificationForProfile(tx, {
+            profileType: "manufacturer",
+            profileId: transfer.manufacturerId,
+            recipientRole: "MANUFACTURER",
+            category: "STOCK_TRANSFER",
+            title: "Stock transfer delivered",
+            message: `NCM confirmed delivery of stock transfer ${transfer.id} to the distributor.`,
+            href: `/bulk-transfers/${encodeURIComponent(transfer.id)}`,
+            entityType: "StockTransferShipment",
+            entityId: current.id,
+            dedupeKey: `STOCK_TRANSFER_NCM_DELIVERED:${current.id}:MANUFACTURER`,
+          }),
+        ]);
+      }
+    }
     return {
       shipmentId: updated.id,
       shipmentStatus: updated.status,
@@ -2296,6 +2411,31 @@ export const receiveStockTransferShipment = async (req, res) => {
           ...(["RECEIVED", "DISCREPANCY"].includes(transferStatus) ? { completedAt: new Date() } : {}),
         },
       });
+      await createPortalNotificationForProfile(tx, {
+        profileType: "manufacturer",
+        profileId: shipment.stockTransfer.manufacturerId,
+        recipientRole: "MANUFACTURER",
+        category: hasDiscrepancy ? "INVENTORY_DISCREPANCY" : "STOCK_TRANSFER",
+        title: hasDiscrepancy ? "Distributor reported a stock discrepancy" : "Distributor confirmed stock receipt",
+        message: hasDiscrepancy
+          ? `The receipt for stock transfer ${shipment.stockTransferId} includes damaged or missing units.`
+          : `The distributor recorded receipt of stock transfer ${shipment.stockTransferId}.`,
+        href: `/bulk-transfers/${encodeURIComponent(shipment.stockTransferId)}`,
+        entityType: hasDiscrepancy ? "InventoryDiscrepancy" : "StockTransferReceipt",
+        entityId: receipt.id,
+        dedupeKey: `STOCK_TRANSFER_RECEIPT:${receipt.id}:MANUFACTURER`,
+      });
+      if (hasDiscrepancy) {
+        await createAdminPortalNotifications(tx, {
+          category: "INVENTORY_DISCREPANCY",
+          title: "Stock transfer receipt needs review",
+          message: `The distributor reported damaged or missing units on stock transfer ${shipment.stockTransferId}.`,
+          href: `/stock-transfers/${encodeURIComponent(shipment.stockTransferId)}`,
+          entityType: "InventoryDiscrepancy",
+          entityId: receipt.id,
+          dedupeKey: `STOCK_TRANSFER_DISCREPANCY:${receipt.id}`,
+        });
+      }
       return { receipt, replayed: false, shipmentStatus: shipmentComplete ? (shipmentHasDiscrepancy ? "DISCREPANCY" : "DELIVERED") : "PARTIALLY_RECEIVED", transferStatus };
     }, { isolationLevel: "Serializable" });
     return res.status(outcome.replayed ? 200 : 201).json({ success: true, ...outcome });

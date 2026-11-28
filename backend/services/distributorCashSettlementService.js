@@ -5,6 +5,10 @@ import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 import { postJournalEntry, postSupplierPaymentAccounting } from "./accountingPostingEngine.js";
 import { recordSystemAudit } from "./auditService.js";
 import { parseNprAmountString } from "./accountingDecimal.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "./portalNotificationService.js";
 
 const fail = (message, statusCode = 400, code = "DISTRIBUTOR_CASH_ERROR") => {
   const error = new Error(message);
@@ -1879,6 +1883,18 @@ export const postDistributorBalanceSettlement = async ({
               notes: requestNotes,
             },
           }, { client: tx });
+          await createPortalNotificationForProfile(tx, {
+            profileType: "distributor",
+            profileId: distributorId,
+            recipientRole: "DISTRIBUTOR",
+            category: "DISTRIBUTOR_SETTLEMENT",
+            title: "New settlement request",
+            message: `Admin created a ${request.direction === "COMPANY_PAYS" ? "payout" : "collection"} request for NPR ${amount.toFixed(2)}.`,
+            href: "/distributor/finance",
+            entityType: "DistributorSettlementRequestToken",
+            entityId: request.id,
+            dedupeKey: `DISTRIBUTOR_SETTLEMENT_REQUEST:${request.id}`,
+          });
           return { success: true, request, isReplay: false };
         }, { isolationLevel: "Serializable" });
       };
@@ -1901,25 +1917,36 @@ export const postDistributorBalanceSettlement = async ({
         );
         const reference = validateText(transferReference, "Transfer reference", 191, { required: true });
         const evidence = validateText(evidenceUrl, "Evidence URL", 2000, { required: true });
-        const request = await client.distributorSettlementRequestToken.findFirst({
-          where: { id: requestId, distributorId, direction: "COMPANY_COLLECTS", status: "REQUESTED" },
+        return runSerializable(client, async (tx) => {
+          const request = await tx.distributorSettlementRequestToken.findFirst({
+            where: { id: requestId, distributorId, direction: "COMPANY_COLLECTS", status: "REQUESTED" },
+          });
+          if (!request) throw fail("This collection request is not open for transfer evidence.", 409, "SETTLEMENT_REQUEST_NOT_OPEN");
+          const updated = await tx.distributorSettlementRequestToken.updateMany({
+            where: { id: request.id, status: "REQUESTED" },
+            data: {
+              status: "EVIDENCE_SUBMITTED",
+              transferReference: reference,
+              evidenceUrl: evidence,
+              evidenceSubmittedAt: now,
+              evidenceSubmittedByAccountId,
+            },
+          });
+          if (updated.count !== 1) throw fail("This request changed while submitting evidence. Refresh and retry.", 409, "SETTLEMENT_REQUEST_CONFLICT");
+          await createAdminPortalNotifications(tx, {
+            category: "DISTRIBUTOR_SETTLEMENT",
+            title: "Distributor submitted settlement evidence",
+            message: `A distributor submitted transfer evidence for settlement request ${request.id}.`,
+            href: `/distributors/${encodeURIComponent(distributorId)}`,
+            entityType: "DistributorSettlementRequestToken",
+            entityId: request.id,
+            dedupeKey: `DISTRIBUTOR_SETTLEMENT_EVIDENCE:${request.id}`,
+          });
+          return {
+            success: true,
+            request: await tx.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
+          };
         });
-        if (!request) throw fail("This collection request is not open for transfer evidence.", 409, "SETTLEMENT_REQUEST_NOT_OPEN");
-        const updated = await client.distributorSettlementRequestToken.updateMany({
-          where: { id: request.id, status: "REQUESTED" },
-          data: {
-            status: "EVIDENCE_SUBMITTED",
-            transferReference: reference,
-            evidenceUrl: evidence,
-            evidenceSubmittedAt: now,
-            evidenceSubmittedByAccountId,
-          },
-        });
-        if (updated.count !== 1) throw fail("This request changed while submitting evidence. Refresh and retry.", 409, "SETTLEMENT_REQUEST_CONFLICT");
-        return {
-          success: true,
-          request: await client.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
-        };
       };
 
       export const reviewDistributorSettlementRequestToken = async ({
@@ -1992,6 +2019,18 @@ export const postDistributorBalanceSettlement = async ({
               beforeState: { status: request.status },
               afterState: { status: "REJECTED", reviewNotes: notes },
             }, { client: tx });
+            await createPortalNotificationForProfile(tx, {
+              profileType: "distributor",
+              profileId: distributorId,
+              recipientRole: "DISTRIBUTOR",
+              category: "DISTRIBUTOR_SETTLEMENT",
+              title: "Settlement evidence declined",
+              message: `Admin declined the evidence for settlement request ${request.id}. Review the reason and resubmit.`,
+              href: "/distributor/finance",
+              entityType: "DistributorSettlementRequestToken",
+              entityId: request.id,
+              dedupeKey: `DISTRIBUTOR_SETTLEMENT_REVIEWED:${request.id}:REJECTED`,
+            });
             return {
               success: true,
               request: await tx.distributorSettlementRequestToken.findUnique({ where: { id: request.id } }),
@@ -2038,6 +2077,18 @@ export const postDistributorBalanceSettlement = async ({
               reviewedByAccountId: reviewerAdminAccountId,
               reviewNotes: notes,
             },
+          });
+          await createPortalNotificationForProfile(tx, {
+            profileType: "distributor",
+            profileId: distributorId,
+            recipientRole: "DISTRIBUTOR",
+            category: "DISTRIBUTOR_SETTLEMENT",
+            title: "Settlement evidence verified",
+            message: `Admin verified settlement request ${request.id} and recorded the transfer.`,
+            href: "/distributor/finance",
+            entityType: "DistributorSettlementRequestToken",
+            entityId: request.id,
+            dedupeKey: `DISTRIBUTOR_SETTLEMENT_REVIEWED:${request.id}:POSTED`,
           });
           return {
             success: true,
@@ -2101,6 +2152,18 @@ export const postDistributorBalanceSettlement = async ({
               transferSentByAccountId: adminAccountId,
               settlementId: posted.settlement.id,
             },
+          });
+          await createPortalNotificationForProfile(tx, {
+            profileType: "distributor",
+            profileId: distributorId,
+            recipientRole: "DISTRIBUTOR",
+            category: "DISTRIBUTOR_SETTLEMENT",
+            title: "Settlement payment sent",
+            message: `Admin sent payment for settlement request ${request.id}. Confirm receipt in your finance workspace.`,
+            href: "/distributor/finance",
+            entityType: "DistributorSettlementRequestToken",
+            entityId: request.id,
+            dedupeKey: `DISTRIBUTOR_SETTLEMENT_PAYOUT_SENT:${request.id}`,
           });
           return {
             success: true,

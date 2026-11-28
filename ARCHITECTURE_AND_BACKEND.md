@@ -89,6 +89,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/distributor/gifts` | Distributor gift-stock inbox, allocation decisions, order options, and return/loss recording |
 | `/api/distributor` | Distributor direct orders, ledger-backed inventory reads, transfers, delivery, finance, and workspace profile |
 | `/api/notifications` | Notification service endpoints |
+| `/api/portal-notifications` | Authenticated Admin, Manufacturer, and Distributor inbox; account/workspace-scoped listing, unread count, and mark-read |
 | `/api/user` | User profile / account management |
 | `/api/product` | Product creation, listing, publish toggles, stock adjustments |
 | `/api/cart` | Cart add/update/remove flows |

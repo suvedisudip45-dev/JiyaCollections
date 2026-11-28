@@ -13,6 +13,10 @@ import {
   resolveReturnExchangeSettlementRate,
 } from "./returnExchangeSettlementService.js";
 import { resolveOrderTaxPoint, resolveOutputVatRatePercent } from "./sellerTaxProfileService.js";
+import {
+  createAdminPortalNotifications,
+  createPortalNotificationForProfile,
+} from "./portalNotificationService.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
@@ -267,6 +271,31 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
       metadata: { items: processedItems, originalNcmOrderId: order.ncmOrderId, deliveryRoute: order.deliveryRoute, distributorId: order.distributorId, autoApproval },
       idempotencyKey: `RETURN:${created.id}:REQUESTED`,
     });
+    if (actorRole === "CUSTOMER") {
+      await createAdminPortalNotifications(tx, {
+        category: "CUSTOMER_RETURN",
+        title: "New customer return request",
+        message: `A customer submitted a return request for order ${orderId}.`,
+        href: "/returns",
+        entityType: "CustomerReturn",
+        entityId: created.id,
+        dedupeKey: `CUSTOMER_RETURN_REQUESTED:${created.id}`,
+      });
+      if (order.deliveryRoute === "DISTRIBUTOR" && order.distributorId) {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: order.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "CUSTOMER_RETURN",
+          title: "New customer return request",
+          message: `A customer submitted a return request for order ${orderId}.`,
+          href: "/distributor/operations",
+          entityType: "CustomerReturn",
+          entityId: created.id,
+          dedupeKey: `CUSTOMER_RETURN_REQUESTED:${created.id}:${order.distributorId}`,
+        });
+      }
+    }
     return { returnRecord: created, duplicate: false, autoApproved: autoApproval.shouldAutoApprove };
   }, { isolationLevel: "Serializable" });
 
@@ -717,6 +746,20 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
           ...(route.route === "NCM" ? { chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
         },
       }, { client: tx });
+      if (route.route === "DISTRIBUTOR" && route.distributorId) {
+        await createPortalNotificationForProfile(tx, {
+          profileType: "distributor",
+          profileId: route.distributorId,
+          recipientRole: "DISTRIBUTOR",
+          category: "CUSTOMER_RETURN",
+          title: "Return request approved",
+          message: `The return request for order ${current.orderId} was approved. Please process the return.`,
+          href: "/distributor/operations",
+          entityType: "CustomerReturn",
+          entityId: returnId,
+          dedupeKey: `CUSTOMER_RETURN_REVIEWED:${returnId}:${approvedStatus}`,
+        });
+      }
       return { approvedStatus, route };
     }, { isolationLevel: "Serializable" });
     if (decisionResult.route.route === "DISTRIBUTOR") {
@@ -750,6 +793,20 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
       beforeState: { lifecycleStatus: current.lifecycleStatus, refundStatus: current.refundStatus },
       afterState: { lifecycleStatus: "REJECTED_BY_ADMIN", refundStatus: "REJECTED" },
     }, { client: tx });
+    if (current.deliveryRoute === "DISTRIBUTOR" && current.distributorId) {
+      await createPortalNotificationForProfile(tx, {
+        profileType: "distributor",
+        profileId: current.distributorId,
+        recipientRole: "DISTRIBUTOR",
+        category: "CUSTOMER_RETURN",
+        title: "Return request declined",
+        message: `The return request for order ${current.orderId} was declined by Admin.`,
+        href: "/distributor/operations",
+        entityType: "CustomerReturn",
+        entityId: returnId,
+        dedupeKey: `CUSTOMER_RETURN_REVIEWED:${returnId}:REJECTED_BY_ADMIN`,
+      });
+    }
     return tx.customerReturn.findUnique({ where: { id: returnId } });
   }, { isolationLevel: "Serializable" });
 };
