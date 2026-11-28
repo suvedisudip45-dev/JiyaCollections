@@ -369,6 +369,9 @@ The account avatar menu is aligned at the top-right with the bell immediately
 to its left. Manufacturer and Distributor users can update the account image,
 open Pickup setup, switch between available workspaces, request Distributor
 access when eligible, or log out from this menu.
+Distributor order details use a compact, responsive fulfillment progress bar;
+post-handoff statuses continue through delivery progress, and read-only orders
+do not show disabled workflow actions.
 
 | Route | Purpose |
 | --- | --- |

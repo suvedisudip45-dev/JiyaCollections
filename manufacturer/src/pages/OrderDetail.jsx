@@ -522,6 +522,7 @@ const OrderDetail = () => {
     "out_for_delivery",
     "delivered",
     "return_requested",
+    "returned",
   ].includes(assignmentStatus) ||
     Boolean(
       delivery?.ncmOrderId ||
@@ -594,6 +595,34 @@ const OrderDetail = () => {
     : ["ready_for_pickup", "picked_up", "in_transit", "out_for_delivery", "delivered"].includes(workflowStatus)
       ? WORKFLOW_STEPS.length - (isDistributor ? 2 : 1)
       : 0;
+  const DISTRIBUTOR_DELIVERY_STEPS = [
+    { key: "ready_for_pickup", label: "Ready for pickup", description: "The order is ready for collection by the delivery partner." },
+    { key: "picked_up", label: "Picked up", description: "The delivery partner has collected the order." },
+    { key: "in_transit", label: "In transit", description: "The order is moving through the delivery network." },
+    { key: "arrived_at_destination", label: "Arrived at destination", description: "The order has reached its destination hub." },
+    { key: "out_for_delivery", label: "Out for delivery", description: "The order is with the delivery rider." },
+    { key: "delivered", label: "Delivered", description: "The order has been delivered to the customer." },
+  ];
+  const DISTRIBUTOR_RETURN_STEPS = [
+    { key: "return_requested", label: "Return requested", description: "A return has been requested for this order." },
+    { key: "returned", label: "Returned", description: "The order has been returned." },
+  ];
+  const postDispatchStepIndex = isDistributor
+    ? DISTRIBUTOR_DELIVERY_STEPS.findIndex((step) => step.key === workflowStatus)
+    : -1;
+  const returnStepIndex = isDistributor
+    ? DISTRIBUTOR_RETURN_STEPS.findIndex((step) => step.key === workflowStatus)
+    : -1;
+  const progressSteps = postDispatchStepIndex >= 0
+    ? [...WORKFLOW_STEPS, ...DISTRIBUTOR_DELIVERY_STEPS]
+    : returnStepIndex >= 0
+      ? [...WORKFLOW_STEPS, ...DISTRIBUTOR_DELIVERY_STEPS, ...DISTRIBUTOR_RETURN_STEPS.slice(0, returnStepIndex + 1)]
+    : WORKFLOW_STEPS;
+  const progressIndex = postDispatchStepIndex >= 0
+    ? WORKFLOW_STEPS.length + postDispatchStepIndex
+    : returnStepIndex >= 0
+      ? WORKFLOW_STEPS.length + DISTRIBUTOR_DELIVERY_STEPS.length + returnStepIndex
+      : workflowIndex;
   const selfDeliveryAvailable = Boolean(isDistributor && assignment.selfDeliveryAvailable);
   const deliveryActionLabel = workflowStatus === "package_details_complete"
     ? isDistributor
@@ -647,24 +676,27 @@ const OrderDetail = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="mx-auto w-full min-w-0 max-w-5xl space-y-4 sm:space-y-6">
       {/* Top Breadcrumb & Actions */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Link
           to={isDistributor && (workflowStatus === "on_hold" || assignment.deliveryType === "NCM") ? "/ncm" : "/orders"}
-          className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900"
+          className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900"
         >
           <ArrowLeft className="w-4 h-4" />
           Back to Orders
         </Link>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center justify-between gap-3 sm:justify-end">
+          <h1 className="min-w-0 truncate font-mono text-sm font-semibold text-slate-800">
+            Order #{order?.id || assignment.id}
+          </h1>
           <StatusBadge status={assignment.status} />
         </div>
       </div>
 
       <FulfillmentProgressStepper
-        steps={WORKFLOW_STEPS}
-        currentIndex={workflowIndex}
+      steps={progressSteps}
+      currentIndex={progressIndex}
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
         nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : workflowStatus === "on_hold" ? "Waiting for batch dispatch" : "Continue"}
@@ -703,40 +735,42 @@ const OrderDetail = () => {
         )}
         {workflowStatus === "letter_ready" && <button type="button" onClick={() => setChecklistModalOpen(true)} className="w-full rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-4 text-left text-xs font-semibold text-indigo-950 transition hover:border-indigo-300 hover:bg-indigo-100">Open the final checklist to verify every required item before packing.</button>}
         {workflowStatus === "package_details_complete" && isDistributor && (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4">
-            <p className="text-xs font-bold text-emerald-950">Choose how this order will be delivered</p>
+          <div className="space-y-2.5">
+            <p className="text-sm font-semibold text-slate-900">Delivery method</p>
             {selfDeliveryAvailable ? (
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Delivery method">
                 {[
                   {
                     value: "SELF_DELIVERY",
                     title: "Self delivery",
-                    description: "Your distributor hub will deliver and update the order.",
+                    description: "Your hub delivers the order.",
                   },
                   {
                     value: "NCM",
                     title: "NCM delivery",
-                    description: "Hold the packed order for batch NCM pickup booking.",
+                    description: "Hold for courier pickup.",
                   },
                 ].map((option) => (
                   <button
                     key={option.value}
                     type="button"
+                    aria-pressed={deliveryChoice === option.value}
+                    disabled={isDispatchLocked || actionLoading}
                     onClick={() => setDeliveryChoice(option.value)}
-                    className={`rounded-xl border p-3 text-left transition ${
+                    className={`rounded-lg border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
                       deliveryChoice === option.value
-                        ? "border-emerald-700 bg-white ring-1 ring-emerald-700"
-                        : "border-emerald-200 bg-emerald-50 hover:bg-white"
+                        ? "border-emerald-700 bg-emerald-50"
+                        : "border-slate-200 bg-white hover:border-slate-300"
                     }`}
                   >
-                    <span className="block text-xs font-bold text-slate-900">{option.title}</span>
-                    <span className="mt-1 block text-[11px] text-slate-600">{option.description}</span>
+                    <span className="block text-sm font-semibold text-slate-900">{option.title}</span>
+                    <span className="mt-0.5 block text-xs text-slate-600">{option.description}</span>
                   </button>
                 ))}
               </div>
             ) : (
-              <p className="mt-2 text-xs text-emerald-900">
-                Self-delivery is available when the customer is in your district or shares your exact city and province; otherwise use NCM.
+              <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                NCM delivery is required for this destination.
               </p>
             )}
           </div>
@@ -754,7 +788,6 @@ const OrderDetail = () => {
           </div>
         )}
         {workflowStatus === "ready_for_pickup" && isDistributor && assignment.deliveryType === "SELF_DELIVERY" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Self-delivery selected. Track and complete this order in Self-Delivery Management.</p>}
-        {workflowStatus !== "quality_check" && workflowStatus !== "letter_ready" && workflowStatus !== "package_details_complete" && <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-600">{WORKFLOW_STEPS[workflowIndex]?.description}</p>}
       </FulfillmentProgressStepper>
 
       {/* Main Grid */}
@@ -762,61 +795,45 @@ const OrderDetail = () => {
         {/* Left 2 Cols: Order & Packaging Specs */}
         <div className="lg:col-span-2 space-y-6">
           {/* Order Header Card */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
-              <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  Customer Order Reference
-                </span>
-                <h1 className="text-xl font-black text-slate-900 font-mono">
-                  #{order?.id || assignment.id}
-                </h1>
-              </div>
-              <div className="text-right">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Assigned Date
-                </span>
-                <span className="text-xs font-bold text-slate-700">
-                  {new Date(assignment.createdAt).toLocaleString()}
-                </span>
-              </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-6">
+            <div className="mb-4 flex flex-col gap-2 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="text-base font-semibold text-slate-900">Order items</h2>
+              <p className="text-xs text-slate-500">
+                Assigned {new Date(assignment.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+              </p>
             </div>
 
             {/* Items List */}
-            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-3">
-              Manufactured Items &amp; Garments
-            </h3>
             <div className="space-y-3">
               {items.map((item, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center justify-between p-3.5 rounded-xl bg-slate-50 border border-slate-100"
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
                     {item.image ? (
                       <img
                         src={item.image[0] || item.image}
                         alt={item.name}
-                        className="w-12 h-12 rounded-lg object-cover border border-slate-200"
+                        className="h-12 w-12 shrink-0 rounded-lg border border-slate-200 object-cover"
                       />
                     ) : (
-                      <div className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center text-slate-400">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-slate-200 text-slate-400">
                         <Package className="w-6 h-6" />
                       </div>
                     )}
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-900">
+                    <div className="min-w-0">
+                      <h4 className="truncate text-sm font-semibold text-slate-900">
                         {item.name || item.product?.name}
                       </h4>
-                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500">
-                        <span className="font-semibold text-slate-700">Size: {item.size || "Standard"}</span>
-                        <span>•</span>
-                        <span>Qty: {item.quantity || 1}</span>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                        <span>Size {item.size || "Standard"}</span>
+                        <span>Qty {item.quantity || 1}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-xs font-bold text-slate-900 block">
+                  <div className="shrink-0 text-right">
+                    <span className="block text-sm font-semibold text-slate-900">
                       {currency}
                       {((item.price || 0) * (item.quantity || 1)).toLocaleString()}
                     </span>
@@ -829,7 +846,7 @@ const OrderDetail = () => {
             </div>
 
             {/* Order Financials Summary */}
-            <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs">
+            <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 text-xs sm:flex-row sm:items-center sm:justify-between">
               <span className="text-slate-500 font-medium">
                 Payment Type: <strong className="text-slate-800">{order?.paymentMethod || "COD"}</strong>
               </span>
