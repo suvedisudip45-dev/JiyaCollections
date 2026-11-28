@@ -477,8 +477,7 @@ const QrValidatorPage = () => {
 
                 {result.benefits?.length === 0 ? (
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
-                    <span className="text-2xl">🍀</span>
-                    <p className="mt-1 text-xs font-bold text-slate-700">Better Luck Next Time</p>
+                    <p className="text-xs font-bold text-slate-700">No reward</p>
                     <p className="text-[11px] text-slate-500">This card does not carry an attached reward voucher.</p>
                   </div>
                 ) : (

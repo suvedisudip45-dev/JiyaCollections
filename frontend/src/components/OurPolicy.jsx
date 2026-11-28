@@ -5,8 +5,12 @@ import { ShopContext } from "../context/ShopContext";
 
 const OurPolicy = () => {
   const { storefrontContent } = useContext(ShopContext);
-  const benefits = storefrontContent?.benefits || [];
+  const benefits = (storefrontContent?.benefits || []).filter((benefit) => (
+    String(benefit.title || "").trim() || String(benefit.description || "").trim()
+  ));
   const fallbackImages = [assets.exchange_icon, assets.quality_icon, assets.support_img];
+
+  if (benefits.length === 0) return null;
 
   return (
     <section className="storefront-section grid grid-cols-1 gap-8 py-10 text-center text-xs text-gray-700 sm:grid-cols-3 sm:gap-5 sm:py-12 sm:text-sm lg:gap-8 lg:py-16">

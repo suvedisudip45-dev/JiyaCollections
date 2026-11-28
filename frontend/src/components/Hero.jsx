@@ -3,7 +3,7 @@ import React, { useContext } from "react";
 import { assets } from "../assets/assets";
 import { ShopContext } from "../context/ShopContext";
 import { Link } from "react-router-dom";
-import { ArrowRight, Sparkles, Tag, ShieldCheck, Truck, RefreshCw } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 
 const Hero = () => {
   const { products, currency } = useContext(ShopContext);
@@ -52,9 +52,6 @@ const Hero = () => {
             <h1 className="text-3xl sm:text-4xl font-black uppercase tracking-tight text-white leading-tight drop-shadow-md">
               {featuredProduct?.name || "THE NEW STREET EDIT"}
             </h1>
-            <p className="text-xs sm:text-sm text-white/80 font-medium line-clamp-1 mt-1">
-              Premium heavyweight cotton • Relaxed tailored silhouette
-            </p>
           </div>
 
           {/* Price Tag Bar */}
@@ -120,9 +117,6 @@ const Hero = () => {
             <p className="mt-4 text-lg font-semibold text-white/90 capitalize max-w-md">
               {featuredProduct?.name || "Signature Garments & Streetwear Essentials"}
             </p>
-            <p className="text-xs text-white/60 mt-1 max-w-lg leading-relaxed">
-              Crafted from high-grade breathable cotton with a relaxed streetwear cut. Built for everyday durability and modern lifestyle movement.
-            </p>
           </div>
 
           {/* Price Tag Card */}
@@ -165,21 +159,6 @@ const Hero = () => {
             </Link>
           </div>
 
-          {/* Trust Value Badges */}
-          <div className="pt-6 border-t border-white/15 grid grid-cols-3 gap-3 text-[11px] font-bold uppercase tracking-wider text-white/70">
-            <div className="flex items-center gap-2">
-              <Truck size={15} className="text-amber-400 shrink-0" />
-              <span>Fast Nepal Delivery</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <ShieldCheck size={15} className="text-amber-400 shrink-0" />
-              <span>100% Cotton Feel</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <RefreshCw size={15} className="text-amber-400 shrink-0" />
-              <span>Easy Exchanges</span>
-            </div>
-          </div>
         </div>
 
         {/* Right Photo Column */}

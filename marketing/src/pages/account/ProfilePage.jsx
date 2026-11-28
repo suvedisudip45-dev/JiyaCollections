@@ -1,17 +1,14 @@
 import React, { useState, useEffect } from "react";
 import {
-  User, Building2, Mail, Phone, Globe, MapPin,
   CheckCircle2, AlertCircle, Loader2, Save
 } from "lucide-react";
 import { profileApi } from "../../api";
 import { getErrorMessage } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import Badge from "../../components/common/Badge";
-import Skeleton from "../../components/common/Skeleton";
 
 const ProfilePage = () => {
   const { partner, refreshUser } = useAuth();
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState(null);
@@ -67,9 +64,6 @@ const ProfilePage = () => {
     <div className="space-y-6 max-w-3xl mx-auto">
       <div>
         <h2 className="text-xl font-extrabold text-[var(--mp-ink)]">Partner Profile</h2>
-        <p className="text-xs text-[var(--mp-muted)] mt-0.5">
-          Manage your organization credentials and representative contact information
-        </p>
       </div>
 
       {/* Success alert */}

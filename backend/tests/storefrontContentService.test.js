@@ -70,6 +70,22 @@ test("storefront content update saves announcements and benefit cards", async ()
   assert.deepEqual(saved.update.benefits, content.benefits);
 });
 
+test("storefront content accepts blank optional promotional and About copy", async () => {
+  const client = {
+    storefrontContentConfig: {
+      upsert: async ({ create }) => create,
+    },
+  };
+
+  const content = await updateStorefrontContent(DEFAULT_STOREFRONT_CONTENT, client);
+
+  assert.equal(content.footerDescription, "");
+  assert.equal(content.aboutPage.description, "");
+  assert.equal(content.aboutPage.missionDescription, "");
+  assert.ok(content.aboutPage.whyCards.every((card) => card.description === ""));
+  assert.ok(content.benefits.every((benefit) => !benefit.title && !benefit.description));
+});
+
 test("storefront logo must be an HTTPS URL or blank to use the bundled default", async () => {
   const client = {
     storefrontContentConfig: {
@@ -172,15 +188,6 @@ test("storefront content requires exactly three benefits and secure image URLs",
       ...DEFAULT_STOREFRONT_CONTENT,
       benefits: DEFAULT_STOREFRONT_CONTENT.benefits.map((benefit, index) => (
         index === 0 ? { ...benefit, image: "http://example.com/image.png" } : benefit
-      )),
-    }, { storefrontContentConfig: {} }),
-    { code: "INVALID_STOREFRONT_CONTENT", status: 400 }
-  );
-  await assert.rejects(
-    updateStorefrontContent({
-      ...DEFAULT_STOREFRONT_CONTENT,
-      benefits: DEFAULT_STOREFRONT_CONTENT.benefits.map((benefit, index) => (
-        index === 1 ? { ...benefit, title: " " } : benefit
       )),
     }, { storefrontContentConfig: {} }),
     { code: "INVALID_STOREFRONT_CONTENT", status: 400 }

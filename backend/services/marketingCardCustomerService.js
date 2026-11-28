@@ -88,6 +88,13 @@ const benefitIsValid = (benefit, now = new Date()) => (
   (!benefit.expiresAt || benefit.expiresAt >= now)
 );
 
+const earliestExpiry = (...dates) => {
+  const validDates = dates.filter(Boolean).map((date) => new Date(date)).filter((date) => Number.isFinite(date.getTime()));
+  return validDates.length
+    ? new Date(Math.min(...validDates.map((date) => date.getTime())))
+    : null;
+};
+
 export const isCustomerCardRewardRevealed = (link, events = []) => (
   link.status === "ACTIVE" || events.some((event) => (
     event.eventType === "CARD_REWARD_REVEALED" ||
@@ -293,13 +300,21 @@ const cardIncludeForCustomer = (customerId) => ({
   },
 });
 
-export const listCustomerCards = async (customerId) => {
-  const links = await prisma.marketingCardCustomer.findMany({
+export const listCustomerCards = async (customerId, client = prisma) => {
+  const links = await client.marketingCardCustomer.findMany({
     where: { customerId, status: { not: "CANCELLED" } },
     orderBy: { linkedAt: "desc" },
     include: cardIncludeForCustomer(customerId),
   });
-  return links.map(safeCard);
+  const now = new Date();
+  return links
+    .filter(({ status, card }) => (
+      status !== "CANCELLED" &&
+      card?.physicalStatus !== "CANCELLED" &&
+      cardExpiryIsValid(card?.campaign, now) &&
+      (!card?.benefit?.expiresAt || new Date(card.benefit.expiresAt) >= now)
+    ))
+    .map(safeCard);
 };
 
 export const claimCustomerReward = async ({ customerId, cardId, client = prisma }) => client.$transaction(async (tx) => {
@@ -415,8 +430,8 @@ export const claimCustomerReward = async ({ customerId, cardId, client = prisma 
   };
 }, { isolationLevel: "Serializable" });
 
-export const listClaimedCustomerRewards = async (customerId) => {
-  const redemptions = await prisma.marketingBenefitRedemption.findMany({
+export const listClaimedCustomerRewards = async (customerId, client = prisma) => {
+  const redemptions = await client.marketingBenefitRedemption.findMany({
     where: {
       customerId,
       status: "CLAIMED",
@@ -459,7 +474,7 @@ export const listClaimedCustomerRewards = async (customerId) => {
         expiresAt: benefit.expiresAt,
       },
       claimedAt,
-      expiresAt: benefit.expiresAt || card.campaign.cardExpiresAt,
+      expiresAt: earliestExpiry(benefit.expiresAt, card.campaign.cardExpiresAt),
     }));
 };
 

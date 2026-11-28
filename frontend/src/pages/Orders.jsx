@@ -746,9 +746,6 @@ const Orders = () => {
               <ShoppingBag className="w-7 h-7 text-slate-900" />
               <span>MY ORDER HISTORY & TRACKING</span>
             </div>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Track deliveries in real-time, view itemized receipts, and manage your purchase history
-            </p>
           </div>
 
           <button

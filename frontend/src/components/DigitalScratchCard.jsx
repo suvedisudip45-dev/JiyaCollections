@@ -161,17 +161,12 @@ export const DigitalScratchCard = ({
                 </p>
               )}
             </div>
-            <p className="text-[11px] font-bold text-amber-700">Reward revealed!</p>
           </div>
         ) : (
           <div className="space-y-2 py-4">
-            <span className="text-3xl">🍀</span>
             <h3 className="text-base font-black text-slate-800">
-              Better Luck Next Time!
+              No reward
             </h3>
-            <p className="text-xs text-slate-500 max-w-[240px]">
-              Thank you for shopping with Aashrit Corner. Look out for rewards in future orders!
-            </p>
           </div>
         )}
       </div>

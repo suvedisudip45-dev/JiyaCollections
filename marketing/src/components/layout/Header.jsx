@@ -1,17 +1,16 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Bell } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 
 const PAGE_TITLES = {
-  "/dashboard":    { title: "Dashboard",     sub: "Your marketing overview" },
-  "/campaigns":    { title: "Campaigns",     sub: "Manage your card campaigns" },
-  "/cards":        { title: "Cards",         sub: "Track physical card distribution" },
-  "/redemptions":  { title: "Redemptions",   sub: "View benefit redemption history" },
-  "/qr-validator": { title: "QR Validator",  sub: "Scan or enter card codes" },
-  "/reports":      { title: "Reports",       sub: "Analytics and insights" },
-  "/profile":      { title: "Profile",       sub: "Your account information" },
-  "/settings":     { title: "Settings",      sub: "Account and security settings" },
+  "/dashboard": "Dashboard",
+  "/campaigns": "Campaigns",
+  "/cards": "Cards",
+  "/redemptions": "Redemptions",
+  "/qr-validator": "QR Validator",
+  "/reports": "Reports",
+  "/profile": "Profile",
+  "/settings": "Settings",
 };
 
 const Header = () => {
@@ -19,7 +18,7 @@ const Header = () => {
   const { partner } = useAuth();
 
   const base = "/" + location.pathname.split("/")[1];
-  const page = PAGE_TITLES[base] || { title: "Marketing Portal", sub: "" };
+  const pageTitle = PAGE_TITLES[base] || "Marketing Portal";
 
   const initials = (partner?.name || "MP")
     .split(" ")
@@ -32,8 +31,7 @@ const Header = () => {
     <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-[var(--mp-line)] px-4 sm:px-6 h-16 flex items-center justify-between">
       {/* Page title — left-padded on mobile for menu button */}
       <div className="pl-12 lg:pl-0">
-        <h1 className="text-lg font-bold text-[var(--mp-ink)] leading-tight">{page.title}</h1>
-        {page.sub && <p className="text-xs text-[var(--mp-muted)] hidden sm:block">{page.sub}</p>}
+        <h1 className="text-lg font-bold text-[var(--mp-ink)] leading-tight">{pageTitle}</h1>
       </div>
 
       {/* Right area */}

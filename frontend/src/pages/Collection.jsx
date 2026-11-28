@@ -182,15 +182,7 @@ const Collection = () => {
     ? "BEST SELLERS"
     : "ALL PRODUCTS";
 
-  const descriptionText =
-    subcategoryMeta?.description ||
-    (category[0]
-      ? `Explore our signature ${category[0]}'s collection, tailored for modern comfort, exceptional fit, and durable street aesthetic.`
-      : featuredFilter === "new"
-      ? "Discover the newest arrivals and trending drops crafted for effortless style."
-      : featuredFilter === "bestseller"
-      ? "Our most sought-after silhouettes and crowd favorites, loved by customers across Nepal."
-      : "Shop our complete catalog of clothing, essentials, and signature wear.");
+  const descriptionText = subcategoryMeta?.description || "";
 
   const heroImage = subcategoryMeta?.image;
 

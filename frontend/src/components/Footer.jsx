@@ -10,9 +10,11 @@ const Footer = () => {
       <div className="storefront-section storefront-footer-content grid gap-8 pb-8 sm:grid-cols-2 sm:gap-10 sm:pb-10 lg:grid-cols-[2fr_1fr_1fr] lg:gap-12 lg:pb-12">
         <div>
           <img className="mb-4 w-32 sm:mb-5" src={storefrontContent?.logoImage || assets.logo} alt="Aashrit Corner" />
-          <p className="w-full max-w-md text-xs leading-6 text-[#77776e] sm:text-sm sm:leading-7">
-            {storefrontContent?.footerDescription}
-          </p>
+          {storefrontContent?.footerDescription?.trim() && (
+            <p className="w-full max-w-md text-xs leading-6 text-[#77776e] sm:text-sm sm:leading-7">
+              {storefrontContent.footerDescription}
+            </p>
+          )}
         </div>
         <div>
           <p className="eyebrow mb-5">Company</p>

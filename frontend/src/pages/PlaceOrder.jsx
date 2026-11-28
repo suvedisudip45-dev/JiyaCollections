@@ -12,6 +12,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import NepalMapModal from "../components/NepalMapModal";
 import { getDistrictsForProvince, getBranchesForLocation, useLocationLookups } from "../utils/locationLookups";
+import { formatMarketingCardExpiry } from "../utils/marketingCardExpiry";
 
 const isValidNepalMobileNumber = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
@@ -1147,7 +1148,6 @@ const PlaceOrder = () => {
                       <div className="min-w-0">
                         <p className="font-semibold text-gray-900">{comboBundleData.name}</p>
                         <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{comboBundleData.category?.name || "Combo Bundle"}</p>
-                        {comboBundleData.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{comboBundleData.description}</p>}
                         <p className="mt-1 text-[10px] text-gray-600">Size {comboBundlePurchase.size} · Qty {comboBundlePurchase.quantity}</p>
                         <ul className="mt-2 space-y-0.5 text-[10px] text-gray-600">
                           {(comboBundleData.products || []).map((entry, index) => (
@@ -1166,7 +1166,6 @@ const PlaceOrder = () => {
                         <div className="min-w-0">
                           <p className="font-semibold text-gray-900">{entry.product.name}</p>
                           <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{categoryNames || "Uncategorized"}</p>
-                          {entry.product.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{entry.product.description}</p>}
                           <p className="mt-1 text-[10px] text-gray-600">Size {entry.size}{entry.color ? ` · ${entry.color}` : ""} · Qty {entry.quantity}</p>
                           {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% place-wise discount · price locked at checkout</p>}
                         </div>
@@ -1209,6 +1208,11 @@ const PlaceOrder = () => {
                           </span>
                           {rewardChoice === "CARD" && <span className="text-xs font-bold text-orange-700">Selected</span>}
                         </span>
+                        {selectedCardReward?.expiresAt && (
+                          <span className="ml-6 mt-1 block text-[11px] text-rose-700">
+                            Use by {formatMarketingCardExpiry(new Date(selectedCardReward.expiresAt))}
+                          </span>
+                        )}
                         {checkoutCardRewards.length > 1 && (
                           <select
                             value={selectedCardRewardId}

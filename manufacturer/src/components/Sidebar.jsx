@@ -340,9 +340,6 @@ const Sidebar = () => {
               <Building className="w-4 h-4" />
               <p className="text-xs font-bold">Become a Distributor</p>
             </div>
-            <p className="text-[11px] text-[#575757] leading-relaxed">
-              Unlock local hub order assignments, direct sales, self-delivery rates &amp; earnings.
-            </p>
             <button
               onClick={handleApplyDistributor}
               disabled={applying}

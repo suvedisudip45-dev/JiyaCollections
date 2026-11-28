@@ -17,6 +17,11 @@ import { ShopContext } from "../context/ShopContext";
 import { useContext } from "react";
 import DigitalScratchCard from "../components/DigitalScratchCard";
 import SponsorAdModal from "../components/SponsorAdModal";
+import {
+  formatMarketingCardExpiry,
+  formatMarketingCardTimeLeft,
+  getMarketingCardExpiry,
+} from "../utils/marketingCardExpiry";
 
 const notifyRequestError = (error, fallback) => {
   if (error.response?.status === 401) return;
@@ -28,6 +33,14 @@ const MarketingCards = () => {
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const visibleCards = cards.filter((card) => {
+    const expiry = getMarketingCardExpiry(
+      card.cardExpiresAt,
+      ...(card.benefits || []).map((benefit) => benefit.expiresAt)
+    );
+    return !expiry || expiry.getTime() >= now;
+  });
 
   // Verification step state
   const [step, setStep] = useState(1); // 1: Scan QR, 2: Reveal offer
@@ -45,6 +58,11 @@ const MarketingCards = () => {
   const videoRef = useRef(null);
   const scannerStreamRef = useRef(null);
   const scannerFrameRef = useRef(null);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const loadCards = useCallback(async () => {
     if (!token) return;
@@ -304,9 +322,6 @@ const MarketingCards = () => {
               <Camera size={22} className="text-slate-800" />
               <div>
                 <h2 className="text-sm font-black uppercase tracking-wider text-[var(--ink)]">Scan your card QR code</h2>
-                <p className="text-xs text-[var(--muted)]">
-                  No card code is needed. We will check the card and your eligibility after you scan it.
-                </p>
               </div>
             </div>
             <div className="grid gap-6">
@@ -364,9 +379,6 @@ const MarketingCards = () => {
           <div className="space-y-6">
             {/* Gamified Digital Scratch Card */}
             <div className="space-y-3 text-center">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                ✨ Rub to Reveal Your Exclusive Partnership Reward ✨
-              </p>
               <DigitalScratchCard
                 onRevealed={revealScannedCard}
               />
@@ -415,23 +427,17 @@ const MarketingCards = () => {
                       ? (canClaimScannedReward ? "Claiming Reward..." : "Activating Card...")
                       : (canClaimScannedReward ? "✨ Claim Reward" : "✨ Activate Card Now")}
                   </button>
-                  <p className="mt-2 text-[11px] text-slate-500">
-                    {canClaimScannedReward
-                      ? scannedOfferResult.benefit.benefitType === "GIFT"
-                        ? "Claim this gift to save it for your next eligible order."
-                        : "Claim this reward now to make it available as an offer at checkout."
-                      : `Once activated, take your physical card to ${scannedOfferResult.partner?.name}'s shopping store to claim!`}
-                  </p>
+                  {!canClaimScannedReward && (
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      Once activated, take your physical card to {scannedOfferResult.partner?.name}&apos;s store to claim.
+                    </p>
+                  )}
                 </div>
               </div>
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 text-center space-y-4">
-                <span className="text-4xl">🍀</span>
                 <div>
-                  <h3 className="text-lg font-bold text-[var(--ink)]">Better luck next time!</h3>
-                  <p className="mt-1 text-xs text-[var(--muted)] max-w-md mx-auto">
-                    Thank you for participating in {scannedOfferResult.partner?.name}&apos;s promotional campaign. This specific card does not carry an attached prize, but we appreciate your purchase!
-                  </p>
+                  <h3 className="text-lg font-bold text-[var(--ink)]">No reward</h3>
                 </div>
                 <button
                   type="button"
@@ -442,14 +448,6 @@ const MarketingCards = () => {
                 </button>
               </div>
             ))}
-            {step === 2 && isScratchRevealed && scannedOfferResult?.isDistributorOrderReward && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-950">
-                <p className="font-bold">Reward from your delivered order</p>
-                <p className="mt-1">
-                  This card is linked to your delivered order. Campaign scan caps do not apply to distributor-issued cards, so cards attached to your other eligible orders can each unlock a reward once.
-                </p>
-              </div>
-            )}
             {step === 2 && scannedOfferResult?.scanLimits && (
               <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 text-xs text-[var(--ink)]">
                 <p className="font-bold">Own Store scan limits for this campaign</p>
@@ -492,13 +490,13 @@ const MarketingCards = () => {
             <h2 className="text-sm font-black uppercase tracking-wider text-[var(--ink)]">My Activated Cards</h2>
           </div>
           <span className="text-xs text-[var(--muted)]">
-            {cards.length} card{cards.length === 1 ? "" : "s"}
+            {visibleCards.length} card{visibleCards.length === 1 ? "" : "s"}
           </span>
         </div>
 
         {loading ? (
           <p className="py-10 text-sm text-[var(--muted)]">Loading your cards...</p>
-        ) : cards.length === 0 ? (
+        ) : visibleCards.length === 0 ? (
           <div className="border-b border-[var(--line)] py-12 text-center">
             <CreditCard className="mx-auto mb-3 text-[var(--muted)]" size={28} />
             <p className="text-sm font-bold text-[var(--ink)]">No activated cards yet</p>
@@ -508,7 +506,12 @@ const MarketingCards = () => {
           </div>
         ) : (
           <div className="grid gap-5 md:grid-cols-2">
-            {cards.map((card) => (
+            {visibleCards.map((card) => {
+              const expiry = getMarketingCardExpiry(
+                card.cardExpiresAt,
+                ...(card.benefits || []).map((benefit) => benefit.expiresAt)
+              );
+              return (
               <article key={card.id} className="rounded-2xl border border-[var(--line)] bg-white p-5 shadow-sm space-y-4">
                 <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
                   <div>
@@ -523,6 +526,14 @@ const MarketingCards = () => {
                   </span>
                 </div>
 
+                {expiry && (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <Clock size={14} className="flex-shrink-0" />
+                    <span>Valid until {formatMarketingCardExpiry(expiry)}</span>
+                    <span className="font-bold">{formatMarketingCardTimeLeft(expiry, now)}</span>
+                  </div>
+                )}
+
                 {card.revealPending ? (
                   <div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3.5 border border-slate-100">
                     <span className="text-2xl">🎁</span>
@@ -533,11 +544,7 @@ const MarketingCards = () => {
                   </div>
                 ) : !card.hasBenefit || card.benefits.length === 0 ? (
                   <div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3.5 border border-slate-100">
-                    <span className="text-2xl">🍀</span>
-                    <div>
-                      <p className="text-xs font-bold text-slate-800">Better luck next time!</p>
-                      <p className="text-[11px] text-slate-500">No active prize attached to this card.</p>
-                    </div>
+                    <p className="text-xs font-bold text-slate-800">No reward</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -567,11 +574,9 @@ const MarketingCards = () => {
                               </p>
                             ) : card.campaign.isOwnStore ? (
                               <div className="space-y-2">
-                                <p className="text-[11px] text-slate-600">
-                                  {isClaimed
-                                    ? "Claimed. Choose this card reward during checkout."
-                                    : "Claim this reward when you are ready to apply it during checkout."}
-                                </p>
+                                {isClaimed && (
+                                  <p className="text-[11px] text-slate-600">Available at checkout.</p>
+                                )}
                                 {!isClaimed && (
                                   <button
                                     type="button"
@@ -591,11 +596,6 @@ const MarketingCards = () => {
                                 <p className="text-slate-600">
                                   Take this physical card to <strong>{card.partner.name}</strong>&apos;s store. Present the card to the cashier to scan and redeem your offer.
                                 </p>
-                                {benefit.expiresAt && (
-                                  <p className="text-[10px] text-rose-600 font-semibold flex items-center gap-1 pt-1">
-                                    <Clock size={11} /> Valid until: {new Date(benefit.expiresAt).toLocaleDateString()}
-                                  </p>
-                                )}
                               </div>
                             )}
                           </div>
@@ -605,7 +605,8 @@ const MarketingCards = () => {
                   </div>
                 )}
               </article>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

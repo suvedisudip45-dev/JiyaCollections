@@ -11,9 +11,6 @@ import {
   Heart,
   ShoppingBag,
   Zap,
-  Truck,
-  RotateCcw,
-  ShieldCheck,
   Ruler,
   ChevronLeft,
   ChevronRight,
@@ -22,7 +19,6 @@ import {
   Check,
   Info,
   Sparkles,
-  Layers,
 } from "lucide-react";
 
 const parseJsonArray = (value) => {
@@ -1216,24 +1212,6 @@ const Product = () => {
             )}
           </div>
 
-          {/* Garment Assurances / Trust Pillars */}
-          <div className="grid grid-cols-3 gap-2.5 pt-4 border-t border-stone-200 text-center">
-            <div className="p-3 bg-white rounded-xl border border-stone-200 shadow-2xs">
-              <ShieldCheck size={20} className="mx-auto mb-1 text-gray-800" />
-              <p className="text-[11px] font-bold text-gray-900">100% Genuine</p>
-              <p className="text-[10px] text-gray-500">Quality Certified</p>
-            </div>
-            <div className="p-3 bg-white rounded-xl border border-stone-200 shadow-2xs">
-              <Truck size={20} className="mx-auto mb-1 text-gray-800" />
-              <p className="text-[11px] font-bold text-gray-900">Fast Delivery</p>
-              <p className="text-[10px] text-gray-500">2-4 Days in Nepal</p>
-            </div>
-            <div className="p-3 bg-white rounded-xl border border-stone-200 shadow-2xs">
-              <RotateCcw size={20} className="mx-auto mb-1 text-gray-800" />
-              <p className="text-[11px] font-bold text-gray-900">Easy Return</p>
-              <p className="text-[10px] text-gray-500">7 Days Window</p>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1301,33 +1279,7 @@ const Product = () => {
                 </h3>
                 <StructuredDescriptionContent
                   content={descriptionSections.about}
-                  fallback="A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."
                 />
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
-                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                    <Layers className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                        Tailored Construction
-                      </h4>
-                      <p className="text-xs text-gray-600 mt-1 leading-normal">
-                        Precision high-density stitching with reinforced seams designed to maintain fit after multiple wash cycles.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                    <Sparkles className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                        Authentic Color Fastness
-                      </h4>
-                      <p className="text-xs text-gray-600 mt-1 leading-normal">
-                        Specially dyed using eco-conscious pigments for rich saturation and minimal fading.
-                      </p>
-                    </div>
-                  </div>
-                </div>
               </div>
             );
           })()
