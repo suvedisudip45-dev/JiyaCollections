@@ -12,6 +12,10 @@ Aama Clothings is a multi-portal clothing commerce platform built around a centr
 
 The repository separates factory production and replenishment from customer-facing distributor hub fulfillment. Production completion creates factory inventory only; storefront product availability is projected exclusively from unreserved stock in active distributor ledgers, and transfer stock is not sellable until the distributor records receipt. Customer checkout prefers one active distributor with stock for the full cart; when no single hub can fulfill it but multiple hubs collectively can, it creates product-specific orders and separate deliveries under a shared checkout group, using the admin-configured flat split-shipment fee once. Active distributors with exact delivery-area coverage receive priority, including when a business account also has a manufacturer profile. The manufacturer portal dashboard distinguishes factory stock, produced good units, and damaged units.
 
+## First production release boundary
+
+The planned first release is basic website and manually entered social-media customer orders with one active distributor and COD as the only order payment method. Bank/debit/credit-card gateways, payment processors, card-token storage, PCI payment processing, and payment-provider webhooks are out of scope. Marketing cards are promotional instruments only. The system has COD, delivery, return/exchange, gift, and marketing-card workflows, but the readiness assessment records the material partial implementations and pre-release gates; this summary is not a production approval.
+
 ## 2. Technology Stack
 
 | Layer | Current implementation |
@@ -22,7 +26,7 @@ The repository separates factory production and replenishment from customer-faci
 | Manufacturer portal | React 19.2.8 + Vite 8 + Tailwind |
 | API auth | JWT access/refresh tokens; custom RBAC enforcement; privileged-portal MFA controlled by backend `MFA_ENABLED` (enabled by default) |
 | Storage | Cloudinary integration for product/media/contract uploads |
-| Payments | No active Stripe/Razorpay initiation, verification, or callback path was source-verified; package/configuration presence is not an implemented integration |
+| Payments | First production release is COD only. No bank/debit/credit-card gateway, processor, card-token, PCI-processing, or payment-provider callback path is included |
 | Email / SMS / notifications | SMTP + Sparrow SMS primitives and a notification worker, but production enablement is still gated |
 | Delivery integration | Nepal Can Move APIs and webhook handlers |
 | UI libraries | `react-toastify`, `lucide-react`, `qrcode`, `jspdf`, `xlsx`, `leaflet` |
@@ -32,7 +36,7 @@ The repository separates factory production and replenishment from customer-faci
 
 ### Fully implemented / active
 
-- Customer storefront browsing, cart, wishlist, product search, order placement, return/exchange flows, and marketing-card redemption UX.
+- Customer storefront browsing, cart, wishlist, product search, COD order placement, return/exchange flows, and promotional marketing-card discount/reward UX. Marketing cards are not payment instruments.
 - Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
 - Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shared shipment-rate tiers with optional corridor overrides, access control, and exchange/return reconciliation.
 - Admin manufacturer management includes a dedicated, permission-scoped detail page for profile, factory ledger inventory, production costs/QA, distributor transfers, finance, journal transactions, and payable requests, while reusing existing paginated operational APIs where possible.
@@ -47,6 +51,7 @@ The repository separates factory production and replenishment from customer-faci
 - Distributor self-registration collects the same business identity, Nepal province/district, NCM branch/covered area, pickup contacts, return instructions, and contract dates as manufacturer registration. Its base district becomes initial exact order coverage; admins can edit the profile and separately manage additional service districts.
 - Location-aware assignment prefers an in-stock active distributor covering the exact district, then an in-stock distributor in the same province, then ranks other in-stock hubs by verified customer ratings. All tiers require every ordered variant and quantity to be available in distributor-ledger stock, reserved transactionally. Customers can review a distributor after delivery; admins can retry failed allocations or use a reasoned, audited explicit distributor assignment for eligible failed online orders.
 - Marketing partner portal with login, campaigns, campaign detail, card management, redemption validation, and reporting routes.
+- Loyalty currently provides spend/order-count tier rewards; it is not a points program and has no points ledger, expiry, or return/exchange reversal ledger.
 - Admin marketing partner detail pages show current/expired campaign card, scan, and reward metrics, distributor assignment/attachment/claim totals, and province/district-level scan and distribution summaries. Partner accounts enter through public signup and admin approval rather than direct admin creation.
 - Delivery and NCM integration for ready-for-pickup, webhook handling, manual handoff recovery, delivery settlements, and return workflows.
 - Distributor self-delivery COD is gated by customer OTP and recorded as distributor receivable until an Admin verifies an evidenced remittance. Distributor-paid customer refunds require return receipt/inspection, exact approved refund amount, payment evidence, and Admin verification before a separate distributor payable is created. New self-delivery completions also snapshot the approved compensation terms into immutable earning documents; Admin payout allocates those documents and clears distributor payable. Gross balances are settled separately unless an Admin explicitly approves an audited offset against verified refund payable; pending COD remittances cannot also be offset.
@@ -73,6 +78,8 @@ The repository separates factory production and replenishment from customer-faci
 - Distributor gift inventory is batch-based and auditable: one order per checkout group reserves an exact-value accepted batch, preferring the customer's district, then province, then other assigned distributors. Packing and delivery transitions update the gift state; movement logs record dispatch, receipt, allocation, reservation, deduction, restock, or loss. Admins can replace an un-packed assigned gift only with same-value accepted stock from that distributor. Legacy manufacturer gift records remain for historical orders and are not used for new distributor hub activity.
 
 ### Partially implemented or intentionally gated
+
+- First-release readiness is **NOT APPROVED** by static inspection alone. COD collection lacks partial/failed collection and driver-to-distributor cash handover states; return/exchange and customer-unreachable workflows have route-specific gaps; the loyalty points ledger is absent; the existing marketing-card requirement at delivery needs an explicit business decision. See the [First Production Release Readiness assessment](docs/first-production-release-readiness.md).
 
 - Notification worker exists as a separate subsystem. Portal MFA and password recovery enqueue SMS through it; most business flows do not automatically send SMS/email, and inbound SMS processing is not implemented.
 - `npm run notifications:health` in `backend/` reports enabled-channel consumer counts, queue depth, notification status counts, and oldest queued age. Schedule it from operations monitoring; queue/backlog exception resolution remains an operator responsibility.

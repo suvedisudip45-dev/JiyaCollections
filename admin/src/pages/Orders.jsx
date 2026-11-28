@@ -17,7 +17,10 @@ const ADMIN_ORDER_STATUSES = [
   "Packing",
   "Shipped",
   "Out for delivery",
+  "Customer Not Found",
   "Delivered",
+  "Returned",
+  "Cancelled",
 ];
 
 // ─── Status Badge Styles ──────────────────────────────────────────────────────
@@ -27,7 +30,10 @@ const getStatusBadgeStyle = (status) => {
     case "Packing":           return "bg-amber-50 text-amber-700 border-amber-200";
     case "Shipped":           return "bg-purple-50 text-purple-700 border-purple-200";
     case "Out for delivery":  return "bg-cyan-50 text-cyan-700 border-cyan-200";
+    case "Customer Not Found": return "bg-amber-50 text-amber-800 border-amber-300";
     case "Delivered":         return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "Returned":          return "bg-purple-50 text-purple-700 border-purple-200";
+    case "Cancelled":         return "bg-rose-50 text-rose-700 border-rose-200";
     default:                  return "bg-gray-50 text-gray-700 border-gray-200";
   }
 };
@@ -52,8 +58,11 @@ const getFulfillmentBadge = (fs) => {
     case "IN_TRANSIT":                 return "bg-sky-50 text-sky-700 border-sky-200";
     case "ARRIVED_AT_DESTINATION":     return "bg-cyan-50 text-cyan-700 border-cyan-200";
     case "OUT_FOR_DELIVERY":           return "bg-violet-50 text-violet-700 border-violet-200";
+    case "CUSTOMER_NOT_FOUND":         return "bg-amber-50 text-amber-800 border-amber-300";
     case "DELIVERED":                  return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "RETURNED":                   return "bg-purple-50 text-purple-700 border-purple-200";
     case "RETURN_REQUESTED":           return "bg-rose-50 text-rose-700 border-rose-200";
+    case "CANCELLED":                  return "bg-rose-50 text-rose-700 border-rose-200";
     case "FAILED":                     return "bg-red-50 text-red-700 border-red-200";
     default:                           return "bg-gray-50 text-gray-700 border-gray-200";
   }
@@ -78,8 +87,11 @@ const getFulfillmentLabel = (fs) => {
     case "IN_TRANSIT":                 return "In Transit";
     case "ARRIVED_AT_DESTINATION":     return "Arrived at Hub";
     case "OUT_FOR_DELIVERY":           return "Out for Delivery";
+    case "CUSTOMER_NOT_FOUND":         return "Customer Not Found";
     case "DELIVERED":                  return "Delivered";
+    case "RETURNED":                   return "Returned & Refunded";
     case "RETURN_REQUESTED":           return "Return Requested";
+    case "CANCELLED":                  return "Cancelled";
     case "FAILED":                     return "Failed";
     default:                           return fs ? fs.replace(/_/g, " ") : "Unknown";
   }

@@ -42,7 +42,7 @@ export const DEFAULT_STOREFRONT_CONTENT = {
       },
       {
         title: "Ordering, Checkout & Payment",
-        description: "When placing an order via Cash on Delivery (COD) or other electronic payment methods, you enter into a binding purchase contract. We reserve the right to cancel any order in the event of suspected fraudulent activity, stock discrepancies, or delivery restrictions.",
+        description: "When placing an order using Cash on Delivery (COD), you enter into a binding purchase contract. We reserve the right to cancel any order in the event of suspected fraudulent activity, stock discrepancies, or delivery restrictions.",
       },
       {
         title: "Returns, Exchanges & 7-Day Guarantee",

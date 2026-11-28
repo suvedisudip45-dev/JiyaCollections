@@ -21,6 +21,13 @@ const PASSWORD_RESET_MAX_RESENDS = 3;
 const PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = 60;
 
 const ensurePasswordResetAvailable = (env, portal) => {
+  if (String(env.PASSWORD_RESET_ENABLED || "").toLowerCase() === "false") {
+    throw fail(
+      "Password recovery is temporarily unavailable.",
+      503,
+      "PASSWORD_RESET_DISABLED",
+    );
+  }
   const nodeEnv = String(env.NODE_ENV || "").toLowerCase();
   const driverRecoveryOptedIn = portal === "DRIVER" &&
     ["staging", "production"].includes(nodeEnv) &&

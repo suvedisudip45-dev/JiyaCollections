@@ -33,7 +33,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Assets | Input VAT receivable | 1150 | Recoverable VAT in supported supplier-cost cases |
 | Assets | VAT tax prepayments / credits | 1165 | Filed-period VAT cash overpayments available to offset a later assessment |
 | Assets | NCM COD receivable | 1170 | COD due from NCM in the delivery-sale flow |
-| Assets | Payment gateway clearing | 1180 | Exists in the chart; not the default tender mapping in delivered-sale posting |
+| Assets | Payment gateway clearing | 1180 | Legacy chart account only; not an enabled first-release payment method or active payment gateway integration |
 | Assets | Distributor COD receivable | 1190 | COD due from the assigned distributor until an evidenced remittance is verified and allocated |
 | Assets | Fixed assets | 1510–1530 | Asset classes |
 | Assets | Accumulated depreciation | 1590 | Contra-asset |
@@ -338,7 +338,7 @@ Use the dashboard's `postedAccounting` section when comparing to posted GL state
 
 The following items are directly relevant to improving the accounting design:
 
-1. **Non-COD tender mapping:** delivered-sale posting uses Bank 1120 for all non-COD tenders, despite payment gateway clearing 1180 existing.
+1. **First-release tender scope:** customer orders use COD only. Account 1180 is a legacy chart entry and must not be interpreted as an available card tender, active gateway clearing flow, or evidence of provider settlement.
 2. **Legacy distributor settlement:** existing delivery-earnings payout requests remain a separate operational flow and should be reconciled against their relevant GL accounts; do not confuse them with COD remittance or the new 2190 customer-refund reimbursement.
 3. **Direct-income mapping:** the direct-income controller calls a helper that credits customer AR 1130 rather than visibly crediting an income account.
 4. **Non-atomic posting in some flows:** expense, direct income, depreciation, loan/equity and some delivery paths invoke GL posting asynchronously or catch posting errors after changing operational state. In these paths, GL and operational data can diverge.

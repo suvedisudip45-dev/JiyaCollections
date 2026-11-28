@@ -150,11 +150,14 @@ manually maintained counter.
 
 For unpaid distributor self-delivery, when notifications and SMS are enabled,
 a customer OTP is required before the parcel can be marked delivered. The OTP
-is bound to the assigned order, distributor, and amount. If either setting is
-disabled, the distributor must explicitly confirm that the full COD amount was
-collected; the cash event is recorded as pending verification, not as OTP
-verified. Delivery and the distributor COD receivable are still recorded, but
-this does not mark the company as having received cash. In the Distributor
+is bound to the assigned order, distributor, and authoritative COD amount. For
+current checkout orders, the amount comes from the accepted pricing snapshot's
+final payable total, which already includes delivery; legacy orders without a
+valid snapshot use order amount plus delivery fee. If either notification
+setting is disabled, the distributor must explicitly confirm that the full COD
+amount was collected; the cash event is recorded as pending verification, not
+as OTP verified. Delivery and the distributor COD receivable are still
+recorded, but this does not mark the company as having received cash. In the Distributor
 Finance dashboard, submit COD remittances with
 the transfer reference and a JPG/PNG image of the transfer evidence. Admins
 review the evidence in the distributor detail Finance tab, select the receiving

@@ -139,6 +139,12 @@ The component tree includes:
 
 The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order. Customer order totals round to the nearest 0 or 5 rupees: final digits 0–3 round down, 4–7 round to 5, and 8–9 round up to the next ten. The backend applies this rule to the saved total, including split-shipment orders.
 
+The first production customer-order payment method is COD only. Storefront
+checkout submits COD; Admin social-media order entry displays COD as a fixed
+tender and the API rejects other methods. Marketing cards are promotional
+benefits, not payment cards, and no payment gateway or payment-provider callback
+is part of this release.
+
 The nearest-NPR-5 behavior is the existing commercial checkout convention, not the internal accounting NPR two-decimal HALF_EVEN policy. The backend keeps exact Decimal calculation values in a version-2 pricing snapshot under the order's existing `locationPricingSnapshot` JSON field and keeps legacy numeric order fields for portal/API compatibility. The snapshot preserves accepted pricing for downstream delivery accounting; it does not reprice historical orders. Approval/effective date for the commercial rounding convention is not documented.
 
 Existing product percentage discounts also round the discounted unit price to a whole rupee before multiplying by quantity (`Math.round` for positive prices); the backend preserves that established per-unit behavior with Decimal HALF_UP. This is separate from the final-order nearest-5 rule and the accounting HALF_EVEN policy.

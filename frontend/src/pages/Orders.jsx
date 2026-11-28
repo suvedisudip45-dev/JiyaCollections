@@ -578,6 +578,9 @@ const Orders = () => {
       if (distributorStatus === "delivered") {
         return { label: "Delivered by Distributor", bg: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500", icon: CheckCircle2 };
       }
+      if (distributorStatus === "customer_not_found" || distributorStatus === "undelivered") {
+        return { label: "Customer Not Found / Delivery Attempt Failed", bg: "bg-amber-50 text-amber-800 border-amber-300", dot: "bg-amber-500 animate-ping", icon: AlertCircle };
+      }
       if (distributorStatus === "on_the_way") {
         return { label: "Out for Delivery", bg: "bg-blue-50 text-blue-700 border-blue-200", dot: "bg-blue-500", icon: Truck };
       }
@@ -589,6 +592,38 @@ const Orders = () => {
       }
     }
 
+    if (s.includes("returned") || f.includes("returned")) {
+      return {
+        label: "Returned & Refunded",
+        bg: "bg-purple-50 text-purple-700 border-purple-200",
+        dot: "bg-purple-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("return_requested") || f.includes("return_requested") || s.includes("return requested")) {
+      return {
+        label: "Return Under Review",
+        bg: "bg-orange-50 text-orange-700 border-orange-200",
+        dot: "bg-orange-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("exchange_requested") || f.includes("exchange_requested") || s.includes("exchange requested")) {
+      return {
+        label: "Exchange Under Review",
+        bg: "bg-teal-50 text-teal-700 border-teal-200",
+        dot: "bg-teal-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("not found") || s.includes("undelivered") || f.includes("customer_not_found") || f.includes("undelivered")) {
+      return {
+        label: "Customer Not Found / Delivery Attempt Failed",
+        bg: "bg-amber-50 text-amber-800 border-amber-300",
+        dot: "bg-amber-500 animate-ping",
+        icon: AlertCircle,
+      };
+    }
     if (s.includes("delivered") || f.includes("delivered")) {
       return {
         label: "Delivered",
@@ -1218,6 +1253,26 @@ const Orders = () => {
                   </div>
                 )}
               </div>
+                );
+              })()}
+
+              {(() => {
+                const isCustomerNotFound =
+                  String(trackingOrder.status || "").toLowerCase().includes("not found") ||
+                  String(trackingOrder.status || "").toLowerCase().includes("undelivered") ||
+                  String(trackingOrder.fulfillmentStatus || "").toLowerCase().includes("customer_not_found") ||
+                  String(trackingOrder.distributorDelivery?.status || "").toLowerCase().includes("customer_not_found");
+                if (!isCustomerNotFound) return null;
+                return (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-amber-950">Delivery Attempt Unsuccessful</p>
+                      <p className="mt-1 text-amber-800 leading-relaxed">
+                        The delivery agent attempted delivery but could not contact you at the delivery address. Please keep your phone reachable for the next delivery attempt or contact customer support for assistance.
+                      </p>
+                    </div>
+                  </div>
                 );
               })()}
 

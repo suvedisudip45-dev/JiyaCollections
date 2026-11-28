@@ -149,6 +149,7 @@ app.options('*', cors(corsOptions));
 app.use(verifyRequestSignature);
 app.use(sanitizeMiddleware);
 
+app.get("/health", createReadinessHandler());
 app.get("/health/live", livenessHandler);
 app.get("/health/ready", createReadinessHandler());
 

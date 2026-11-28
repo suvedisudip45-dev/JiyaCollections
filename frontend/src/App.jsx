@@ -19,7 +19,6 @@ import Footer from "./components/Footer";
 import SearchBar from "./components/SearchBar";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
-import Verify from "./pages/Verify";
 import Wishlist from "./pages/Wishlist";
 import MarketingCards from "./pages/MarketingCards";
 import { ShopContext } from "./context/ShopContext";
@@ -63,7 +62,6 @@ const App = () => {
           <Route path="profile" element={<Profile />} />
           <Route path="marketing-cards" element={<FeatureRoute enabled={platformFeatures?.marketingCardsEnabled}><MarketingCards /></FeatureRoute>} />
         </Route>
-        <Route path="/verify" element={<Verify />} />
         <Route path="/wishlist" element={<Wishlist />} />
         </Routes>
       </main>

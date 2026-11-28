@@ -433,9 +433,13 @@ delivered-sale inventory and accounting transaction.
 
 For unpaid distributor self-delivery COD, when notifications and SMS are
 enabled, the distributor requests a short-lived, hashed customer OTP bound to
-the assigned order, distributor, and exact order amount. When either setting is
-disabled, delivery instead requires an explicit distributor confirmation that
-the full amount was collected; the cash event is marked pending verification.
+the assigned order, distributor, and authoritative COD amount. When a validated
+pricing snapshot exists, that amount is its `finalPayableTotal` (which already
+includes delivery); legacy orders without a valid snapshot use the legacy
+`amount + deliveryFee` calculation. This avoids charging the delivery fee twice
+for current checkout orders. When either notification setting is disabled,
+delivery instead requires an explicit distributor confirmation that the full
+amount was collected; the cash event is marked pending verification.
 Delivery, inventory consumption, the distributor cash event, and accounting-
 outbox enqueue are committed together.
 The delivered-sale journal debits `DISTRIBUTOR_COD_RECEIVABLE` (1190), not
@@ -443,6 +447,10 @@ carrier receivables or company cash. Distributors submit remittance amount,
 reference, and a JPG/PNG transfer evidence image; Admin verification rechecks the open receivable
 inside a serializable transaction, posts the treasury receipt, creates a cash
 transaction, and allocates the amount to the distributor's receivable documents.
+
+The first production customer-order release is COD only. Admin social-media
+order entry accepts COD only and rejects other payment-method values; marketing
+cards remain promotional benefits and do not process or represent payment.
 
 Admin return approval snapshots the configured percentage charge against
 returned product value; the original delivery fee is excluded. For distributor
@@ -746,11 +754,13 @@ data, not manufacturer or distributor payables.
 
 ## 6. Third-Party Integrations
 
+The first production release uses COD only. No card-payment provider is
+integrated; unused Stripe/Razorpay dependencies and configuration placeholders,
+and the legacy storefront verification route, have been removed.
+
 | Integration | Current usage |
 | --- | --- |
 | Cloudinary | Product media, contract uploads, partner media, uploaded assets |
-| Stripe | Dependency/configuration names are present; no active initiation, verification, or webhook flow was source-verified |
-| Razorpay | Dependency/configuration names are present; no active initiation, verification, or webhook flow was source-verified |
 | Nepal Can Move (NCM) | Customer delivery creation, webhook status updates, bulk stock-transfer booking/tracking/returns, and handoff reconciliation |
 | RabbitMQ | Notification worker pipeline and durable queue setup |
 | SMTP / Sparrow SMS | Notification worker configuration for email and SMS delivery |

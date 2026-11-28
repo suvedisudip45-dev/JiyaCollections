@@ -249,7 +249,9 @@ const Login = () => {
     }
   }, [token, redirectTo]);
 
-  if (showForgotPassword) {
+  const passwordResetEnabled = import.meta.env.VITE_PASSWORD_RESET_ENABLED === "true";
+
+  if (passwordResetEnabled && showForgotPassword) {
     return (
       <PasswordResetFlow
         backendUrl={backendUrl}
@@ -515,7 +517,7 @@ const Login = () => {
 
         {/* Switch Between Login and Sign Up */}
         <div className="w-full flex justify-between text-sm mt-1">
-          {currentState === "Login" ? (
+          {currentState === "Login" && passwordResetEnabled ? (
             <button
               type="button"
               onClick={() => setShowForgotPassword(true)}

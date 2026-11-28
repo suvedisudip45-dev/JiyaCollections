@@ -2287,6 +2287,7 @@ model Distributor {
   b2bWholesaleOrders         B2BWholesaleOrder[]
   deliveryDrivers            DeliveryDriver[]
   deliveryRouteManifests     DeliveryRouteManifest[]
+  deliveryCashHandovers      DeliveryCashHandover[]
   peerStockCustodyEvents     PeerStockTransferCustodyEvent[]
   inventoryPolicies          DistributorInventoryPolicy[]
   replenishmentSuggestions   DistributorReplenishmentSuggestion[]
@@ -2341,6 +2342,9 @@ model DeliveryDriver {
   updatedAt           DateTime                @updatedAt
   distributor         Distributor             @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   manifests           DeliveryRouteManifest[]
+  cashCollections     DistributorCashEvent[]  @relation("DeliveryCashCollector")
+  cashHandovers       DeliveryCashHandover[]
+  deliveryAttempts    DeliveryAttempt[]
 
   @@index([distributorId, status])
   @@index([phone])
@@ -2392,6 +2396,8 @@ model DeliveryManifestStop {
   updatedAt             DateTime                   @updatedAt
   manifest              DeliveryRouteManifest      @relation(fields: [manifestId], references: [id], onDelete: Cascade)
   proof                 DeliveryProofOfDelivery?
+  attempts              DeliveryAttempt[]
+  cashCollections       DistributorCashEvent[]
   offlineDrafts         OfflineDeliverySyncDraft[]
 
   @@unique([manifestId, orderId])
@@ -2422,6 +2428,34 @@ model DeliveryProofOfDelivery {
 
   @@index([outcome, verifiedAt])
   @@index([actorAccountId])
+}
+
+model DeliveryAttempt {
+  id              String               @id @default(uuid())
+  stopId          String
+  driverId        String
+  attemptNumber   Int
+  outcome         String               @db.VarChar(32) // FAILED | RESCHEDULED | PARTIAL | DELIVERED | RETURNED_TO_CUSTODY
+  reasonCode      String?              @db.VarChar(64)
+  reasonDetails   String?              @db.Text
+  recipientName   String?              @db.VarChar(191)
+  photoPath       String?              @db.Text
+  signaturePath   String?              @db.Text
+  latitude        Decimal?             @db.Decimal(10, 7)
+  longitude       Decimal?             @db.Decimal(10, 7)
+  deviceTimestamp DateTime?
+  nextAttemptAt   DateTime?
+  notes           String?              @db.Text
+  idempotencyKey  String               @unique @db.VarChar(191)
+  actorAccountId  String?              @db.VarChar(191)
+  occurredAt      DateTime             @default(now())
+  createdAt       DateTime             @default(now())
+  stop            DeliveryManifestStop @relation(fields: [stopId], references: [id], onDelete: Restrict)
+  driver          DeliveryDriver       @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@unique([stopId, attemptNumber])
+  @@index([driverId, outcome, occurredAt])
+  @@index([stopId, occurredAt])
 }
 
 model OfflineDeliverySyncDraft {
@@ -2500,6 +2534,8 @@ model DistributorCashEvent {
   id                     String                        @id @default(uuid())
   distributorId          String
   orderId                String?
+  deliveryManifestStopId String?
+  deliveryDriverId       String?
   customerReturnId       String?
   orderExchangeRequestId String?
   remittanceBatchId      String?
@@ -2507,6 +2543,7 @@ model DistributorCashEvent {
   accountingDocumentId   String?
   eventType              String                        @db.VarChar(40) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | EXCHANGE_UPGRADE_COLLECTION | EXCHANGE_DOWNGRADE_REFUND | APPROVED_ADJUSTMENT | DISTRIBUTOR_BALANCE_SETTLEMENT
   amount                 Decimal                       @db.Decimal(20, 2)
+  expectedAmount         Decimal?                      @db.Decimal(20, 2)
   status                 String                        @default("PENDING_VERIFICATION") @db.VarChar(24) // PENDING_VERIFICATION | VERIFIED | POSTED | REJECTED
   paymentMethod          String?                       @db.VarChar(32)
   externalReference      String?                       @db.VarChar(191)
@@ -2523,11 +2560,14 @@ model DistributorCashEvent {
   updatedAt              DateTime                      @updatedAt
   distributor            Distributor                   @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   order                  Order?                        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  deliveryManifestStop   DeliveryManifestStop?         @relation(fields: [deliveryManifestStopId], references: [id], onDelete: Restrict)
+  deliveryDriver         DeliveryDriver?               @relation("DeliveryCashCollector", fields: [deliveryDriverId], references: [id], onDelete: Restrict)
   customerReturn         CustomerReturn?               @relation(fields: [customerReturnId], references: [id], onDelete: Restrict)
   orderExchangeRequest   OrderExchangeRequest?         @relation(fields: [orderExchangeRequestId], references: [id], onDelete: Restrict)
   remittanceBatch        DistributorRemittanceBatch?   @relation(fields: [remittanceBatchId], references: [id], onDelete: Restrict)
   settlementBatch        DistributorBalanceSettlement? @relation(fields: [settlementBatchId], references: [id], onDelete: Restrict)
   accountingDocument     AccountingDocument?           @relation(fields: [accountingDocumentId], references: [id], onDelete: Restrict)
+  handoverAllocations    DeliveryCashHandoverAllocation[]
 
   @@index([distributorId, eventType, status, occurredAt], map: "DistributorCashEvent_distributor_event_status_time_idx")
   @@index([orderId, eventType, status])
@@ -2536,6 +2576,52 @@ model DistributorCashEvent {
   @@index([remittanceBatchId])
   @@index([settlementBatchId])
   @@index([accountingDocumentId, status])
+  @@index([deliveryDriverId, eventType, status, occurredAt])
+  @@index([deliveryManifestStopId, eventType, status])
+}
+
+model DeliveryCashHandover {
+  id                  String                          @id @default(uuid())
+  distributorId       String
+  driverId            String
+  correctionOfId      String?
+  correctionDirection String?                         @db.VarChar(16) // INCREASE | DECREASE
+  expectedAmount      Decimal                         @default(0) @db.Decimal(20, 2)
+  submittedAmount     Decimal                         @db.Decimal(20, 2)
+  confirmedAmount     Decimal?                        @db.Decimal(20, 2)
+  discrepancyAmount  Decimal?                        @db.Decimal(20, 2)
+  status              String                          @default("PENDING_VERIFICATION") @db.VarChar(24) // PENDING_VERIFICATION | VERIFIED | REJECTED
+  idempotencyKey      String                          @unique @db.VarChar(191)
+  evidenceReference   String?                         @db.Text
+  reason              String?                         @db.Text
+  submittedByAccountId String?
+  verifiedByAccountId String?
+  verifiedAt          DateTime?
+  createdAt           DateTime                        @default(now())
+  updatedAt           DateTime                        @updatedAt
+  distributor         Distributor                     @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  driver              DeliveryDriver                  @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  correctionOf        DeliveryCashHandover?            @relation("DeliveryCashHandoverCorrections", fields: [correctionOfId], references: [id], onDelete: Restrict)
+  corrections         DeliveryCashHandover[]           @relation("DeliveryCashHandoverCorrections")
+  allocations         DeliveryCashHandoverAllocation[]
+
+  @@index([distributorId, status, createdAt])
+  @@index([driverId, status, createdAt])
+  @@index([correctionOfId, status])
+}
+
+model DeliveryCashHandoverAllocation {
+  id                    String               @id @default(uuid())
+  handoverId            String
+  collectionEventId     String
+  expectedAmount        Decimal              @db.Decimal(20, 2)
+  confirmedAmount       Decimal?             @db.Decimal(20, 2)
+  createdAt             DateTime             @default(now())
+  handover              DeliveryCashHandover @relation(fields: [handoverId], references: [id], onDelete: Restrict)
+  collectionEvent       DistributorCashEvent @relation(fields: [collectionEventId], references: [id], onDelete: Restrict)
+
+  @@unique([handoverId, collectionEventId])
+  @@index([collectionEventId, createdAt])
 }
 
 model DistributorSettlementOffset {

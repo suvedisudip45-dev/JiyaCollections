@@ -1188,6 +1188,16 @@ export const completeRouteStop = async ({
         executeInTransaction: true,
       });
     }
+  } else if (outcome === "FAILED") {
+    await updateSelfDeliveryStatus({
+      distributorId,
+      assignmentIdOrOrderId: assignment.id,
+      status: "Customer Not Found",
+      notes: clean(body.notes || body.failedReason || "Customer unreachable / not found on delivery attempt", 4000),
+      actorContext: { actorId: actorAccountId, actorRole: "DISTRIBUTOR" },
+      client: tx,
+      executeInTransaction: true,
+    });
   }
 
   const idempotencyKey = clean(body.idempotencyKey || "", 191) || `pod:${stop.id}:${hashPayload({

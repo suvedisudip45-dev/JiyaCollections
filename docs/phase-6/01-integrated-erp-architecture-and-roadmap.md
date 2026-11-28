@@ -92,7 +92,8 @@ Customer account -> catalog selection -> cart -> order -> reservation/assignment
 **Partial or missing controls**
 
 - Checkout may reserve canonical distributor stock only after the operational order path.
-- Online payment and COD are distinct.
+- The first production release is COD-only; online payment processing is
+  excluded from its scope.
 - Order placement is not revenue recognition or proof of collection.
 - Delivery completion is not proof of company Treasury receipt.
 - Some legacy order, direct-order and return paths modify catalog stock instead of canonical SKU/location stock.
@@ -490,19 +491,18 @@ Trigger: customer collection and later remittance submission. Source: `Distribut
 ```mermaid
 flowchart LR
     C[Customer checkout] --> O[Order and accepted price snapshot]
-    O --> Pay{Payment method}
-    Pay -->|Online| P[Payment provider result]
-    Pay -->|COD| COD[Unpaid COD marker]
-    P --> Alloc[Stock eligibility/reservation]
+    O --> COD[COD due, unpaid marker]
     COD --> Alloc
     Alloc --> F[Fulfillment/delivery]
     F --> Inv[Invoice/sale recognition]
-    P --> R[Gateway clearing/settlement]
     Inv --> GL[Journal and subledgers]
-    R --> Treasury[Treasury only after gateway/bank evidence]
 ```
 
-Trigger: checkout and later payment/delivery outcomes. Source: order, gateway event, invoice and delivery. Inventory: reserve and later fulfill. Financial: receivable/revenue/COGS are policy-led; gateway and Treasury settlement are separate. Reconciliation: order-to-payment-to-delivery-to-invoice-to-GL and provider/bank.
+Trigger: checkout and later COD collection/delivery outcomes. Source: order,
+COD collection, invoice and delivery. Inventory: reserve and later fulfill.
+Financial: receivable/revenue/COGS are policy-led; COD custody and Treasury
+settlement remain separate. Reconciliation covers the order, collection,
+delivery, invoice and GL evidence.
 
 ### 5.7 COD order to delivery, collection, remittance and Treasury
 
@@ -967,16 +967,25 @@ Do not infer links from matching free-text supplier name, invoice number, Produc
 
 ### P6-R7 - Customer lifecycle integration
 
-- Scope: normalized checkout, gateway receipt, invoice, order/delivery, return/refund and exchange.
+- Scope: normalized COD checkout, invoice, order/delivery, return/refund and
+  exchange. Gateway receipt and online payment are excluded from the first
+  production release.
 - Dependencies: P6-R5/P6-R6 and revenue recognition policy.
-- Expected files: order/payment/delivery/return services, gateway adapters and portal callers.
-- Schema: add formal payment capture/clearing source if approved.
+- Expected files: order, COD collection, delivery and return services and
+  portal callers. Do not add a gateway adapter for this release.
+- Schema: preserve the existing COD/accounting sources; no gateway capture or
+  clearing model is in first-release scope.
 - APIs/UI: customer/Admin/distributor read and mutation contracts.
-- Accounting: revenue, receivable, gateway clearing, Treasury, COGS and refund posting.
-- Tests: online paid, COD, split shipment, cancellation, partial return and ambiguous provider outcomes.
-- Acceptance: order, inventory, invoice, payment and delivery reconcile to a source event.
-- Rollback: preserve provider/idempotency records; fall back to existing operational status.
-- Release gate: payment-provider sandbox and no ambiguous successful outcomes.
+- Accounting: revenue, receivable, COD settlement, Treasury, COGS and refund
+  posting.
+- Tests: COD, split shipment, cancellation, partial return and collection
+  replay protection.
+- Acceptance: order, inventory, invoice, COD collection and delivery reconcile
+  to source evidence.
+- Rollback: preserve COD collection/idempotency records; fall back to existing
+  operational status.
+- Release gate: staged COD order-to-delivery and collection verification. Any
+  online payment is a separate future scope requiring explicit approval.
 
 ### P6-R8 - Operational reporting and dashboards
 

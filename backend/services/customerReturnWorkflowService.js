@@ -1192,6 +1192,15 @@ export const markCustomerReturnRefunded = async ({ returnId, adminId, actorConte
       data: { lifecycleStatus: "REFUNDED", refundStatus: "COMPLETED", completedAt: new Date() },
     });
     if (result.count !== 1) throw fail("The return refund was already processed.", "RETURN_REFUND_CONFLICT", 409);
+    if (current.orderId) {
+      await tx.order.updateMany({
+        where: { id: current.orderId },
+        data: {
+          status: "Returned",
+          fulfillmentStatus: "returned",
+        },
+      });
+    }
     await addReturnEvent(tx, {
       returnId,
       eventType: "REFUNDED",

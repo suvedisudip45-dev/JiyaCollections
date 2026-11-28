@@ -60,3 +60,12 @@ test("Admin direct-order creation rejects a paid declaration before database acc
     body: { payment: true },
   }));
 });
+
+test("Admin social-media orders reject non-COD payment methods before database access", async () => {
+  const result = await invoke(adminCreateOrder, {
+    body: { paymentMethod: "Khalti" },
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(result.body.code, "UNSUPPORTED_PAYMENT_METHOD");
+});

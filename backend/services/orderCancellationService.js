@@ -247,6 +247,34 @@ const cancelOrderBeforeHandoff = async ({
       await tx.marketingCardOrder.delete({ where: { id: cardLink.id } });
     }
 
+    const rewardData = typeof order.rewardApplied === "string"
+      ? (() => { try { return JSON.parse(order.rewardApplied); } catch { return null; } })()
+      : order.rewardApplied;
+    if (rewardData?.source === "MARKETING_CARD" && rewardData.cardId) {
+      await tx.marketingBenefitRedemption.updateMany({
+        where: {
+          cardId: rewardData.cardId,
+          ...(rewardData.benefitId ? { benefitId: rewardData.benefitId } : {}),
+          customerId: order.userId,
+          status: "REDEEMED",
+        },
+        data: {
+          status: "CLAIMED",
+          redeemedAt: null,
+        },
+      });
+      await tx.marketingCardEvent.create({
+        data: {
+          cardId: rewardData.cardId,
+          eventType: "BENEFIT_RESTORED_ON_ORDER_CANCELLATION",
+          actorId,
+          actorRole,
+          referenceId: order.id,
+          metadata: { benefitId: rewardData.benefitId, reason: cancellationReason },
+        },
+      });
+    }
+
     for (const [productId, lines] of productLines) {
       const before = await tx.product.findUnique({ where: { id: productId }, select: { stockQuantity: true, name: true } });
       const stockChange = await syncProductStock(productId, { client: tx, throwOnError: true });

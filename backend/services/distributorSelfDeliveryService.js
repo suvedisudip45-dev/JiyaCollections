@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
 import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
@@ -18,6 +19,7 @@ import { postDistributorReturnInventoryAccounting } from "./accountingPostingEng
 import {
   formatCollectionAmount,
   isDistributorDeliveryOtpEnabled,
+  normalizeOrderCollectionAmount,
   verifyDistributorDeliveryOtp,
 } from "./distributorDeliveryOtpService.js";
 
@@ -136,6 +138,10 @@ const SELF_DELIVERY_STATUSES = [
   "on_the_way",
   "On the Way",
   "out_for_delivery",
+  "customer_not_found",
+  "Customer Not Found",
+  "undelivered",
+  "Undelivered",
   "delivered",
   "Delivered",
   "returned",
@@ -196,7 +202,7 @@ export const validateSelfDeliveryTransition = (currentStatus, targetStatus) => {
   }
 
   if (target === "on_the_way" || target === "on the way" || target === "out_for_delivery") {
-    if (current === "dispatched" || current === "on_the_way" || current === "on the way") {
+    if (current === "dispatched" || current === "on_the_way" || current === "on the way" || current === "customer_not_found" || current === "undelivered") {
       return { valid: true, canonicalStatus: "On the Way", internalStatus: "on_the_way" };
     }
     return {
@@ -205,8 +211,18 @@ export const validateSelfDeliveryTransition = (currentStatus, targetStatus) => {
     };
   }
 
+  if (target === "customer_not_found" || target === "customer not found" || target === "undelivered" || target === "failed") {
+    if (current === "on_the_way" || current === "on the way" || current === "dispatched" || current === "customer_not_found" || current === "undelivered") {
+      return { valid: true, canonicalStatus: "Customer Not Found", internalStatus: "customer_not_found" };
+    }
+    return {
+      valid: false,
+      message: `Cannot mark 'Customer Not Found'. Order must be 'On the Way' or 'Dispatched' first (current: '${currentStatus}').`,
+    };
+  }
+
   if (target === "delivered") {
-    if (current === "on_the_way" || current === "on the way" || current === "dispatched" || current === "delivered") {
+    if (current === "on_the_way" || current === "on the way" || current === "dispatched" || current === "customer_not_found" || current === "undelivered" || current === "delivered") {
       return { valid: true, canonicalStatus: "Delivered", internalStatus: "delivered" };
     }
     return {
@@ -248,6 +264,7 @@ export const listAssignedDistributorOrders = async ({
     else if (norm === "dispatched") where.status = { in: ["dispatched", "Dispatched"] };
     else if (norm === "on_the_way" || norm === "on the way") where.status = { in: ["on_the_way", "On the Way", "out_for_delivery"] };
     else if (norm === "delivered") where.status = { in: ["delivered", "Delivered"] };
+    else if (norm === "customer_not_found" || norm === "undelivered" || norm === "customer not found") where.status = { in: ["customer_not_found", "Customer Not Found", "undelivered", "Undelivered"] };
     else if (norm === "returned") where.status = { in: ["returned", "Returned", "return_requested"] };
     else where.status = status;
   }
@@ -463,8 +480,10 @@ export const updateSelfDeliveryStatus = async ({
   assignmentIdOrOrderId,
   status,
   otpCode = null,
+  collectionAmount = null,
   collectionConfirmed = false,
   paymentMethod = "CASH",
+  deliveryContext = null,
   notificationConfig,
   notes = null,
   actorContext = {},
@@ -560,6 +579,7 @@ export const updateSelfDeliveryStatus = async ({
             distributorId,
             order,
             code: otpCode,
+            collectionAmount,
             paymentMethod,
             actorId: actorContext.actorId,
             now,
@@ -567,26 +587,31 @@ export const updateSelfDeliveryStatus = async ({
           if (collection.error) return { deliveryOtpError: collection.error };
         } else {
           const normalizedPaymentMethod = String(paymentMethod || "").trim().toUpperCase();
-          if (!["CASH", "BANK_TRANSFER", "MOBILE_WALLET", "CARD"].includes(normalizedPaymentMethod)) {
+          if (normalizedPaymentMethod !== "CASH") {
             return {
-              deliveryOtpError: fail("Select a valid customer payment method.", 400, "INVALID_PAYMENT_METHOD"),
+              deliveryOtpError: fail("COD collection at delivery must be recorded as cash.", 400, "INVALID_PAYMENT_METHOD"),
             };
           }
           collection = {
-            collectionAmount: formatCollectionAmount(order),
+            collectionAmount: normalizeOrderCollectionAmount(order, collectionAmount),
             paymentMethod: normalizedPaymentMethod,
           };
         }
         collectionVerified = otpRequired;
+        const collectionIdempotencyKey = deliveryContext?.collectionIdempotencyKey ||
+          `delivery-collection:${order.id}`;
         await tx.distributorCashEvent.create({
           data: {
             distributorId,
             orderId: order.id,
+            deliveryManifestStopId: deliveryContext?.stopId || null,
+            deliveryDriverId: deliveryContext?.driverId || null,
             eventType: "CUSTOMER_COLLECTION",
             amount: collection.collectionAmount,
+            expectedAmount: formatCollectionAmount(order),
             status: otpRequired ? "VERIFIED" : "PENDING_VERIFICATION",
             paymentMethod: collection.paymentMethod,
-            idempotencyKey: `delivery-collection:${order.id}`,
+            idempotencyKey: collectionIdempotencyKey,
             occurredAt: now,
             recordedByAccountId: actorContext.actorId || null,
             ...(otpRequired
@@ -623,8 +648,6 @@ export const updateSelfDeliveryStatus = async ({
         effectiveAt: now,
         client: tx,
       });
-      if (collectionVerified) orderUpdateData.payment = true;
-
       const inventoryConsumption = await consumeDistributorOrderInventory({
         tx,
         orderId: order.id,
@@ -634,6 +657,23 @@ export const updateSelfDeliveryStatus = async ({
         actorId: actorContext.actorId || distributorId,
       });
       orderUpdateData.items = inventoryConsumption.accountingItems;
+      if (collectionVerified) {
+        const verifiedCollections = await tx.distributorCashEvent.aggregate({
+          where: {
+            orderId: order.id,
+            eventType: "CUSTOMER_COLLECTION",
+            status: { in: ["VERIFIED", "POSTED"] },
+          },
+          _sum: { amount: true },
+        });
+        if (
+          new Prisma.Decimal(
+            String(verifiedCollections._sum.amount || 0),
+          ).gte(formatCollectionAmount(order))
+        ) {
+          orderUpdateData.payment = true;
+        }
+      }
 
       const accountingEvent = await enqueueDeliveredSaleAccounting(
         {

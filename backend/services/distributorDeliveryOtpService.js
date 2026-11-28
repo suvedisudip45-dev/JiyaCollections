@@ -4,6 +4,7 @@ import { createNotificationInTransaction } from "../notifications/notificationSe
 import { loadNotificationConfig } from "../notifications/config.js";
 import { encryptNotificationText } from "../utils/secureNotificationPayload.js";
 import { accountingDecimal, addDecimals, quantizeNprAmount } from "./accountingDecimal.js";
+import { readOrderPricingSnapshot } from "./checkoutPricingService.js";
 import { generateSecureOtp, loadOtpConfig } from "./otpService.js";
 
 const RESEND_COOLDOWN_MS = 60_000;
@@ -28,12 +29,17 @@ const parseAddress = (address) => {
 
 export const formatCollectionAmount = (order) => {
   try {
-    const amount = accountingDecimal(String(order?.amount ?? 0), "Order amount");
-    const deliveryFee = accountingDecimal(String(order?.deliveryFee ?? 0), "Delivery fee");
-    if (amount.isNegative() || deliveryFee.isNegative()) {
+    const snapshot = readOrderPricingSnapshot(order?.locationPricingSnapshot);
+    const amount = snapshot
+      ? accountingDecimal(snapshot.totals.finalPayableTotal, "Order amount")
+      : addDecimals(
+          accountingDecimal(String(order?.amount ?? 0), "Order amount"),
+          accountingDecimal(String(order?.deliveryFee ?? 0), "Delivery fee"),
+        );
+    if (amount.isNegative()) {
       throw fail("The order collection amount is invalid.", 409, "INVALID_COLLECTION_AMOUNT");
     }
-    return quantizeNprAmount(addDecimals(amount, deliveryFee)).toFixed(2);
+    return quantizeNprAmount(amount).toFixed(2);
   } catch (error) {
     if (error?.code === "INVALID_COLLECTION_AMOUNT") throw error;
     throw fail("The order collection amount is invalid.", 409, "INVALID_COLLECTION_AMOUNT");
@@ -42,6 +48,22 @@ export const formatCollectionAmount = (order) => {
 
 const normalizeAmount = (amount) =>
   quantizeNprAmount(accountingDecimal(String(amount), "Collection amount")).toFixed(2);
+
+export const normalizeOrderCollectionAmount = (order, amount) => {
+  const expectedAmount = accountingDecimal(formatCollectionAmount(order), "Expected COD amount");
+  let collectionAmount;
+  try {
+    collectionAmount = amount === undefined || amount === null || amount === ""
+      ? expectedAmount
+      : quantizeNprAmount(accountingDecimal(String(amount), "Collection amount"));
+  } catch {
+    throw fail("The COD collection amount is invalid.", 400, "INVALID_COLLECTION_AMOUNT");
+  }
+  if (collectionAmount.lte(0) || collectionAmount.gt(expectedAmount)) {
+    throw fail("The COD collection amount must be greater than zero and no more than the outstanding order amount.", 400, "INVALID_COLLECTION_AMOUNT");
+  }
+  return collectionAmount.toFixed(2);
+};
 
 const buildCodeHash = ({ code, orderId, distributorId, collectionAmount, secret }) => crypto
   .createHmac("sha256", secret)
@@ -56,7 +78,13 @@ export const isDistributorDeliveryOtpEnabled = (notificationConfig = loadNotific
   Boolean(notificationConfig.enabled && notificationConfig.sms.enabled)
 );
 
-const getAssignedOrder = async ({ tx, orderId, distributorId, requireCustomerPhone = true }) => {
+const getAssignedOrder = async ({
+  tx,
+  orderId,
+  distributorId,
+  collectionAmount: requestedCollectionAmount,
+  requireCustomerPhone = true,
+}) => {
   const assignment = await tx.orderAssignment.findFirst({
     where: { orderId, distributorId },
     select: { id: true, orderId: true, distributorId: true, deliveryType: true, status: true },
@@ -65,7 +93,7 @@ const getAssignedOrder = async ({ tx, orderId, distributorId, requireCustomerPho
   if (String(assignment.deliveryType || "SELF_DELIVERY").toUpperCase() !== "SELF_DELIVERY") {
     throw fail("Customer OTP is available only for distributor self-delivery.", 409, "NOT_SELF_DELIVERY");
   }
-  if (!["on_the_way", "out_for_delivery", "On the Way"].includes(assignment.status)) {
+  if (!["on_the_way", "out_for_delivery", "On the Way", "delivered", "Delivered"].includes(assignment.status)) {
     throw fail("Move the order to 'On the Way' before requesting the customer delivery code.", 409, "INVALID_OTP_ORDER_STATUS");
   }
 
@@ -81,6 +109,7 @@ const getAssignedOrder = async ({ tx, orderId, distributorId, requireCustomerPho
       id: true,
       amount: true,
       deliveryFee: true,
+      locationPricingSnapshot: true,
       payment: true,
       paymentMethod: true,
       address: true,
@@ -95,12 +124,19 @@ const getAssignedOrder = async ({ tx, orderId, distributorId, requireCustomerPho
   if (requireCustomerPhone && (!phone || phone.length > 40)) {
     throw fail("The customer phone number is missing or invalid; place the order on hold and contact support.", 409, "CUSTOMER_PHONE_UNAVAILABLE");
   }
-  return { assignment, order, phone, collectionAmount: formatCollectionAmount(order) };
+  return {
+    assignment,
+    order,
+    phone,
+    expectedAmount: formatCollectionAmount(order),
+    collectionAmount: normalizeOrderCollectionAmount(order, requestedCollectionAmount),
+  };
 };
 
 export const issueDistributorDeliveryOtp = async ({
   distributorId,
   orderId,
+  collectionAmount,
   actorId = null,
   requestIp = null,
   client = prisma,
@@ -113,7 +149,7 @@ export const issueDistributorDeliveryOtp = async ({
   const otpRequired = isDistributorDeliveryOtpEnabled(notificationConfig);
   if (!otpRequired) {
     await client.$transaction(async (tx) => {
-      await getAssignedOrder({ tx, orderId, distributorId, requireCustomerPhone: false });
+      await getAssignedOrder({ tx, orderId, distributorId, collectionAmount, requireCustomerPhone: false });
     });
     return {
       success: true,
@@ -130,7 +166,12 @@ export const issueDistributorDeliveryOtp = async ({
   const activeOrderKey = `${orderId}:ACTIVE`;
   try {
     const result = await client.$transaction(async (tx) => {
-      const { order, phone, collectionAmount } = await getAssignedOrder({ tx, orderId, distributorId });
+      const { order, phone, collectionAmount: requestedAmount } = await getAssignedOrder({
+        tx,
+        orderId,
+        distributorId,
+        collectionAmount,
+      });
       const active = await tx.deliveryOtpChallenge.findUnique({
         where: { activeOrderKey },
         select: { id: true, status: true, lastSentAt: true, expiresAt: true },
@@ -169,8 +210,8 @@ export const issueDistributorDeliveryOtp = async ({
           activeOrderKey,
           notificationId: notification.id,
           idempotencyKey: `delivery-otp:${orderId}:${challengeId}`,
-          codeHash: buildCodeHash({ code, orderId, distributorId, collectionAmount, secret }),
-          collectionAmount,
+          codeHash: buildCodeHash({ code, orderId, distributorId, collectionAmount: requestedAmount, secret }),
+          collectionAmount: requestedAmount,
           status: "PENDING",
           attemptCount: 0,
           maxAttempts: MAX_ATTEMPTS,
@@ -201,6 +242,7 @@ export const verifyDistributorDeliveryOtp = async ({
   tx,
   distributorId,
   order,
+  collectionAmount: requestedCollectionAmount,
   code,
   paymentMethod = "CASH",
   actorId = null,
@@ -208,8 +250,8 @@ export const verifyDistributorDeliveryOtp = async ({
 } = {}) => {
   if (!tx || !order?.id || !distributorId) throw fail("Delivery verification context is incomplete.", 500);
   const normalizedPaymentMethod = String(paymentMethod).trim().toUpperCase();
-  if (!["CASH", "BANK_TRANSFER", "MOBILE_WALLET", "CARD"].includes(normalizedPaymentMethod)) {
-    return { error: fail("Select a valid customer payment method.", 400, "INVALID_PAYMENT_METHOD") };
+  if (normalizedPaymentMethod !== "CASH") {
+    return { error: fail("COD collection at delivery must be recorded as cash.", 400, "INVALID_PAYMENT_METHOD") };
   }
   const activeOrderKey = `${order.id}:ACTIVE`;
   const challenge = await tx.deliveryOtpChallenge.findUnique({
@@ -233,7 +275,12 @@ export const verifyDistributorDeliveryOtp = async ({
     return { error: fail("The customer delivery code is locked. Request support.", 429, "DELIVERY_OTP_LOCKED") };
   }
 
-  const collectionAmount = formatCollectionAmount(order);
+  let collectionAmount;
+  try {
+    collectionAmount = normalizeOrderCollectionAmount(order, requestedCollectionAmount);
+  } catch (error) {
+    return { error };
+  }
   if (normalizeAmount(challenge.collectionAmount) !== collectionAmount) {
     await tx.deliveryOtpChallenge.updateMany({
       where: { id: challenge.id, status: "PENDING", activeOrderKey },

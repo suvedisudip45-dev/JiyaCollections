@@ -727,8 +727,8 @@ const FinancialStatements = ({ token }) => {
             }`}
           >
             {moCf.isReconciled
-              ? "Cash flows use posted movements in cash, bank, and wallet/gateway clearing accounts (1110, 1120, 1180) and reconcile to their General Ledger balance. Account 1180 combines Treasury wallets and payment gateway clearing."
-              : `Cash flow uses posted cash, bank, and wallet/gateway clearing journals but does not reconcile to the General Ledger balance. Difference: Rs ${cashFlowAmount(moCf.reconciliationDifference)}. Check opening balances and journal postings. Account 1180 combines Treasury wallets and payment gateway clearing.`}
+              ? "Cash flows use posted movements in cash, bank, and wallet/legacy clearing accounts (1110, 1120, 1180) and reconcile to their General Ledger balance. Account 1180 includes a legacy clearing purpose; it is not an active payment gateway."
+              : `Cash flow uses posted cash, bank, and wallet/legacy clearing journals but does not reconcile to the General Ledger balance. Difference: Rs ${cashFlowAmount(moCf.reconciliationDifference)}. Check opening balances and journal postings. Account 1180 includes a legacy clearing purpose; it is not an active payment gateway.`}
           </div>
 
           <div className="space-y-6 text-xs text-slate-700">

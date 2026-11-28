@@ -15,7 +15,7 @@ Built with Node.js, Express, Prisma (MySQL), React (Vite), and Tailwind CSS.
 
 ---
 
-> **Current-source note:** This README previously contained legacy architecture, routing, payment, and setup claims. The current repository has four independent portals (`frontend/`, `admin/`, `manufacturer/`, `marketing/`); distributor operations are a workspace in `manufacturer/`, and there is no `delivery/` app. Stripe/Razorpay dependencies and configuration names do not establish an active gateway flow. Do not use legacy database setup commands; see [Project Overview](PROJECT_OVERVIEW.md), [Architecture and Backend](ARCHITECTURE_AND_BACKEND.md), and the [P6-R2B readiness audit](docs/phase-6/04-whole-project-erp-implementation-readiness-audit.md).
+> **Current-source note:** The first production release is limited to Cash on Delivery (COD); no bank/debit/credit-card gateway, payment processor, card-token, PCI-processing, or payment-provider webhook flow is in scope. Marketing cards are promotional instruments, not payment cards. This repository has four independent portals (`frontend/`, `admin/`, `manufacturer/`, `marketing/`); distributor operations are a workspace in `manufacturer/`, and there is no `delivery/` app. Do not use legacy database setup commands; see [Project Overview](PROJECT_OVERVIEW.md), [First Production Release Readiness](docs/first-production-release-readiness.md), [Architecture and Backend](ARCHITECTURE_AND_BACKEND.md), and the [P6-R2B readiness audit](docs/phase-6/04-whole-project-erp-implementation-readiness-audit.md).
 
 ## 🌐 The Business Model & Architecture
 
@@ -48,7 +48,7 @@ Marketing partner ───┘                       └── separate notifica
 - Delivery is integrated with NCM and other operational flows through the backend; there is no separate delivery portal. A delivery status is not, by itself, evidence of COD cash collection or remittance.
 - Admin finance and accounting features are present, but reports and subsystem reconciliation have documented scope and completeness limits. See [the accounting documentation](docs/accounting/).
 - Marketing partner workflows are implemented in the separate `marketing/` portal.
-- Cloudinary uploads and the separate notification worker are external boundaries. Payment-provider package/configuration presence is not evidence of an active Stripe or Razorpay transaction flow.
+- Cloudinary uploads and the separate notification worker are external boundaries. Customer orders in the first production release use COD only; no payment-provider transaction flow is part of the release.
 
 ---
 

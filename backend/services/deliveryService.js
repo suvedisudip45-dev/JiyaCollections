@@ -61,6 +61,9 @@ export const STATUS_MAP = {
   "Sent for Pickup": "NCM_CREATED",
   "Pickup Complete": "PICKUP_CONFIRMED",
   "Sent for Delivery": "OUT_FOR_DELIVERY",
+  "Customer Not Found": "CUSTOMER_NOT_FOUND",
+  "Delivery Attempt Failed": "CUSTOMER_NOT_FOUND",
+  Undelivered: "CUSTOMER_NOT_FOUND",
   Dispatched: "IN_TRANSIT",
   "In Transit": "IN_TRANSIT",
   Arrived: "ARRIVED_AT_DESTINATION",
@@ -79,6 +82,25 @@ const NCM_STATUS_ALIASES = new Map([
   ...["sent for delivery", "out for delivery"].map((value) => [
     value,
     { deliveryState: "OUT_FOR_DELIVERY", canonicalStatus: "Sent for Delivery" },
+  ]),
+  ...[
+    "customer not found",
+    "customer unreachable",
+    "receiver not reachable",
+    "customer not reachable",
+    "phone unreachable",
+    "phone switched off",
+    "door closed",
+    "undelivered",
+    "delivery attempt failed",
+    "delivery failed",
+    "failed delivery",
+    "customer refused",
+    "customer rejected",
+    "not delivered",
+  ].map((value) => [
+    value,
+    { deliveryState: "CUSTOMER_NOT_FOUND", canonicalStatus: "Customer Not Found" },
   ]),
   ...["arrived", "order arrived", "arrived at destination"].map((value) => [
     value,
@@ -110,6 +132,7 @@ const DELIVERY_STATE_RANK = {
   IN_TRANSIT: 3,
   ARRIVED_AT_DESTINATION: 4,
   OUT_FOR_DELIVERY: 5,
+  CUSTOMER_NOT_FOUND: 5,
   DELIVERED: 6,
   RETURN_REQUESTED: 7,
   RETURNED: 8,
@@ -298,6 +321,7 @@ const syncSummary = (state) => {
     IN_TRANSIT: "in_transit",
     ARRIVED_AT_DESTINATION: "arrived_at_destination",
     OUT_FOR_DELIVERY: "out_for_delivery",
+    CUSTOMER_NOT_FOUND: "customer_not_found",
     DELIVERED: "delivered",
     RETURN_REQUESTED: "return_requested",
   };
@@ -1300,6 +1324,8 @@ export const applyNcmStatus = async ({
 
         if (deliveryState === "DELIVERED") {
           orderUpdateData.status = "Delivered";
+        } else if (deliveryState === "CUSTOMER_NOT_FOUND") {
+          orderUpdateData.status = "Customer Not Found";
         } else if (
           ["PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"].includes(deliveryState)
         ) {

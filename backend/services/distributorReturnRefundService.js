@@ -401,6 +401,15 @@ export const reviewDistributorCustomerRefund = async ({
       if (eventClaim.count !== 1 || returnClaim.count !== 1) {
         throw fail("Refund review changed concurrently.", 409, "RETURN_REFUND_CONFLICT");
       }
+      if (returnRecord.orderId) {
+        await tx.order.updateMany({
+          where: { id: returnRecord.orderId },
+          data: {
+            status: "Returned",
+            fulfillmentStatus: "returned",
+          },
+        });
+      }
       await addReturnEvent(tx, {
         returnId,
         eventType: "DISTRIBUTOR_REFUND_VERIFIED",

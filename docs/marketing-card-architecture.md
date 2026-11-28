@@ -1,63 +1,79 @@
-# Marketing Card Architecture
+# Marketing Cards — Current Promotional Feature
 
-## Current architecture
+## Scope boundary
 
-- Backend: Express.js ES modules with Prisma 5 and MySQL.
-- Database: UUID primary keys and relational Prisma models.
-- Authentication: customer JWTs expose `req.userId`; manufacturer JWTs expose `req.manufacturerId`; admin JWTs expose `req.adminId` and `role: admin`.
-- Authorization: route middleware plus controller ownership checks. There is no granular permission table yet.
-- Fulfillment: `OrderAssignment` controls manufacturer workflow. `prepareReadyDelivery` is the server-side boundary immediately before delivery submission.
-- Frontends: separate Vite React applications for admin, manufacturer, and customer experiences.
-- Audit: no generic audit model exists. Marketing card lifecycle events will use a dedicated event table.
+Marketing cards are promotional instruments for campaign-linked discounts,
+offers, or gifts. They are not bank, debit, or credit cards; they do not
+authorize payment, store payment credentials, or connect to a payment
+processor. Customer order payment for the first production release is COD only.
 
-## Confirmed business rules
+This document describes the existing source implementation, not a production
+approval. No production database, card population, campaign setup, or partner
+store operation was inspected.
 
-1. There are currently no production records to preserve.
-2. Every normal online order requires a marketing card before manufacturer packaging/delivery handoff.
-3. Admin assigns card inventory to manufacturers using campaign demand and location analysis.
-4. A manufacturer randomly selects a card from its own received and available inventory for an order.
-5. Customers can activate cards only after a delivered order has been verified; benefits are campaign-linked and redeemed per card/benefit.
+## Implemented source model and flow
 
-## Data integrity design
+- Admin-managed campaigns, batches, benefits, and card inventory are served
+  through the backend marketing-card routes and the Admin/marketing portals.
+- A card has a unique internal ID and unique visible `cardCode`; its QR token is
+  stored as a unique hash. Raw QR tokens are not stored in card lifecycle
+  records.
+- Cards can be assigned to a partner or distributor, received into inventory,
+  reserved, attached to an order, and cancelled. Assignment, attachment, and
+  customer-link uniqueness are enforced by database constraints and service
+  transactions.
+- A customer can link and activate an eligible card after the related order's
+  delivery has been verified. Campaign and benefit windows, campaign status,
+  card expiry, customer/organization scan limits, card ownership, and benefit
+  status are checked by the customer-card service.
+- The storefront may apply an eligible card discount during checkout. The
+  backend recalculates the benefit against the current order, prevents stacking
+  with a loyalty reward, and transitions a claimed benefit to redeemed in the
+  order-creation transaction.
+- Partner redemption validation is separate from checkout. The customer direct
+  redemption endpoint is disabled; in-store benefit validation/redeeming uses
+  the partner workflow. Benefits can also create a gift entitlement, which is
+  fulfilled through the separate gift inventory workflow.
+- `MarketingBenefitRedemption` retains the customer/card/benefit relationship
+  and status. A unique `(cardId, benefitId)` constraint prevents duplicate
+  redemption. `MarketingCardEvent` records lifecycle actions, and Admin and
+  partner reporting expose card, scan, and redemption aggregates.
 
-- Internal UUIDs are separate from visible card codes.
-- QR secrets are cryptographically random and stored as SHA-256 hashes.
-- Card codes and QR hashes are unique at the database level.
-- A card can belong to only one manufacturer assignment and one order.
-- Manufacturer receipt is explicit; unreceived cards cannot be reserved.
-- Card reservation and order attachment happen in one database transaction.
-- Customer linking is unique per physical card and benefit redemption is unique per card/benefit pair.
-- QR resolution and redemption require the existing customer JWT and never expose raw token data.
-- Lifecycle events do not store raw QR tokens.
+## Requirement assessment
 
-## Integration points
+| Requirement | Source finding | Release assessment |
+|---|---|---|
+| Unique card identification | Unique card code and QR-token hash; internal UUID is separate | Implemented in schema and service; verify live uniqueness only after an approved data check |
+| Customer assignment | Unique card-to-customer link, customer ownership checks, activation timestamp | Implemented for eligible cards |
+| Activation and expiry | Activation state/time; campaign and benefit start/expiry checks; expired campaign cards are cancelled | Implemented in source; campaign setup and boundary behavior need staging tests |
+| Campaign and discount rules | Active/paused/cancelled campaigns, active benefits, fixed/percentage/max discount rules, eligibility and scan limits | Implemented with route-specific rules; verify actual campaign configuration |
+| Eligibility and usage restrictions | Order delivery, customer identity, campaign/benefit status, time window, scan limits, order/reward validation | Implemented for reviewed paths; do not assume every legacy order route uses identical rules |
+| Duplicate redemption prevention | Conditional claimed-to-redeemed update in checkout transaction and unique card/benefit constraint | Implemented for the reviewed checkout claim path |
+| Redemption history | Redemption rows, lifecycle events, and Admin/partner aggregates | Implemented; reconcile reports to persisted data before launch |
+| Revocation and suspension | Card cancellation/invalidation and campaign pause/cancel exist; no distinct per-card `SUSPENDED` state was found | Partial; establish who may revoke and how a suspension differs from cancellation |
+| Auditability and reporting | Card lifecycle event table plus Admin and partner reports | Implemented in source; verify audit visibility, retention, and report totals in staging |
 
-- Admin APIs use existing `authAdmin` middleware.
-- Manufacturer APIs use existing `authManufacturer` middleware and derive manufacturer identity from the token.
-- Existing `OrderAssignment` and delivery flow are preserved.
-- `prepareReadyDelivery` independently verifies that a required card is attached before creating or resubmitting a delivery order.
-- Admin and manufacturer navigation receive focused additions without changing their authentication or application shells.
-- Customer card listing, activation, QR resolution, and redemption use the existing storefront authentication state.
+## Operational release checks
 
-## Planned flow
+`Order.marketingCardRequired` defaults to true, and delivery preparation rejects
+an order that requires a card but has no eligible card attached. Before launch,
+confirm that this is intentional for every COD order. If required, ensure the
+single active distributor has enough eligible promotional-card inventory and
+that attachment failure has an operator recovery path. Do not interpret that
+fulfillment requirement as a payment-card requirement.
 
-```text
-Admin creates campaign and batch
-  -> cards are generated with opaque QR secrets
-  -> admin assigns cards to a manufacturer
-  -> manufacturer confirms receipt
-  -> manufacturer views received inventory
-  -> manufacturer selects a card for an assigned order
-  -> transaction reserves card and attaches it to order
-  -> existing packaging/delivery handoff validates the attachment again
-  -> delivered customer authenticates and links the card
-  -> customer verifies QR and redeems an eligible campaign benefit
-```
+Test campaign start/end boundaries, paused/cancelled campaigns, exhausted
+benefits, duplicate checkout submissions, customer ownership, cancellation,
+returns/exchanges, split orders, and reward/gift fulfillment in staging. No
+production card or campaign records were inspected for this audit.
 
-## Risks and controls
+## Source references
 
-- Bypassing the UI: server-side ownership and status checks are mandatory.
-- Double booking: unique order/card relations plus transactions prevent it.
-- Lost or unreceived stock: receipt status gates availability.
-- Partial delivery failure: card attachment occurs before delivery handoff and remains auditable.
-- Existing fulfillment behavior: the new requirement is isolated to card validation and does not replace the current state machine.
+- [Marketing-card schema](../backend/prisma/schema.prisma)
+- [Marketing-card service](../backend/services/marketingCardService.js)
+- [Customer-card service](../backend/services/marketingCardCustomerService.js)
+- [Checkout order controller](../backend/controllers/orderController.js)
+- [Marketing-card routes](../backend/routes/marketingCardRoute.js)
+- [Marketing-card security tests](../backend/tests/marketingCardSecurity.test.js)
+- [Marketing-card reward tests](../backend/tests/marketingCardReward.test.js)
+- [First production release readiness](./first-production-release-readiness.md)

@@ -7,10 +7,16 @@ import {
 
 const clone = (value) => structuredClone(value);
 
-const createHarness = ({ status = "Delivered", payment = false, journals = [] } = {}) => {
+const createHarness = ({
+  status = "Delivered",
+  payment = false,
+  journals = [],
+  collectionEvent = { amount: "125.00" },
+} = {}) => {
   const state = {
     order: { id: "order-1", amount: 125, customerName: "Test Customer", status, payment },
     journals: clone(journals),
+    collectionEvent: clone(collectionEvent),
   };
   const makeTransactionClient = (transactionState) => ({
     order: {
@@ -32,6 +38,15 @@ const createHarness = ({ status = "Delivered", payment = false, journals = [] } 
         transactionState.journals.push(journal);
         return journal;
       },
+    },
+    distributorCashEvent: {
+      findFirst: async ({ where }) => (
+        transactionState.collectionEvent &&
+        where.eventType === "CUSTOMER_COLLECTION" &&
+        where.status.in.includes("VERIFIED")
+          ? transactionState.collectionEvent
+          : null
+      ),
     },
   });
   const client = {
@@ -117,6 +132,30 @@ test("cash receipt rejects orders that are not delivered without changing paymen
   await assert.rejects(
     recordDeliveredOrderCashReceipt("order-1", { client }),
     { code: "ORDER_NOT_DELIVERED" },
+  );
+
+  assert.equal(state.order.payment, false);
+  assert.deepEqual(state.journals, []);
+});
+
+test("delivered order cannot be marked paid without verified collection evidence", async () => {
+  const { client, state } = createHarness({ collectionEvent: null });
+
+  await assert.rejects(
+    recordDeliveredOrderCashReceipt("order-1", { client }),
+    { code: "CUSTOMER_COLLECTION_EVIDENCE_REQUIRED" },
+  );
+
+  assert.equal(state.order.payment, false);
+  assert.deepEqual(state.journals, []);
+});
+
+test("delivered order cannot be marked paid for a mismatched COD collection amount", async () => {
+  const { client, state } = createHarness({ collectionEvent: { amount: "124.00" } });
+
+  await assert.rejects(
+    recordDeliveredOrderCashReceipt("order-1", { client }),
+    { code: "CUSTOMER_COLLECTION_AMOUNT_MISMATCH" },
   );
 
   assert.equal(state.order.payment, false);

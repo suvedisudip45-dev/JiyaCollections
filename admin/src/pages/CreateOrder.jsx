@@ -18,14 +18,6 @@ const SOCIAL_CHANNELS = [
   { id: "Direct", name: "Phone / Direct", icon: "📞", color: "from-amber-500 to-orange-600", text: "text-amber-600", bg: "bg-amber-50 border-amber-200" },
 ];
 
-const PAYMENT_METHODS = [
-  { id: "COD", label: "Cash on Delivery (COD)", desc: "Payment collected at delivery" },
-  { id: "Bank Transfer / QR", label: "Bank Transfer / QR", desc: "Fonepay / Mobile Banking" },
-  { id: "eSewa", label: "eSewa Wallet", desc: "Paid through eSewa" },
-  { id: "Khalti", label: "Khalti Wallet", desc: "Paid through Khalti" },
-  { id: "Cash", label: "Direct Cash", desc: "Direct payment received" },
-];
-
 const CreateOrder = ({ token }) => {
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const navigate = useNavigate();
@@ -68,7 +60,7 @@ const CreateOrder = ({ token }) => {
 
   // Financials & Payment state
   const [discountAmount, setDiscountAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("COD");
+  const paymentMethod = "COD";
   const [initialStatus, setInitialStatus] = useState("Order Placed");
   const [customDeliveryFee, setCustomDeliveryFee] = useState("");
   const [useCustomShipping, setUseCustomShipping] = useState(false);
@@ -797,7 +789,6 @@ const CreateOrder = ({ token }) => {
     });
     setSelectedItems([]);
     setDiscountAmount("");
-    setPaymentMethod("COD");
     setInitialStatus("Order Placed");
     setCustomDeliveryFee("");
     setUseCustomShipping(false);
@@ -1506,17 +1497,9 @@ const CreateOrder = ({ token }) => {
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
                   Tender Method
                 </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-gray-50/60 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
-                >
-                  {PAYMENT_METHODS.map((pm) => (
-                    <option key={pm.id} value={pm.id}>
-                      {pm.label}
-                    </option>
-                  ))}
-                </select>
+                <p className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-700">
+                  Cash on Delivery (COD)
+                </p>
               </div>
 
               <div>

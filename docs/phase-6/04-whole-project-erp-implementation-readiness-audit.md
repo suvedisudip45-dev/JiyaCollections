@@ -16,7 +16,8 @@ correctness.
 
 The repository is an active e-commerce and distribution platform with several
 substantial production, transfer, delivery, finance, and audit workflows. It is
-not yet a unified warehouse/procurement ERP:
+not yet a unified warehouse/procurement ERP. This ERP assessment does not
+supersede the narrower first-release COD/customer-commerce readiness assessment:
 
 1. `InventorySku`, `InventoryLocation`, `InventoryBalance`, and
    `InventoryLedgerEntry` are used in selected production, transfer,
@@ -40,10 +41,11 @@ not yet a unified warehouse/procurement ERP:
 6. Distributor-held inventory remains owned by Aama Clothings. Existing
    replenishment dispatch/receipt is a custody/location change, not by itself
    revenue, a distributor purchase, or COGS.
-7. Stripe and Razorpay package dependencies and configuration names exist, but
-   this static search found no active provider initiation, verification, or
-   callback implementation. Do not describe online gateway processing as
-   implemented or infer payment from `Order.payment`.
+7. The first production release is COD only. No active bank/debit/credit-card
+   gateway initiation, verification, card-token storage, PCI processing, or
+   payment-provider callback implementation is in scope. Do not infer payment
+   from `Order.payment`; see the separate
+   [first production release readiness assessment](../../docs/first-production-release-readiness.md).
 8. COD collection, distributor-held cash, remittance, Admin review, Treasury
    posting, and bank reconciliation are separate stages. The first stages are
    represented for supported paths; independent bank-statement reconciliation
@@ -96,8 +98,8 @@ Static repository inventory at audit time:
 Counts are filesystem/schema text counts, not measures of coverage or deployed
 database state. Portal paths and package scripts are independently owned; there
 is no root application workspace. The root `README.md` contains legacy claims
-about a delivery portal, manufacturer-based order routing, payment providers,
-and setup commands that do not match the reviewed source. Prefer this audit,
+about a delivery portal, manufacturer-based order routing, and setup commands
+that do not match the reviewed source. Prefer this audit,
 [Project Overview](../../PROJECT_OVERVIEW.md), and
 [Architecture and Backend Reference](../../ARCHITECTURE_AND_BACKEND.md) for
 current source-backed descriptions.
@@ -181,7 +183,7 @@ surface, not proof of end-to-end coverage.
 | 4. Pricing/promotions — **partial, active** | Location pricing, checkout pricing, shipping, offer, loyalty, marketing-card and gift routes/services; customer/Admin/distributor UIs. | Product and location pricing snapshots; discount, loyalty, card, gift and campaign records; `shipping:*`, `loyalty:*`, `platform:features_manage`, domain read/write permissions. | Server revalidates eligible price/reward data, but older snapshots and Float-backed fields remain. Business-price evidence is not inventory acquisition cost. |
 | 5. Cart/checkout — **partial, active** | `cartRoute.js`/controller and `POST /api/order/place`; `orderController.js`, `checkoutPricingService.js`; storefront. | Cart/profile state, `Order.items` JSON, `checkoutGroupId`, pricing snapshots, `InventoryBalance.reservedQuantity`; `customer:cart_*`, `customer:order_place`. | Checkout validates stock/pricing and creates split orders in a transaction. Subsequent legacy catalog stock updates and distributor assignment/reservation are separate work; failure/retry across those boundaries requires explicit reconciliation. |
 | 6. Customer orders — **partial, active** | `orderRoute.js`, `orderController.js`, cancellation/control/assignment controllers; storefront/Admin/distributor. | `Order`, `OrderAssignment`, `Order.items` JSON, `DeliveryOrder`; `order:*`, `customer:order_*`. | Assignment and cancellation controls exist. A single order row is not payment, delivery, sale, or collection evidence; direct order paths differ in inventory and cash treatment. |
-| 7. Payments — **partial; gateway flow not found** | Finance/accounting order-receipt routes and services; Admin. | `Order.payment` Boolean, `CashTransaction`, `FinancialAccount`, `AccountingDocument`, journals; `finance:receivable_collect`, Treasury and accounting permissions. | No dedicated Stripe/Razorpay payment transaction or provider callback path found in routes/controllers/services. Installed npm packages and env names do not prove an integration. |
+| 7. Payments — **COD-only first release; collection/accounting partial** | Finance/accounting order-receipt routes and services; Admin and distributor. | `Order.payment` Boolean, distributor cash events, `CashTransaction`, `FinancialAccount`, `AccountingDocument`, journals; `finance:receivable_collect`, Treasury and accounting permissions. | No payment gateway or provider callback is in first-release scope. COD collection, settlement and accounting evidence remain partial; `Order.payment` alone is not receipt proof. |
 | 8. Refunds/cancellations — **partial** | `returnsRoute.js`, customer return/exchange controllers/services, `orderCancellationService.js`; customer/Admin/distributor. | `CustomerReturn`, return events, `OrderExchangeRequest`, `SalesInvoiceAdjustment`, AP/cash/journal records; `returns:*`, `exchange:*`, `order:customer_cancel`. | Approval, receipt/inspection, evidence and refund stages exist. Return stock mutation is not a canonical movement; paid cancellations route to refund controls. |
 | 9. Delivery/fulfillment — **active, partial** | `deliveryRoute.js`, `stockTransferRoute.js`, delivery/NCM controllers and services; distributor/manufacturer/Admin. | `DeliveryOrder`, `DeliveryEvent`, `NcmRequestAttempt`, `NcmWebhookEvent`, shipment events; `delivery:*`, workspace permissions. | Server-side NCM calls, webhook history, ambiguity states and reconciliation exist. Provider deployment, missed callbacks, status semantics, and COD cash remain separately unverified. |
 | 10. Inventory/movements — **partial, dual representation** | `inventoryLedgerRoute.js`, `stockTransferRoute.js`, `distributorRoute.js`; `inventoryLedgerService.js`, `stockTransferService.js`, `distributorOrderInventoryService.js`, `stockSyncService.js`. | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, transfer/receipt/discrepancy/cost-layer records; `inventory:ledger_read`, `transfer:*`, `distributor:inventory_*`. | Canonical movements are transaction/idempotency-aware for supported flows. Not every legacy writer posts them; product stock is a derived projection in supported distributor flows but still a legacy write target elsewhere. |
@@ -427,8 +429,7 @@ is a static authorization map, not a penetration test.
 
 | Integration | Source-verified use | Authentication/idempotency/retry | Reconciliation and limitation |
 |---|---|---|---|
-| Stripe | `stripe` dependency and configuration names are present. No active server call, payment initiation, verification, or webhook route found in the reviewed routes/controllers/services. | No executable flow verified. | Treat as unimplemented/unverified; package presence is not integration evidence. |
-| Razorpay | `razorpay` dependency and configuration names are present. No active server call, payment initiation, verification, or webhook route found in the reviewed routes/controllers/services. | No executable flow verified. | Same limitation; do not infer payment settlement or customer `Order.payment` from provider configuration. |
+| Bank/debit/credit-card payment gateways | Excluded from the first production release; unused Stripe/Razorpay packages and placeholder environment keys have been removed. | No active payment-provider flow or payment-provider webhook is part of the release. | Do not add a gateway, tokenization, PCI processing, or provider callback to this release; do not infer payment from `Order.payment`. |
 | Nepal Can Move (NCM) | Server-side `ncmClient.js` used for delivery, stock-transfer booking, branch/rate, tracking, returns and Admin operations. | Server credential; one-shot booking for ambiguous create, bounded reads/retries where allowed; webhook secret and event deduplication in supported flows. | Unknown/failed handoffs remain unresolved; manual sync/reconciliation exists. No live vendor account, callback registration, rate limit, or end-to-end carrier evidence inspected. |
 | COD/distributor collection | Delivery and distributor workflows record OTP/collection evidence, cash events, remittance, Admin review and Treasury posting for supported paths. | Application idempotency and accounting controls vary by workflow. | No bank statement integration or independently verified settlement source found. |
 | Cloudinary | Server-side media/contract/upload adapter is present. | Upload validation is present at selected route boundaries; provider credentials are server-side by design. | No remote call made; deployment, object retention, access policy and deletion state unverified. |
@@ -505,7 +506,7 @@ they are not breach or loss determinations.
 | G5 — **High: customer-return stock** | Partial/conflicting. Active inspection can adjust legacy inventory and cost allocations but not canonical return movement. | Returned units can change sellable stock without explicit location, custody, or ledger evidence. | Resolve disposition and cost restoration; gate legacy path; preserve refund/accounting independence. | R3/R7 dependency. Every good/damaged/missing unit has distinct authorized disposition and source-linked ledger movement. |
 | G6 — **High: valuation/COGS** | Partial/business-decision blocked. Production cost layers exist; supplier cost absent; legacy Float/catalog fallback remains. | Margin, inventory value and COGS may be estimates or incomplete. | Management/Finance approves method, landed-cost allocation, returns and uncertain-cost treatment. | R4–R8. Reports disclose exact cost coverage; no method or cost is silently inferred. |
 | G7 — **High: customer order transaction chain** | Partial. Order creation, catalog update and distributor assignment/reservation have separate boundaries. | Retries/failures can leave order, stock projection and reservation state out of sync. | Define stable request/business-event keys and transactional/idempotent assignment. | R7. Injected failures/retries leave one order, one reservation and consistent ledger/projection. |
-| G8 — **High: customer/distributor payment evidence** | Partial/unverified. No active Stripe/Razorpay path; cash/COD and accounting records exist. | Order paid status may be mistaken for gateway settlement or collection. | Implement only after provider/business approval; explicit event/source, verification, replay and clearing reconciliation. | R7. Provider or manual receipt matches order, currency/amount and settlement; ambiguous outcomes remain pending. |
+| G8 — **High: customer/distributor payment evidence** | Partial. COD cash/collection and accounting records exist for supported paths; non-COD gateways are explicitly excluded from the first release. | Order paid status may be mistaken for collection or remittance. | Keep payment state linked to verified canonical COD collection evidence; preserve pending/ambiguous states and settlement reconciliation. | R7. Collection event matches order and authoritative COD amount; delivery status alone never marks payment received. |
 | G9 — **High: COD/bank reconciliation** | Partial. Cash declaration/remittance/Treasury routes exist; no bank-line source found. | Internal review cannot independently prove bank settlement or unmatched funds. | Define bank evidence, reconciliation workflow, variance, reversal and custody model. | R6/R8. Statement lines independently match Treasury receipts and retain unmatched/ambiguous exceptions. |
 | G10 — **High: warehouse RBAC/resource scope** | Missing/unverified. No warehouse context or scoped role identifiers; deployed role assignments not inspected. | Cross-location data or mutation may exceed intended operator scope if built on generic Admin permissions. | Review role matrix; add identifiers only through approved RBAC change; test object scope server-side. | Before R3 route implementation. Unauthorized location/profile IDs are denied at service/route tests. |
 | G11 — **Medium: external callback security/configuration** | Blocked by external deployment. NCM webhooks and event deduplication exist, but environment/provider callback setup is unverified; code has permissive no-secret non-production behavior. | Forged, replayed, missed, or ambiguous external status could corrupt operational state if deployment assumptions are wrong. | Confirm secrets, ingress, redaction, replay and provider contract with operations. | Before external release. Signed/configured callback tests, replay/stale tests and manual recovery path demonstrated. |
@@ -629,7 +630,7 @@ models, migrations, UI, or cutover behavior under this audit.
 | Unresolved business decision | Supplier/manufacturer title and recognition points; approved cost-flow method; landed-cost allocation; return cost restoration; negative/missing cost; damage/loss responsibility and write-off. | Block affected postings or report explicit unresolved evidence. Do not use catalog cost or infer liability. |
 | Unresolved business decision | Central warehouse locations, custody stages, count frequency, physical evidence, emergency adjustments, and maker/checker thresholds. | No new warehouse write path until operations/management approval. |
 | Unresolved technical/release decision | Legacy conversion scope, canonical source precedence, database isolation, migration/recovery and cutover sequencing. | Open source map and release gate; no DB validation performed. |
-| Requires explicit approval | Online gateway provider and settlement model; independent bank reconciliation; customer revenue-recognition policy; phase/iteration assignment for source mapping. | Do not infer implementation or schedule from npm dependency, existing code, or prior tracker labels. |
+| Requires explicit approval | Any online gateway is a separate future scope and is excluded from this first release; independent bank reconciliation; customer revenue-recognition policy; phase/iteration assignment for source mapping. | Do not add a gateway to this release or infer implementation/schedule from legacy chart accounts, prior tracker labels, or repository history. |
 
 ## 17. Database and release safety blockers
 

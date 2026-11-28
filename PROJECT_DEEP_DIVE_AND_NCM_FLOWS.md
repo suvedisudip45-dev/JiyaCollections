@@ -29,9 +29,11 @@ Marketing portal ────┘                     └── separate notifica
 ```
 
 Distributor operations share the manufacturer app; there is no separate
-delivery portal directory. Stripe/Razorpay dependencies and configuration
-names are present, but no active payment-provider flow was verified in the
-reviewed backend source.
+delivery portal directory. The first production release is COD-only: unused
+Stripe/Razorpay dependencies and provider placeholders have been removed, as
+has the legacy storefront Stripe verification page. No payment-provider flow
+or webhook is in release scope. Marketing cards are promotional instruments,
+not payment cards.
 
 The important stock boundary is:
 

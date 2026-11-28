@@ -987,3 +987,42 @@ test("password reset requires the OTP-issued TFA token and matching confirmation
     { code: "PASSWORD_RESET_PASSWORD_MISMATCH", statusCode: 400 },
   );
 });
+
+
+test("password reset rejects requests when PASSWORD_RESET_ENABLED is false", async () => {
+  const { client } = makeClient();
+  const disabledEnv = { ...TEST_ENV, PASSWORD_RESET_ENABLED: "false" };
+  await assert.rejects(
+    requestPasswordResetOtp({
+      email: "customer@example.test",
+      phone: "9812345678",
+      portal: "CUSTOMER",
+      client,
+      notificationConfig: NOTIFICATION_CONFIG,
+      env: disabledEnv,
+    }),
+    { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+  );
+  await assert.rejects(
+    verifyPasswordResetOtp({
+      challengeId: "challenge-1",
+      otp: TEST_OTP,
+      portal: "CUSTOMER",
+      client,
+      env: disabledEnv,
+    }),
+    { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+  );
+  await assert.rejects(
+    completePasswordReset({
+      challengeId: "challenge-1",
+      tfaToken: "token",
+      newPassword: "a-new-secure-password",
+      confirmPassword: "a-new-secure-password",
+      portal: "CUSTOMER",
+      client,
+      env: disabledEnv,
+    }),
+    { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+  );
+});

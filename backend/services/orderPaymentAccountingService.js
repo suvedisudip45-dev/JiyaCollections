@@ -2,6 +2,7 @@ import { prisma } from "../config/db.js";
 import { postCustomerPaymentAccounting } from "./accountingPostingEngine.js";
 import { accountingDecimal } from "./accountingDecimal.js";
 import { pricingSnapshotAmounts } from "./checkoutPricingService.js";
+import { formatCollectionAmount } from "./distributorDeliveryOtpService.js";
 
 const accountingFailure = (message, code) => Object.assign(new Error(message), { code });
 
@@ -58,6 +59,31 @@ export const recordDeliveredOrderCashReceipt = async (
     if (!order) throw accountingFailure("Order not found.", "ORDER_NOT_FOUND");
     if (order.status !== "Delivered") {
       throw accountingFailure("Order not delivered yet.", "ORDER_NOT_DELIVERED");
+    }
+    if (String(order.paymentMethod || "COD").trim().toUpperCase() !== "COD") {
+      throw accountingFailure("Only COD collection can be recorded through this workflow.", "CUSTOMER_PAYMENT_NOT_COD");
+    }
+
+    const collection = await tx.distributorCashEvent.findFirst({
+      where: {
+        orderId,
+        eventType: "CUSTOMER_COLLECTION",
+        status: { in: ["VERIFIED", "POSTED"] },
+      },
+      orderBy: { occurredAt: "desc" },
+      select: { amount: true },
+    });
+    if (!collection) {
+      throw accountingFailure(
+        "A verified COD collection event is required before recording customer payment.",
+        "CUSTOMER_COLLECTION_EVIDENCE_REQUIRED",
+      );
+    }
+    if (!accountingDecimal(collection.amount, "Collected COD amount").equals(formatCollectionAmount(order))) {
+      throw accountingFailure(
+        "The verified COD collection does not match the order amount.",
+        "CUSTOMER_COLLECTION_AMOUNT_MISMATCH",
+      );
     }
 
     const updatedOrder = await tx.order.update({

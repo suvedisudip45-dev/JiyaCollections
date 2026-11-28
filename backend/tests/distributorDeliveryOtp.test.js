@@ -6,6 +6,7 @@ import {
   issueDistributorDeliveryOtp,
   verifyDistributorDeliveryOtp,
 } from "../services/distributorDeliveryOtpService.js";
+import { createOrderPricingSnapshot } from "../services/checkoutPricingService.js";
 
 const secret = "delivery-otp-test-secret-with-at-least-32-characters";
 const notificationConfig = {
@@ -106,6 +107,30 @@ test("COD collection amount uses NPR HALF_EVEN Decimal rounding and rejects inva
     () => formatCollectionAmount({ amount: "-1", deliveryFee: "0" }),
     { code: "INVALID_COLLECTION_AMOUNT" },
   );
+});
+
+test("COD collection uses the accepted total without adding its delivery fee twice", () => {
+  const locationPricingSnapshot = createOrderPricingSnapshot({
+    lines: [{
+      productId: "product-1",
+      size: "M",
+      color: "Black",
+      unitPrice: "1000",
+      quantity: "1",
+      lineTotal: "1000",
+    }],
+    subtotal: "1000",
+    discountTotal: "20",
+    deliveryFee: "100",
+    preCommercialRoundingTotal: "1080",
+    finalPayableTotal: "1080",
+  });
+
+  assert.equal(formatCollectionAmount({
+    amount: "1080",
+    deliveryFee: "100",
+    locationPricingSnapshot,
+  }), "1080.00");
 });
 
 test("delivery OTP issues an encrypted SMS challenge bound to the distributor and COD amount", async () => {

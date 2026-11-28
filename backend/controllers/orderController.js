@@ -1667,6 +1667,14 @@ const adminCreateOrder = async (req, res) => {
       payment = false,
       status = "Order Placed",
     } = req.body;
+    const normalizedPaymentMethod = String(paymentMethod || "COD").trim().toUpperCase();
+    if (normalizedPaymentMethod !== "COD") {
+      return res.status(400).json({
+        success: false,
+        message: "Only Cash on Delivery (COD) is available for customer orders.",
+        code: "UNSUPPORTED_PAYMENT_METHOD",
+      });
+    }
 
     if (typeof discount !== "string" || (
       deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== "" && typeof deliveryFee !== "string"
@@ -1996,7 +2004,7 @@ const adminCreateOrder = async (req, res) => {
         items: frozenItemsSnapshot,
         amount: finalAmount,
         deliveryFee: toLegacyFloatMirror(resolvedFee, "Legacy delivery fee mirror"),
-        paymentMethod: paymentMethod || "COD",
+        paymentMethod: normalizedPaymentMethod,
         payment: Boolean(payment),
         status: status || "Order Placed",
         date: BigInt(pricingAcceptedAt.getTime()),
