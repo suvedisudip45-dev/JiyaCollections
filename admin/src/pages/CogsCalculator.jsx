@@ -141,10 +141,10 @@ const CogsCalculator = ({ token }) => {
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-2">
             <DollarSign className="w-6 h-6 text-emerald-600" />
-            Manufacturer COGS &amp; Profit Margin Engine
+            Manufacturer Supply Cost Quotes &amp; Indicative Margins
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Mutual price agreement hub. Different manufacturers quote supply prices; Admin approves costs to calculate live gross profit margins.
+            Compares proposed or approved manufacturer supply costs with catalog selling prices. These are indicative price margins, not posted COGS, realized profit, or inventory valuation.
           </p>
         </div>
 
@@ -209,7 +209,7 @@ const CogsCalculator = ({ token }) => {
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Average Gross Margin
+              Average Indicative Margin
             </span>
             <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
               <Percent className="w-4 h-4" />
@@ -328,7 +328,7 @@ const CogsCalculator = ({ token }) => {
             {loading ? (
               <div className="p-12 text-center text-slate-400">
                 <div className="w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                <p className="text-xs">Computing live gross profit margins...</p>
+                <p className="text-xs">Computing indicative price margins...</p>
               </div>
             ) : filteredMatrix.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
@@ -478,14 +478,14 @@ const CogsCalculator = ({ token }) => {
                                     )}
 
                                     <div className="flex items-center justify-between">
-                                      <span>Gross Profit per Unit:</span>
+                                      <span>Indicative price difference per unit:</span>
                                       <strong className="text-emerald-700">
                                         +{currency}{m.marginAmount}
                                       </strong>
                                     </div>
 
                                     <div className="flex items-center justify-between">
-                                      <span>Gross Margin %:</span>
+                                      <span>Indicative margin %:</span>
                                       <span
                                         className={`font-black ${
                                           m.marginPercentage >= 45
@@ -544,7 +544,7 @@ const CogsCalculator = ({ token }) => {
               <p className="font-bold">Mutual Cost Price Protocol</p>
               <p className="text-amber-800 mt-0.5">
                 Manufacturers set their supply cost quotations based on localized raw material, fabric, and tailoring costs.
-                Admins review the quoted price and projected profit margin before clicking <strong>Accept</strong> or <strong>Reject</strong>.
+                Admins review the quoted price and indicative catalog-price margin before clicking <strong>Accept</strong> or <strong>Reject</strong>. This is not posted COGS or realized profit.
               </p>
             </div>
           </div>

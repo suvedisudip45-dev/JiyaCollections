@@ -1,0 +1,113 @@
+- generic [ref=e3]:
+  - generic "Store announcements" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e7]: •
+        - text: Made for everyday movement
+      - generic [aria-hidden] [ref=e8]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e9]: •
+        - text: Made for everyday movement
+  - navigation [ref=e10]:
+    - generic [ref=e11]:
+      - link "Aama Clothings home" [ref=e12] [cursor=pointer]:
+        - /url: /
+        - img "Aama Clothings" [ref=e13]
+        - generic [ref=e14]: Kathmandu / Nepal
+      - list [ref=e15]:
+        - link "Unisex UNISEX" [ref=e16] [cursor=pointer]:
+          - /url: /shop?category=Unisex
+          - generic [ref=e17]: Unisex
+          - generic [ref=e18]: UNISEX
+        - link "New Arrivals" [ref=e19] [cursor=pointer]:
+          - /url: /shop?featured=new
+        - link "Best Sellers" [ref=e20] [cursor=pointer]:
+          - /url: /shop?featured=bestseller
+        - link "The Journal" [ref=e21] [cursor=pointer]:
+          - /url: /about
+      - generic [ref=e22]:
+        - button "Search products" [ref=e23] [cursor=pointer]
+        - button "Account" [ref=e28] [cursor=pointer]
+        - button "Wishlist" [ref=e32] [cursor=pointer]
+        - link "Shopping bag, 0 items" [ref=e35] [cursor=pointer]:
+          - /url: /cart
+          - generic [ref=e39]: "0"
+  - main [ref=e40]:
+    - navigation "Breadcrumb" [ref=e41]:
+      - generic [ref=e42]: Home
+    - generic [ref=e44]:
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - generic [ref=e48]: FEATURED ARRIVAL • SEASON DROP
+          - generic [ref=e51]:
+            - heading "New in Store" [level=1] [ref=e52]
+            - paragraph [ref=e53]: Signature Garments & Streetwear Essentials
+            - paragraph [ref=e54]: Crafted from high-grade breathable cotton with a relaxed streetwear cut. Built for everyday durability and modern lifestyle movement.
+          - link "Explore Shop" [ref=e56] [cursor=pointer]:
+            - /url: /shop
+          - generic [ref=e58]:
+            - generic [ref=e59]: Fast Nepal Delivery
+            - generic [ref=e66]: 100% Cotton Feel
+            - generic [ref=e71]: Easy Exchanges
+        - img "Hero" [ref=e79]
+      - generic [ref=e81]:
+        - link "Shop Men COLLECTION 01 Shop Men Oversized Tees, Cargos & Street Layering Explore Drops →" [ref=e82] [cursor=pointer]:
+          - /url: /shop?category=Men
+          - img "Shop Men" [ref=e83]
+          - generic [ref=e85]: COLLECTION 01
+          - generic [ref=e91]:
+            - heading "Shop Men" [level=3] [ref=e92]
+            - paragraph [ref=e93]: Oversized Tees, Cargos & Street Layering
+            - generic [ref=e94]: Explore Drops →
+        - link "Shop Women COLLECTION 02 Shop Women Tanks, Fits, Crop Tees & Bottomwear Explore Drops →" [ref=e96] [cursor=pointer]:
+          - /url: /shop?category=Women
+          - img "Shop Women" [ref=e97]
+          - generic [ref=e99]: COLLECTION 02
+          - generic [ref=e105]:
+            - heading "Shop Women" [level=3] [ref=e106]
+            - paragraph [ref=e107]: Tanks, Fits, Crop Tees & Bottomwear
+            - generic [ref=e108]: Explore Drops →
+        - link "Everyday Essentials THE EDIT Everyday Essentials All-Season Signatures & Timeless Basics Explore Drops →" [ref=e110] [cursor=pointer]:
+          - /url: /shop
+          - img "Everyday Essentials" [ref=e111]
+          - generic [ref=e113]: THE EDIT
+          - generic [ref=e119]:
+            - heading "Everyday Essentials" [level=3] [ref=e120]
+            - paragraph [ref=e121]: All-Season Signatures & Timeless Basics
+            - generic [ref=e122]: Explore Drops →
+      - paragraph [ref=e126]: No products available yet. Add products from the Admin panel!
+      - generic [ref=e127]:
+        - generic [ref=e128]:
+          - paragraph [ref=e129]: Easy Exchange Policy
+          - paragraph [ref=e130]: We offer hassle free exchange policy
+        - generic [ref=e131]:
+          - paragraph [ref=e132]: 7 Days Return Policy
+          - paragraph [ref=e133]: We provide 7 days free return policy
+        - generic [ref=e134]:
+          - paragraph [ref=e135]: Best customer support
+          - paragraph [ref=e136]: We provide 24/7 customer support
+      - generic [ref=e137]:
+        - paragraph [ref=e138]: Subsribe now & get 20% off
+        - paragraph [ref=e139]: OFFER VALID FOR THE NEXT 4 HOURS ONLY!
+        - generic [ref=e140]:
+          - textbox "Enter your email" [ref=e141]
+          - button "SUBSCRIBE" [ref=e142] [cursor=pointer]
+  - contentinfo [ref=e143]:
+    - generic [ref=e144]:
+      - generic [ref=e145]:
+        - img "Aama Collections" [ref=e146]
+        - paragraph [ref=e147]: At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.
+      - generic [ref=e148]:
+        - paragraph [ref=e149]: Company
+        - list [ref=e150]:
+          - listitem [ref=e151]: Home
+          - listitem [ref=e152]: About us
+          - listitem [ref=e153]: Delivery
+          - listitem [ref=e154]: Privacy policy
+      - generic [ref=e155]:
+        - paragraph [ref=e156]: Get in touch
+        - list [ref=e157]:
+          - listitem [ref=e158]: +1-8515-56789
+          - listitem [ref=e159]: contact@aamacollections.com
+    - paragraph [ref=e161]: Copyright 2026 @ Aasha Technologies - All Rights Reserved.

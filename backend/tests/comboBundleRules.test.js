@@ -85,6 +85,9 @@ test("bundle price sums member sale prices then applies the collection discount"
     sellingPrice: 1120,
     discountPercentage: 20,
     manualPriceOverride: false,
+    calculatedPriceDecimal: "1400",
+    sellingPriceDecimal: "1120",
+    discountPercentageDecimal: "20",
   });
 });
 

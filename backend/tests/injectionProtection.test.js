@@ -58,6 +58,8 @@ test("Injection Protection - SQL Injection Detection", () => {
   assert.equal(containsSqlInjection("admin' UNION SELECT * FROM users --"), true);
   assert.equal(containsSqlInjection("; DROP TABLE orders; --"), true);
   assert.equal(containsSqlInjection("Regular product search query"), false);
+  assert.equal(containsSqlInjection("Drop Road, Ward 4"), false);
+  assert.equal(containsSqlInjection("Select Street, House 12"), false);
 });
 
 test("Injection Protection - Prototype Pollution Prevention in Objects", () => {
@@ -82,6 +84,38 @@ test("Injection Protection - Prototype Pollution Prevention in Objects", () => {
   assert.equal(cleaned.title, "Clean Title");
   assert.equal(cleaned.nested.name, "Safe Name");
   assert.equal(cleaned.nested.__proto__.isAdmin, undefined);
+});
+
+test("storefront long-form content preserves paragraph whitespace while remaining sanitized", () => {
+  const cleaned = sanitizeObject({
+    termsAndConditions: {
+      conditions: [
+        { title: "  Condition title  ", description: "  First paragraph.\n\n  Second paragraph.\n" },
+      ],
+    },
+    ordinaryText: "  trimmed text  ",
+  });
+
+  assert.equal(cleaned.termsAndConditions.conditions[0].title, "Condition title");
+  assert.equal(cleaned.termsAndConditions.conditions[0].description, "  First paragraph.\n\n  Second paragraph.\n");
+  assert.equal(cleaned.ordinaryText, "trimmed text");
+});
+
+test("product descriptions retain paragraph whitespace through request sanitization", () => {
+  const description = JSON.stringify({
+    about: { blocks: [{ type: "paragraph", text: "  First paragraph.\n\nSecond paragraph.\n" }] },
+  });
+  const cleaned = sanitizeObject({
+    description,
+  });
+  const cleanedObject = sanitizeObject({
+    description: {
+      about: { blocks: [{ type: "paragraph", text: "  First paragraph.\n\nSecond paragraph.\n" }] },
+    },
+  });
+
+  assert.equal(cleaned.description, description);
+  assert.equal(cleanedObject.description.about.blocks[0].text, "  First paragraph.\n\nSecond paragraph.\n");
 });
 
 test("Injection Protection - Express Middleware Handler", () => {
@@ -162,4 +196,3 @@ test("Validation & Sanitization - Price & Discount Numeric Boundaries", () => {
   assert.equal(isValidDiscount(101), false);
   assert.equal(isValidDiscount("50%"), false);
 });
-

@@ -255,6 +255,12 @@ const AccessUsers = ({ token }) => {
         )}
       </div>
 
+      {isAdminPortal && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          The built-in Administrator role has broad platform access and is reserved for the configured owner account. Assign scoped custom roles to other Admin users.
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="Portal user lists">
         {readablePortals.map((item) => (
           <button key={item.key} type="button" role="tab" aria-selected={portalKey === item.key} onClick={() => { setPortalKey(item.key); setPage(1); }} className={`rounded-lg border px-3.5 py-2 text-sm font-medium transition-colors ${portalKey === item.key ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-slate-400"}`}>

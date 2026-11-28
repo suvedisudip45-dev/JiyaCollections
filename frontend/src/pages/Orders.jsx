@@ -28,13 +28,28 @@ import {
   Box,
   Layers,
   Sparkles,
+  Star,
+  Gift,
 } from "lucide-react";
+
+const parseOrderItems = (items) => {
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(items)
+    ? items.filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    : [];
+};
 
 const toCustomerDisplayItems = (items = []) => {
   const displayItems = [];
   const comboBundleRows = new Map();
 
-  items.forEach((item) => {
+  parseOrderItems(items).forEach((item) => {
     if (!item.comboBundleId) {
       displayItems.push(item);
       return;
@@ -65,8 +80,36 @@ const toCustomerDisplayItems = (items = []) => {
   return displayItems;
 };
 
+const getOrderItemKey = (item) => `${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`;
+const getOrderLineKey = (item, index) => `${getOrderItemKey(item)}|${index}`;
+const getInitialItemQuantities = (items = []) => Object.fromEntries(
+  items.map((item, index) => [getOrderLineKey(item, index), index === 0 ? 1 : 0])
+);
+const parseArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+};
+const getProductId = (product) => product?._id || product?.id || "";
+const getProductVariants = (product) => parseArray(product?.variants);
+const getAvailableVariantQuantity = (product, size, color) => {
+  const variants = getProductVariants(product);
+  if (!variants.length) return Math.max(0, Number(product?.stockQuantity || 0));
+  const variant = variants.find((item) =>
+    String(item.size || "").toLowerCase() === String(size || "").toLowerCase() &&
+    String(item.color || "").toLowerCase() === String(color || "").toLowerCase()
+  );
+  return Math.max(0, Number(variant?.quantity || 0));
+};
+
 const canCancelBeforeNcmHandoff = (order) => {
   const delivery = order.deliveryOrder || order.delivery || {};
+  const distributorStatus = String(order.distributorDelivery?.status || "").toLowerCase();
   const status = String(order.status || "").toLowerCase();
   const fulfillmentStatus = String(order.fulfillmentStatus || "").toLowerCase();
   const handedOffStates = new Set([
@@ -74,12 +117,14 @@ const canCancelBeforeNcmHandoff = (order) => {
     "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested",
   ]);
   return status !== "cancelled" && status !== "delivered" && status !== "returned" &&
+    distributorStatus !== "delivered" && distributorStatus !== "returned" &&
     !delivery.ncmOrderId && !handedOffStates.has(String(delivery.state || "").toLowerCase()) &&
     !handedOffStates.has(fulfillmentStatus);
 };
 
 const isDeliveredOrder = (order) => String(order.status || "").toLowerCase() === "delivered" ||
   String(order.fulfillmentStatus || "").toLowerCase() === "delivered" ||
+  String(order.distributorDelivery?.status || "").toLowerCase() === "delivered" ||
   String((order.deliveryOrder || order.delivery)?.state || "").toUpperCase() === "DELIVERED";
 
 const Orders = () => {
@@ -103,14 +148,23 @@ const Orders = () => {
   const [invoiceOrder, setInvoiceOrder] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [exchangeRequests, setExchangeRequests] = useState([]);
+  const [exchangeViewRequest, setExchangeViewRequest] = useState(null);
   const [returnRequests, setReturnRequests] = useState([]);
   const [cancelOrderTarget, setCancelOrderTarget] = useState(null);
+  const [reviewOrderTarget, setReviewOrderTarget] = useState(null);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [exchangeOrderTarget, setExchangeOrderTarget] = useState(null);
   const [exchangeReasonCode, setExchangeReasonCode] = useState("SIZE_OR_FIT");
   const [exchangeReasonDetails, setExchangeReasonDetails] = useState("");
   const [exchangeQuantities, setExchangeQuantities] = useState({});
   const [replacementVariants, setReplacementVariants] = useState({});
+  const [exchangeMode, setExchangeMode] = useState("VARIANT_SWAP");
+  const [exchangeProductSearch, setExchangeProductSearch] = useState("");
+  const [exchangeProducts, setExchangeProducts] = useState([]);
+  const [exchangeProductsLoading, setExchangeProductsLoading] = useState(false);
+  const [replacementProducts, setReplacementProducts] = useState({});
   const [exchangeRequestKey, setExchangeRequestKey] = useState("");
   const [returnOrderTarget, setReturnOrderTarget] = useState(null);
   const [returnReason, setReturnReason] = useState("");
@@ -135,40 +189,36 @@ const Orders = () => {
       );
 
       if (response.data.success) {
+        if (!Array.isArray(response.data.orders)) {
+          throw new Error("The orders response did not contain a valid order list.");
+        }
         // Keep orders intact as individual order records (do NOT flatten items)
-        const formattedOrders = (response.data.orders || []).map((order) => {
-          let parsedReward = null;
-          if (order.rewardApplied) {
-            try {
-              parsedReward =
-                typeof order.rewardApplied === "string"
-                  ? JSON.parse(order.rewardApplied)
-                  : order.rewardApplied;
-            } catch {
-              parsedReward = null;
+        const formattedOrders = response.data.orders
+          .filter((order) => order && typeof order === "object" && !Array.isArray(order))
+          .map((order) => {
+            let parsedReward = null;
+            if (order.rewardApplied) {
+              try {
+                parsedReward =
+                  typeof order.rewardApplied === "string"
+                    ? JSON.parse(order.rewardApplied)
+                    : order.rewardApplied;
+              } catch {
+                parsedReward = null;
+              }
             }
-          }
 
-          let items = [];
-          if (Array.isArray(order.items)) {
-            items = order.items;
-          } else if (typeof order.items === "string") {
-            try {
-              items = JSON.parse(order.items);
-            } catch {
-              items = [];
-            }
-          }
+            const items = parseOrderItems(order.items);
 
-          return {
-            ...order,
-            id: order._id || order.id,
-            items,
-            displayItems: toCustomerDisplayItems(items),
-            parsedReward,
-            dateNum: Number(order.date || 0),
-          };
-        });
+            return {
+              ...order,
+              id: order._id || order.id,
+              items,
+              displayItems: toCustomerDisplayItems(items),
+              parsedReward,
+              dateNum: Number(order.date || 0),
+            };
+          });
 
         setOrders(formattedOrders);
         setPagination(response.data.pagination || null);
@@ -216,6 +266,40 @@ const Orders = () => {
     return () => clearInterval(interval);
   }, [token, backendUrl, page]);
 
+  useEffect(() => {
+    if (!exchangeOrderTarget || exchangeMode !== "DIFFERENT_PRODUCT" || exchangeProductSearch.trim().length < 2) {
+      setExchangeProducts([]);
+      setExchangeProductsLoading(false);
+      return undefined;
+    }
+    let active = true;
+    const timeout = setTimeout(async () => {
+      setExchangeProductsLoading(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/product/list`, {
+          headers: { token },
+          params: { search: exchangeProductSearch.trim(), limit: 20 },
+        });
+        if (active && response.data.success) setExchangeProducts(response.data.products || []);
+        else if (active) {
+          setExchangeProducts([]);
+          toast.error(response.data.message || "Unable to search replacement products");
+        }
+      } catch (error) {
+        if (active) {
+          setExchangeProducts([]);
+          toast.error(error.response?.data?.message || "Unable to search replacement products");
+        }
+      } finally {
+        if (active) setExchangeProductsLoading(false);
+      }
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+    };
+  }, [backendUrl, exchangeMode, exchangeOrderTarget, exchangeProductSearch, token]);
+
   const handlePageChange = (nextPage) => setPage(nextPage);
 
   const submitOrderCancellation = async (event) => {
@@ -240,23 +324,56 @@ const Orders = () => {
     }
   };
 
+  const submitDistributorReview = async (event) => {
+    event.preventDefault();
+    if (!reviewOrderTarget || actionLoading) return;
+    setActionLoading(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/review/distributor/${reviewOrderTarget.id}`,
+        { rating: reviewRating, comment: reviewComment },
+        { headers: { token } }
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Review submission failed");
+      toast.success(response.data.message || "Hub review saved");
+      setReviewOrderTarget(null);
+      setReviewComment("");
+      await loadOrderData(true);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to save your review");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const submitExchangeRequest = async (event) => {
     event.preventDefault();
     if (!exchangeOrderTarget || actionLoading) return;
     const items = (exchangeOrderTarget.items || [])
-      .map((item) => ({
+      .map((item, index) => ({
+        lineKey: getOrderLineKey(item, index),
         productId: item.productId || item._id || item.id,
         size: item.size || "",
         color: item.color || "",
-        quantity: Number(exchangeQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
+        quantity: Number(exchangeQuantities[getOrderLineKey(item, index)] || 0),
       }))
       .filter((item) => item.quantity > 0);
     const replacementItems = items.map((item) => {
+      if (exchangeMode === "DIFFERENT_PRODUCT") {
+        const selection = replacementProducts[item.lineKey];
+        return {
+          productId: selection?.id || "",
+          size: selection?.size || "",
+          color: selection?.color || "",
+          quantity: item.quantity,
+        };
+      }
       const key = `${item.productId}|${item.size}|${item.color}`;
       const replacement = replacementVariants[key] || {};
       return { ...item, size: replacement.size ?? item.size, color: replacement.color ?? item.color };
     });
     if (!items.length) return toast.warn("Select at least one product quantity to exchange.");
+    if (replacementItems.some((item) => !item.productId)) return toast.warn("Choose an active replacement product for every selected item.");
     if (exchangeReasonCode === "OTHER" && exchangeReasonDetails.trim().length < 5) return toast.warn("Please explain the reason for your exchange request.");
 
     setActionLoading(true);
@@ -266,7 +383,7 @@ const Orders = () => {
         requestKey: exchangeRequestKey,
         reasonCode: exchangeReasonCode,
         reasonDetails: exchangeReasonDetails,
-        items,
+        items: items.map(({ lineKey, ...item }) => item),
         replacementItems,
       }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Exchange request failed");
@@ -274,6 +391,9 @@ const Orders = () => {
       setExchangeOrderTarget(null);
       setExchangeReasonDetails("");
       setExchangeQuantities({});
+      setReplacementProducts({});
+      setExchangeProductSearch("");
+      setExchangeMode("VARIANT_SWAP");
       setExchangeRequestKey("");
       await loadOrderData(true);
     } catch (error) {
@@ -285,9 +405,13 @@ const Orders = () => {
 
   const openExchangeRequest = (order) => {
     setExchangeOrderTarget(order);
+    setExchangeMode("VARIANT_SWAP");
+    setExchangeProductSearch("");
+    setExchangeProducts([]);
+    setReplacementProducts({});
     setExchangeReasonCode("SIZE_OR_FIT");
     setExchangeReasonDetails("");
-    setExchangeQuantities({});
+    setExchangeQuantities(getInitialItemQuantities(order.items || []));
     setReplacementVariants({});
     setReplacementVariants(Object.fromEntries((order.items || []).map((item) => {
       const productId = item.productId || item._id || item.id;
@@ -301,11 +425,11 @@ const Orders = () => {
     event.preventDefault();
     if (!returnOrderTarget || actionLoading) return;
     const items = (returnOrderTarget.items || [])
-      .map((item) => ({
+      .map((item, index) => ({
         productId: item.productId || item._id || item.id,
         size: item.size || "",
         color: item.color || "",
-        quantity: Number(returnQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
+        quantity: Number(returnQuantities[getOrderLineKey(item, index)] || 0),
       }))
       .filter((item) => item.quantity > 0);
     if (!items.length) return toast.warn("Select at least one product quantity to return.");
@@ -336,7 +460,7 @@ const Orders = () => {
   const openReturnRequest = (order) => {
     setReturnOrderTarget(order);
     setReturnReason("");
-    setReturnQuantities({});
+    setReturnQuantities(getInitialItemQuantities(order.items || []));
     setReturnRequestKey(crypto.randomUUID());
   };
 
@@ -349,8 +473,8 @@ const Orders = () => {
       return sum + items.reduce((iSum, it) => iSum + Number(it.quantity || 1), 0);
     }, 0);
     const activeOrders = orders.filter((o) => {
-      const s = (o.status || "").toLowerCase();
-      const f = (o.fulfillmentStatus || "").toLowerCase();
+      const s = String(o.status || "").toLowerCase();
+      const f = String(o.fulfillmentStatus || "").toLowerCase();
       return (
         !s.includes("delivered") &&
         !s.includes("cancelled") &&
@@ -359,8 +483,8 @@ const Orders = () => {
       );
     }).length;
     const deliveredOrders = orders.filter((o) => {
-      const s = (o.status || "").toLowerCase();
-      const f = (o.fulfillmentStatus || "").toLowerCase();
+      const s = String(o.status || "").toLowerCase();
+      const f = String(o.fulfillmentStatus || "").toLowerCase();
       return s.includes("delivered") || f.includes("delivered");
     }).length;
 
@@ -372,8 +496,8 @@ const Orders = () => {
     return orders
       .filter((order) => {
         // Status filter
-        const s = (order.status || "").toLowerCase();
-        const f = (order.fulfillmentStatus || "").toLowerCase();
+        const s = String(order.status || "").toLowerCase();
+        const f = String(order.fulfillmentStatus || "").toLowerCase();
         const isDelivered = s.includes("delivered") || f.includes("delivered");
         const isCancelled = s.includes("cancelled") || f.includes("failed");
         const isActive = !isDelivered && !isCancelled;
@@ -385,13 +509,14 @@ const Orders = () => {
         // Search term filter
         if (searchTerm.trim()) {
           const query = searchTerm.toLowerCase().trim();
-          const matchId = (order.id || "").toLowerCase().includes(query);
-          const matchCity = (order.address?.city || "").toLowerCase().includes(query);
+          const matchId = String(order.id || "").toLowerCase().includes(query) ||
+            String(order.orderReference || "").toLowerCase().includes(query);
+          const matchCity = String(order.address?.city || "").toLowerCase().includes(query);
           const matchItems = (order.items || []).some(
             (item) =>
-              (item.name || "").toLowerCase().includes(query) ||
-              (item.category || "").toLowerCase().includes(query) ||
-              (item.subCategory || "").toLowerCase().includes(query)
+              String(item.name || "").toLowerCase().includes(query) ||
+              String(item.category || "").toLowerCase().includes(query) ||
+              String(item.subCategory || "").toLowerCase().includes(query)
           );
           if (!matchId && !matchCity && !matchItems) return false;
         }
@@ -410,7 +535,13 @@ const Orders = () => {
   // Open Tracking Modal
   const handleOpenTracking = async (order) => {
     setTrackingOrder(order);
-    setActiveDeliveryData(order.delivery || null);
+    const isSelfDelivery = order.distributorDelivery?.deliveryType === "SELF_DELIVERY";
+    setActiveDeliveryData(isSelfDelivery ? order.distributorDelivery : order.delivery || null);
+
+    if (isSelfDelivery) {
+      setTrackingLoading(false);
+      return;
+    }
 
     const lookupId = order.deliveryOrder?.id || order.deliveryJobId || order.delivery?.id || order.id;
     if (lookupId) {
@@ -438,10 +569,61 @@ const Orders = () => {
   };
 
   // Helper for Status Badges
-  const getStatusBadge = (status = "", fulfillmentStatus = "") => {
-    const s = status.toLowerCase();
-    const f = (fulfillmentStatus || "").toLowerCase();
+  const getStatusBadge = (status = "", fulfillmentStatus = "", order = {}) => {
+    const s = String(status || "").toLowerCase();
+    const f = String(fulfillmentStatus || "").toLowerCase();
+    const distributorStatus = String(order.distributorDelivery?.status || "").toLowerCase().replaceAll(" ", "_");
 
+    if (order.distributorDelivery?.deliveryType === "SELF_DELIVERY") {
+      if (distributorStatus === "delivered") {
+        return { label: "Delivered by Distributor", bg: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500", icon: CheckCircle2 };
+      }
+      if (distributorStatus === "customer_not_found" || distributorStatus === "undelivered") {
+        return { label: "Customer Not Found / Delivery Attempt Failed", bg: "bg-amber-50 text-amber-800 border-amber-300", dot: "bg-amber-500 animate-ping", icon: AlertCircle };
+      }
+      if (distributorStatus === "on_the_way") {
+        return { label: "Out for Delivery", bg: "bg-blue-50 text-blue-700 border-blue-200", dot: "bg-blue-500", icon: Truck };
+      }
+      if (distributorStatus === "dispatched") {
+        return { label: "Dispatched by Distributor", bg: "bg-indigo-50 text-indigo-700 border-indigo-200", dot: "bg-indigo-500", icon: Box };
+      }
+      if (["accepted", "packed", "ready_for_pickup"].includes(distributorStatus)) {
+        return { label: "Preparing at Distributor Hub", bg: "bg-amber-50 text-amber-700 border-amber-200", dot: "bg-amber-500 animate-pulse", icon: Clock };
+      }
+    }
+
+    if (s.includes("returned") || f.includes("returned")) {
+      return {
+        label: "Returned & Refunded",
+        bg: "bg-purple-50 text-purple-700 border-purple-200",
+        dot: "bg-purple-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("return_requested") || f.includes("return_requested") || s.includes("return requested")) {
+      return {
+        label: "Return Under Review",
+        bg: "bg-orange-50 text-orange-700 border-orange-200",
+        dot: "bg-orange-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("exchange_requested") || f.includes("exchange_requested") || s.includes("exchange requested")) {
+      return {
+        label: "Exchange Under Review",
+        bg: "bg-teal-50 text-teal-700 border-teal-200",
+        dot: "bg-teal-500",
+        icon: RotateCcw,
+      };
+    }
+    if (s.includes("not found") || s.includes("undelivered") || f.includes("customer_not_found") || f.includes("undelivered")) {
+      return {
+        label: "Customer Not Found / Delivery Attempt Failed",
+        bg: "bg-amber-50 text-amber-800 border-amber-300",
+        dot: "bg-amber-500 animate-ping",
+        icon: AlertCircle,
+      };
+    }
     if (s.includes("delivered") || f.includes("delivered")) {
       return {
         label: "Delivered",
@@ -492,6 +674,14 @@ const Orders = () => {
 
   // Calculate Tracking Progress Stage (1 to 5)
   const calculateTrackingStage = (order, deliveryData) => {
+    if (order.distributorDelivery?.deliveryType === "SELF_DELIVERY") {
+      const distributorStatus = String(order.distributorDelivery.status || "").toLowerCase().replaceAll(" ", "_");
+      if (distributorStatus === "delivered") return 5;
+      if (distributorStatus === "on_the_way") return 4;
+      if (distributorStatus === "dispatched") return 3;
+      if (["accepted", "packed", "ready_for_pickup"].includes(distributorStatus)) return 2;
+      return 1;
+    }
     const s = (order.status || "").toLowerCase();
     const f = (order.fulfillmentStatus || "").toLowerCase();
     const dState = (deliveryData?.state || deliveryData?.ncmStatus || "").toLowerCase();
@@ -502,6 +692,49 @@ const Orders = () => {
     if (f.includes("manufacturing") || f.includes("quality_check") || f.includes("packed") || f.includes("assigned") || s.includes("processing")) return 2;
     return 1; // Order Placed
   };
+
+  const invoiceExchanges = invoiceOrder
+    ? exchangeRequests.filter((request) => request.orderId === invoiceOrder.id)
+    : [];
+  const invoiceReturns = invoiceOrder
+    ? returnRequests.filter((request) => request.orderId === invoiceOrder.id)
+    : [];
+  const invoiceHasActiveExchange = invoiceExchanges.some(
+    (request) => !["REJECTED", "CANCELLED"].includes(request.status)
+  );
+  const invoiceHasActiveReturn = invoiceReturns.some(
+    (request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus)
+  );
+  const exchangePriceSummary = useMemo(() => {
+    if (!exchangeOrderTarget) return { original: 0, replacement: 0, complete: false };
+    const selectedItems = (exchangeOrderTarget.items || [])
+      .map((item, index) => ({
+        item,
+        lineKey: getOrderLineKey(item, index),
+        quantity: Number(exchangeQuantities[getOrderLineKey(item, index)] || 0),
+      }))
+      .filter(({ quantity }) => quantity > 0);
+    const original = selectedItems.reduce((total, { item, quantity }) =>
+      total + Number(item.purchasedUnitPrice ?? item.price ?? 0) * quantity, 0);
+    if (exchangeMode !== "DIFFERENT_PRODUCT") {
+      return { original, replacement: original, complete: selectedItems.length > 0 };
+    }
+    const complete = selectedItems.every(({ lineKey }) => Boolean(replacementProducts[lineKey]?.id));
+    const replacement = selectedItems.reduce((total, { lineKey, quantity }) =>
+      total + Number(replacementProducts[lineKey]?.price || 0) * quantity, 0);
+    return { original, replacement, complete };
+  }, [exchangeOrderTarget, exchangeMode, exchangeQuantities, replacementProducts]);
+  const exchangePriceDifference = exchangePriceSummary.replacement - exchangePriceSummary.original;
+  const exchangeDeliveryDate = exchangeOrderTarget?.deliveryOrder?.deliveredAt || Number(exchangeOrderTarget?.date || 0);
+  const exchangeAgeDays = exchangeDeliveryDate
+    ? (Date.now() - new Date(exchangeDeliveryDate).getTime()) / (1000 * 60 * 60 * 24)
+    : Infinity;
+  const exchangeWarrantyAvailable = exchangeAgeDays >= 0 && exchangeAgeDays <= 90;
+  const exchangeRouteLabel = exchangeOrderTarget?.deliveryOrder?.ncmOrderId
+    ? "NCM courier"
+    : exchangeOrderTarget?.distributorDelivery?.deliveryType === "SELF_DELIVERY"
+      ? "Distributor self-delivery"
+      : "Delivery route confirmed during review";
 
   return (
     <div className="min-h-screen bg-slate-50/50 py-10 px-4 sm:px-6 lg:px-8 border-t">
@@ -612,7 +845,7 @@ const Orders = () => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search order ID, item name..."
+                placeholder="Search order reference, item name..."
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900 focus:bg-white transition"
               />
               {searchTerm && (
@@ -672,287 +905,44 @@ const Orders = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            {filteredOrders.map((order) => {
-              const statusBadge = getStatusBadge(order.status, order.fulfillmentStatus);
-              const StatusIcon = statusBadge.icon;
-              const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
-              const itemCount = displayItems.reduce(
-                (sum, item) => sum + Number(item.quantity || 1),
-                0
-              );
-              const orderExchanges = exchangeRequests.filter((request) => request.orderId === order.id);
-              const activeExchange = orderExchanges.find((request) => !["REJECTED", "CANCELLED"].includes(request.status));
-              const orderReturns = returnRequests.filter((request) => request.orderId === order.id);
-              const activeReturn = orderReturns.find((request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus));
-              const canRequestExchange = isDeliveredOrder(order) && !activeExchange;
-              const canRequestReturn = isDeliveredOrder(order) && !activeReturn;
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-xs">
+              <table className="w-full min-w-[1050px] border-collapse text-left">
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Order Reference</th><th className="px-4 py-3">Created At</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Order Status</th><th className="px-4 py-3 text-right">Total Amount</th><th className="px-4 py-3">Payment Status</th><th className="px-4 py-3">Delivered Date</th><th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {filteredOrders.map((order) => {
+                    const statusBadge = getStatusBadge(order.status, order.fulfillmentStatus, order);
+                    const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
+                    const productNames = displayItems.map((item) => item.name || "Product");
+                    const deliveredAt = order.distributorDelivery?.deliveredAt || order.deliveryOrder?.deliveredAt || order.delivery?.deliveredAt;
+                    const hasDeliveryOccurred = Boolean(deliveredAt) || String(order.status || "").toLowerCase() === "delivered";
+                    const paymentLabel = order.payment
+                      ? "Payment recorded"
+                      : /cod|cash/i.test(String(order.paymentMethod || ""))
+                        ? hasDeliveryOccurred ? "Collection not verified" : "Due on delivery"
+                        : "Pending";
 
-              return (
-                <div
-                  key={order.id}
-                  className="bg-white rounded-2xl border border-slate-200/90 shadow-xs hover:shadow-md transition overflow-hidden"
-                >
-                  {/* Order Header Card */}
-                  <div className="p-4 sm:p-5 bg-slate-50/70 border-b border-slate-200/70 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-slate-900">
-                            #{order.id.slice(0, 8).toUpperCase()}
-                          </span>
-                          <button
-                            onClick={() => copyOrderId(order.id)}
-                            title="Copy Order ID"
-                            className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition cursor-pointer"
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          {copiedId === order.id && (
-                            <span className="text-[10px] text-emerald-600 font-bold">Copied!</span>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                          <Calendar className="w-3 h-3 text-slate-400" />
-                          <span>
-                            {new Date(order.dateNum).toLocaleDateString("en-US", {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}{" "}
-                            at {new Date(order.dateNum).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </span>
-                        </p>
-                      </div>
-
-                      <div className="hidden sm:block h-6 w-px bg-slate-200"></div>
-
-                      <div className="flex items-center gap-2">
-                        {/* Status Badge */}
-                        <div
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold ${statusBadge.bg}`}
-                        >
-                          <span className={`w-2 h-2 rounded-full ${statusBadge.dot}`} />
-                          <StatusIcon className="w-3 h-3" />
-                          <span>{statusBadge.label}</span>
-                        </div>
-
-                        {/* Payment Badge */}
-                        <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700">
-                          <CreditCard className="w-3 h-3 text-slate-500" />
-                          <span>{order.paymentMethod}</span>
-                          <span
-                            className={`text-[10px] font-bold ml-1 ${
-                              order.payment ? "text-emerald-600" : "text-amber-600"
-                            }`}
-                          >
-                            ({order.payment ? "Paid" : "Pay on Delivery"})
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between md:justify-end gap-3 pt-2 md:pt-0 border-t md:border-0 border-slate-200">
-                      <div className="text-left md:text-right">
-                        <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
-                          Order Total ({itemCount} {itemCount === 1 ? "item" : "items"})
-                        </p>
-                        <p className="text-base sm:text-lg font-black text-slate-900">
-                          {currency}{order.amount.toLocaleString()}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {canCancelBeforeNcmHandoff(order) && (
-                          <button
-                            onClick={() => { setCancelOrderTarget(order); setCancelReason(""); }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-white text-rose-700 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            <span>Cancel</span>
-                          </button>
-                        )}
-                        {canRequestExchange && (
-                          <button
-                            onClick={() => openExchangeRequest(order)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 bg-white text-blue-800 text-xs font-bold hover:bg-blue-50 transition cursor-pointer"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Request Exchange</span>
-                          </button>
-                        )}
-                        {canRequestReturn && (
-                          <button
-                            onClick={() => openReturnRequest(order)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-white text-rose-800 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Request Return</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleOpenTracking(order)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                        >
-                          <Truck className="w-3.5 h-3.5" />
-                          <span>Track</span>
-                        </button>
-                        <button
-                          onClick={() => setInvoiceOrder(order)}
-                          className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition cursor-pointer"
-                          title="View Invoice & Receipt"
-                        >
-                          <FileText className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Items List Inside Single Order */}
-                  <div className="divide-y divide-slate-100">
-                    {displayItems.map((item, idx) => {
-                      const unitPrice = Number(item.purchasedUnitPrice ?? item.price ?? 0);
-                      const qty = Number(item.quantity || 1);
-                      const lineTotal = Number(item.lineTotal || unitPrice * qty);
-                      const itemImg = Array.isArray(item.image) ? item.image[0] : item.image;
-
-                      return (
-                        <div
-                          key={`${order.id}-item-${idx}`}
-                          className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/40 transition"
-                        >
-                          <div className="flex items-start gap-4">
-                            {/* Product Image */}
-                            <div className="w-16 h-20 sm:w-20 sm:h-24 bg-slate-100 rounded-xl overflow-hidden border border-slate-200/80 shrink-0 relative group">
-                              <img
-                                src={itemImg}
-                                alt={item.name}
-                                className="w-full h-full object-cover object-center group-hover:scale-105 transition duration-300"
-                              />
-                            </div>
-
-                            {/* Product Info */}
-                            <div className="space-y-1">
-                              {item.isComboBundle ? (
-                                <p className="text-sm font-bold text-slate-900 sm:text-base">{item.name}</p>
-                              ) : (
-                                <Link to={`/product/${item._id || item.productId || item.id}`} className="line-clamp-1 text-sm font-bold text-slate-900 transition hover:text-slate-600 sm:text-base">
-                                  {item.name}
-                                </Link>
-                              )}
-
-                              <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                                {item.category && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-medium">
-                                    {item.category}
-                                  </span>
-                                )}
-                                {item.size && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-900 text-white text-[11px] font-bold">
-                                    Size: {item.size}
-                                  </span>
-                                )}
-                                {item.color && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-medium flex items-center gap-1">
-                                    <span
-                                      className="w-2 h-2 rounded-full border border-slate-300"
-                                      style={{ backgroundColor: item.color.toLowerCase() }}
-                                    />
-                                    {item.color}
-                                  </span>
-                                )}
-                                {item.isComboBundle && (
-                                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-bold">
-                                    {item.componentCount} included pieces
-                                  </span>
-                                )}
-                                {item.offerTag && (
-                                  <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold flex items-center gap-1">
-                                    <Sparkles className="w-2.5 h-2.5" />
-                                    {item.offerTag}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2 text-xs text-slate-500 pt-1">
-                                <span className="font-semibold text-slate-700">
-                                  {currency}{unitPrice.toLocaleString()}
-                                </span>
-                                <span>×</span>
-                                <span className="font-semibold text-slate-700">{qty} qty</span>
-                                {(item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage) > 0 && (
-                                  <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.2 rounded">
-                                    {item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage}% OFF
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Line Total */}
-                          <div className="text-right sm:text-right flex sm:flex-col justify-between items-center sm:items-end border-t sm:border-0 pt-2 sm:pt-0 border-slate-100">
-                            <span className="sm:hidden text-xs text-slate-400">Item Total:</span>
-                            <div>
-                              <p className="text-sm sm:text-base font-black text-slate-900">
-                                {currency}{lineTotal.toLocaleString()}
-                              </p>
-                              <p className="text-[10px] text-slate-400">Snapshot price guaranteed</p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Order Footer & Shipping Destination */}
-                  {(orderExchanges.length > 0 || orderReturns.length > 0) && (
-                    <div className="px-4 sm:px-5 py-3 border-t border-blue-100 bg-blue-50/60 space-y-1">
-                      {orderExchanges.map((request) => (
-                        <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="font-semibold text-blue-950">Exchange {request.status.replace(/_/g, " ")}</span>
-                          <span className="text-blue-800">{request.reasonCode.replace(/_/g, " ")}{request.returnPickupStatus ? ` · Return ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.replacementItems?.length ? ` · Replacement ${request.replacementItems.map((item) => `${item.size || "One size"}${item.color ? `/${item.color}` : ""} ×${item.quantity}`).join(", ")}` : ""}{request.priceDifference ? ` · Price adjustment ${currency}${Number(request.priceDifference).toLocaleString()}` : ""}{request.ncmTotalCharge != null ? ` · NCM ${currency}${Number(request.ncmTotalCharge).toLocaleString()} (${request.ncmChargePayer || "MERCHANT"})` : ""}</span>
-                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
-                        </div>
-                      ))}
-                      {orderReturns.map((request) => (
-                        <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="font-semibold text-rose-950">Return {String(request.lifecycleStatus || "REQUESTED").replace(/_/g, " ")}</span>
-                          <span className="text-rose-800">{request.reason}{request.returnPickupStatus ? ` · Pickup ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.ncmDeliveryCharge != null ? ` · NCM-reported charge ${currency}${Number(request.ncmDeliveryCharge).toLocaleString()}` : ""}</span>
-                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="p-4 bg-slate-50/50 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-600">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="line-clamp-1 font-medium">
-                        Ship to:{" "}
-                        <strong className="text-slate-800">
-                          {order.address?.firstName} {order.address?.lastName}
-                        </strong>{" "}
-                        ({[order.address?.street, order.address?.city, order.address?.state].filter(Boolean).join(", ")})
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-4 self-end sm:self-auto">
-                      {order.loyaltyDiscount > 0 && (
-                        <span className="text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          Loyalty Saved: -{currency}{order.loyaltyDiscount}
-                        </span>
-                      )}
-                      <button
-                        onClick={() => handleOpenTracking(order)}
-                        className="text-slate-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <span>Detailed Tracking</span>
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            <Pagination
+                    return (
+                      <tr key={order.id} className="align-top hover:bg-slate-50/70">
+                        <td className="whitespace-nowrap px-4 py-4 font-mono font-bold text-slate-900">#{order.orderReference}</td>
+                        <td className="whitespace-nowrap px-4 py-4 text-slate-600">{new Date(order.dateNum).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td>
+                        <td className="max-w-56 px-4 py-4"><p className="line-clamp-2 font-semibold text-slate-800">{productNames[0] || "Order items"}</p>{productNames.length > 1 && <p className="mt-1 text-[10px] text-slate-500">+{productNames.length - 1} more product{productNames.length === 2 ? "" : "s"}</p>}{order.assignedGift && <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><Gift className="h-3 w-3" /> Gift included: {order.assignedGift.name}</p>}</td>
+                        <td className="whitespace-nowrap px-4 py-4"><span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${statusBadge.bg}`}><span className={`h-1.5 w-1.5 rounded-full ${statusBadge.dot}`} />{statusBadge.label}</span></td>
+                        <td className="whitespace-nowrap px-4 py-4 text-right font-bold text-slate-900">{currency}{Number(order.amount || 0).toLocaleString()}</td>
+                        <td className="whitespace-nowrap px-4 py-4"><span className={`font-semibold ${order.payment ? "text-emerald-700" : "text-amber-700"}`}>{paymentLabel}</span><span className="mt-0.5 block text-[10px] text-slate-500">{order.paymentMethod || "Payment"}</span></td>
+                        <td className="whitespace-nowrap px-4 py-4 text-slate-600">{deliveredAt ? new Date(deliveredAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "—"}</td>
+                        <td className="px-4 py-4">
+                          <button type="button" onClick={() => setInvoiceOrder(order)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-[10px] font-bold text-white hover:bg-slate-700">View</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>            <Pagination
               page={pagination?.page || page}
               totalPages={pagination?.totalPages || 0}
               total={pagination?.total || 0}
@@ -967,7 +957,7 @@ const Orders = () => {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setCancelOrderTarget(null)}>
           <form onSubmit={submitOrderCancellation} onClick={(event) => event.stopPropagation()} className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Cancel order</h2><p className="text-xs text-slate-500 mt-1">#{cancelOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Cancel order</h2><p className="text-xs text-slate-500 mt-1">#{cancelOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setCancelOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"> <X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Cancellation is available only before NCM accepts the delivery order. After handoff, contact support to request an eligible exchange.</p>
@@ -979,42 +969,164 @@ const Orders = () => {
         </div>
       )}
 
+      {reviewOrderTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setReviewOrderTarget(null)}>
+          <form onSubmit={submitDistributorReview} onClick={(event) => event.stopPropagation()} className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Rate your delivery hub</h2>
+                <p className="text-xs text-slate-500 mt-1">Order #{reviewOrderTarget.orderReference}</p>
+              </div>
+              <button type="button" disabled={actionLoading} onClick={() => setReviewOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close review form"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-600">Your verified order rating helps choose a reliable hub when no stocked hub serves the customer’s province.</p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-2">Your rating</label>
+              <div className="flex gap-2" role="radiogroup" aria-label="Hub rating">
+                {[1, 2, 3, 4, 5].map((rating) => (
+                  <button
+                    key={rating}
+                    type="button"
+                    role="radio"
+                    aria-checked={reviewRating === rating}
+                    aria-label={`${rating} star${rating === 1 ? "" : "s"}`}
+                    onClick={() => setReviewRating(rating)}
+                    className={`p-1 rounded focus:outline-none focus:ring-2 focus:ring-amber-400 ${reviewRating >= rating ? "text-amber-500" : "text-slate-300"}`}
+                  >
+                    <Star className="w-7 h-7 fill-current" />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">Review (optional)
+              <textarea maxLength={2000} value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} rows={4} className="mt-1 w-full border border-slate-300 rounded-lg p-3 font-normal" placeholder="Share how your hub handled the order." />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" disabled={actionLoading} onClick={() => setReviewOrderTarget(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-xs font-bold">Cancel</button>
+              <button type="submit" disabled={actionLoading} className="flex-1 py-2.5 bg-slate-900 text-white rounded-lg text-xs font-bold disabled:opacity-50">{actionLoading ? "Saving..." : "Save review"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {exchangeOrderTarget && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setExchangeOrderTarget(null)}>
           <form onSubmit={submitExchangeRequest} onClick={(event) => event.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Request an exchange</h2><p className="text-xs text-slate-500 mt-1">Order #{exchangeOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Request an exchange</h2><p className="text-xs text-slate-500 mt-1">Order #{exchangeOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setExchangeOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
-            <p className="text-xs text-slate-600">Choose the item quantities and explain the issue. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
-            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM's exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
+            <p className="text-xs text-slate-600">The first product and its purchased size/color are selected by default. Set another product’s quantity to choose it; you can include multiple items. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM&apos;s exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+              <button type="button" onClick={() => setExchangeMode("VARIANT_SWAP")} className={`rounded-md px-2 py-2 text-xs font-bold ${exchangeMode === "VARIANT_SWAP" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>Exchange size/color</button>
+              <button type="button" onClick={() => setExchangeMode("DIFFERENT_PRODUCT")} className={`rounded-md px-2 py-2 text-xs font-bold ${exchangeMode === "DIFFERENT_PRODUCT" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>Exchange for another product</button>
+            </div>
+            {exchangeWarrantyAvailable && (
+              <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-[11px] font-semibold text-violet-900">
+                3-Month Stitching &amp; Threading Warranty · Delivered {new Date(exchangeDeliveryDate).toLocaleDateString()}
+              </p>
+            )}
+            {exchangeMode === "DIFFERENT_PRODUCT" && (
+              <div className="space-y-2 rounded-lg border border-slate-200 p-3">
+                <label className="block text-xs font-semibold text-slate-700">Search active replacement products
+                  <input value={exchangeProductSearch} onChange={(event) => setExchangeProductSearch(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-normal" placeholder="Enter at least 2 characters" />
+                </label>
+                <p className="text-[10px] text-slate-500">{exchangeProductsLoading ? "Searching catalog..." : exchangeProductSearch.trim().length < 2 ? "Enter at least 2 characters to search." : exchangeProducts.length ? `${exchangeProducts.length} active product${exchangeProducts.length === 1 ? "" : "s"} found.` : "No active products found."} Availability shown is advisory; stock is checked again during review.</p>
+              </div>
+            )}
             <div className="space-y-2">
               {(exchangeOrderTarget.items || []).map((item, index) => {
-                const productId = item.productId || item._id || item.id;
-                const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                const key = getOrderItemKey(item);
+                const lineKey = getOrderLineKey(item, index);
+                const selected = Number(exchangeQuantities[lineKey] || 0) > 0;
                 const replacement = replacementVariants[key] || { size: item.size || "", color: item.color || "" };
                 const variants = Array.isArray(item.variants) ? item.variants : [];
-                const sizes = [...new Set((Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)).filter(Boolean))];
-                const colors = [...new Set((Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)).filter(Boolean))];
+                const sizes = [...new Set([...(Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)), item.size].filter(Boolean))];
+                const colors = [...new Set([...(Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)), item.color].filter(Boolean))];
+                const replacementProduct = replacementProducts[lineKey];
+                const replacementProductVariants = getProductVariants(replacementProduct);
+                const replacementStock = getAvailableVariantQuantity(replacementProduct, replacementProduct?.size, replacementProduct?.color);
                 return (
-                  <div key={`${key}-${index}`} className="grid gap-3 border border-slate-200 rounded-lg p-3 sm:grid-cols-[1fr_92px]">
+                  <div key={`${key}-${index}`} className={`grid gap-3 rounded-lg border p-3 transition-colors sm:grid-cols-[1fr_92px] ${selected ? "border-blue-300 bg-blue-50/40" : "border-slate-200"}`}>
                     <div>
                       <p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p>
                       <p className="text-[11px] text-slate-500">Purchased {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {Number(item.quantity || 1)}</p>
-                      <div className="mt-2 grid grid-cols-2 gap-2">
+                      {exchangeMode === "VARIANT_SWAP" ? <div className="mt-2 grid grid-cols-2 gap-2">
                         <label className="text-[10px] font-semibold text-slate-500">Replacement size<select value={replacement.size} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, size: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">One size</option>{sizes.map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
                         <label className="text-[10px] font-semibold text-slate-500">Replacement color<select value={replacement.color} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, color: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{colors.map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
-                      </div>
+                      </div> : (
+                        <div className="mt-2 space-y-2">
+                          <label className="block text-[10px] font-semibold text-slate-500">Replacement product
+                            <select value={replacementProduct?.id || ""} onChange={(event) => {
+                              const product = exchangeProducts.find((candidate) => getProductId(candidate) === event.target.value);
+                              if (!product) {
+                                setReplacementProducts((current) => ({ ...current, [lineKey]: null }));
+                                return;
+                              }
+                              const productVariants = getProductVariants(product);
+                              const defaultVariant = productVariants.find((variant) => Number(variant.quantity || 0) > 0) || productVariants[0] || {};
+                              setReplacementProducts((current) => ({
+                                ...current,
+                                [lineKey]: {
+                                  id: getProductId(product),
+                                  name: product.name,
+                                  price: Number(product.price || 0),
+                                  stockQuantity: Number(product.stockQuantity || 0),
+                                  size: defaultVariant.size || parseArray(product.sizes)[0] || "",
+                                  color: defaultVariant.color || parseArray(product.colors)[0] || "",
+                                  variants: product.variants,
+                                  sizes: product.sizes,
+                                  colors: product.colors,
+                                },
+                              }));
+                            }} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900">
+                              <option value="">Choose from search results</option>
+                              {exchangeProducts.map((product) => <option key={getProductId(product)} value={getProductId(product)}>{product.name} · {currency}{Number(product.price || 0).toLocaleString()} · stock {Number(product.stockQuantity || 0)}</option>)}
+                            </select>
+                          </label>
+                          {replacementProduct && (
+                            <>
+                              {replacementProductVariants.length ? (
+                                <label className="block text-[10px] font-semibold text-slate-500">Available size/color variants
+                                  <select value={replacementProductVariants.findIndex((variant) => variant.size === replacementProduct.size && variant.color === replacementProduct.color)} onChange={(event) => {
+                                    const nextVariant = replacementProductVariants[Number(event.target.value)];
+                                    if (nextVariant) setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], size: nextVariant.size || "", color: nextVariant.color || "" } }));
+                                  }} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900">
+                                    {replacementProductVariants.map((variant, variantIndex) => <option key={`${variant.size}-${variant.color}-${variantIndex}`} value={variantIndex}>{variant.size || "One size"}{variant.color ? ` · ${variant.color}` : ""} · stock {Number(variant.quantity || 0)}</option>)}
+                                  </select>
+                                </label>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <label className="text-[10px] font-semibold text-slate-500">Size<select value={replacementProduct.size} onChange={(event) => setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], size: event.target.value } }))} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">One size</option>{parseArray(replacementProduct.sizes).map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
+                                  <label className="text-[10px] font-semibold text-slate-500">Color<select value={replacementProduct.color} onChange={(event) => setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], color: event.target.value } }))} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{parseArray(replacementProduct.colors).map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
+                                </div>
+                              )}
+                              <p className="text-[10px] text-slate-600">Catalog stock for selected variant: {replacementStock}</p>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[key] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
+                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[lineKey] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [lineKey]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
               })}
             </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+              <p className="font-bold text-slate-800">Exchange value estimate</p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-slate-600">
+                <p>Original item credit<br /><span className="font-semibold text-slate-900">{currency}{exchangePriceSummary.original.toLocaleString("en-NP")}</span></p>
+                <p>Replacement value<br /><span className="font-semibold text-slate-900">{exchangePriceSummary.complete ? `${currency}${exchangePriceSummary.replacement.toLocaleString("en-NP")}` : "Select replacement product(s)"}</span></p>
+              </div>
+              {exchangePriceSummary.complete && <p className="mt-2 font-semibold text-slate-900">{exchangePriceDifference > 0 ? `${exchangeRouteLabel === "NCM courier" ? "Estimated amount to pay distributor" : "Estimated amount due at delivery"}: ${currency}${exchangePriceDifference.toLocaleString("en-NP")}` : exchangePriceDifference < 0 ? `${exchangeRouteLabel === "NCM courier" ? "Estimated refund from distributor" : "Estimated refund/credit"}: ${currency}${Math.abs(exchangePriceDifference).toLocaleString("en-NP")}` : "No price difference"}</p>}
+              <p className="mt-1 text-[10px] text-slate-500">Route: {exchangeRouteLabel}. Any carrier charge is confirmed during Admin review and is not included in this estimate.</p>
+              {exchangeRouteLabel === "NCM courier" && exchangePriceDifference !== 0 && <p className="mt-1 text-[10px] text-slate-500">NCM transports the replacement only. The assigned distributor will handle the price difference separately and submit payment proof for Admin verification.</p>}
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-xs font-semibold text-slate-700">Cause
                 <select value={exchangeReasonCode} onChange={(event) => setExchangeReasonCode(event.target.value)} className="mt-1 w-full border border-slate-300 rounded-lg p-2.5 font-normal">
-                  <option value="SIZE_OR_FIT">Size or fit</option><option value="DEFECTIVE">Defective product</option><option value="WRONG_ITEM">Wrong item</option><option value="DAMAGED_IN_TRANSIT">Damaged in transit</option><option value="OTHER">Other</option>
+                  <option value="SIZE_OR_FIT">Size or fit</option><option value="DEFECTIVE">Defective product</option><option value="WRONG_ITEM">Wrong item</option><option value="DAMAGED_IN_TRANSIT">Damaged in transit</option><option value="STITCHING_DEFECT">Stitching defect (warranty)</option><option value="THREADING_ISSUE">Threading issue (warranty)</option><option value="OTHER">Other</option>
                 </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">Details{exchangeReasonCode === "OTHER" ? " *" : ""}
@@ -1030,18 +1142,20 @@ const Orders = () => {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setReturnOrderTarget(null)}>
           <form onSubmit={submitReturnRequest} onClick={(event) => event.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Request a return</h2><p className="text-xs text-slate-500 mt-1">Order #{returnOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Request a return</h2><p className="text-xs text-slate-500 mt-1">Order #{returnOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setReturnOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Your request must be approved by an admin. Refund and stock adjustments happen only after the parcel is received and inspected.</p>
+            <p className="text-[11px] text-slate-500">The first product and its purchased size/color are selected by default. Change quantities to choose another product or include more than one.</p>
             <div className="space-y-2">
               {(returnOrderTarget.items || []).map((item, index) => {
-                const productId = item.productId || item._id || item.id;
-                const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                const key = getOrderItemKey(item);
+                const lineKey = getOrderLineKey(item, index);
+                const selected = Number(returnQuantities[lineKey] || 0) > 0;
                 return (
-                  <div key={`${key}-${index}`} className="grid grid-cols-[1fr_92px] gap-3 items-center border border-slate-200 rounded-lg p-3">
+                  <div key={`${key}-${index}`} className={`grid grid-cols-[1fr_92px] items-center gap-3 rounded-lg border p-3 transition-colors ${selected ? "border-rose-300 bg-rose-50/40" : "border-slate-200"}`}>
                     <div><p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p><p className="text-[11px] text-slate-500">{item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Purchased {Number(item.quantity || 1)}</p></div>
-                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={returnQuantities[key] ?? 0} onChange={(event) => setReturnQuantities({ ...returnQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
+                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={returnQuantities[lineKey] ?? 0} onChange={(event) => setReturnQuantities({ ...returnQuantities, [lineKey]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
               })}
@@ -1068,11 +1182,11 @@ const Orders = () => {
             <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  Live Courier & Fulfillment Tracking
+                  Live Delivery Tracking
                 </p>
                 <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2 mt-0.5">
                   <Truck className="w-5 h-5 text-emerald-400" />
-                  <span>Order #{trackingOrder.id.slice(0, 8).toUpperCase()}</span>
+                  <span>Order #{trackingOrder.orderReference}</span>
                 </h3>
               </div>
               <button
@@ -1085,18 +1199,32 @@ const Orders = () => {
 
             <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto text-xs">
               {/* Active Route Box */}
+              {(() => {
+                const distributorDelivery = trackingOrder.distributorDelivery;
+                const isSelfDelivery = distributorDelivery?.deliveryType === "SELF_DELIVERY";
+                const deliveryStatus = String(distributorDelivery?.status || trackingOrder.status || "Processing").replaceAll("_", " ");
+                const isCod = /cod|cash/i.test(String(trackingOrder.paymentMethod || ""));
+                return (
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">Logistics Carrier:</span>
-                  <span className="font-bold text-slate-900 bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
-                    Nepal Can Move (NCM) Logistics
+                  <span className="text-slate-500 font-semibold">Delivery Provider:</span>
+                  <span className={`font-bold px-2 py-0.5 rounded border ${
+                    isSelfDelivery
+                      ? "text-indigo-700 bg-indigo-50 border-indigo-200"
+                      : "text-emerald-700 bg-emerald-50 border-emerald-200"
+                  }`}>
+                    {isSelfDelivery
+                      ? `${distributorDelivery.distributor?.name || "Local Distributor"} · Self delivery`
+                      : "Nepal Can Move (NCM) Logistics"}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">Courier Consignment / AWB:</span>
+                  <span className="text-slate-500 font-semibold">{isSelfDelivery ? "Delivery Status:" : "Courier Consignment / AWB:"}</span>
                   <span className="font-mono font-bold text-slate-900">
-                    {activeDeliveryData?.ncmOrderId || activeDeliveryData?.id || trackingOrder.deliveryJobId || "Processing in Hub"}
+                    {isSelfDelivery
+                      ? deliveryStatus
+                      : activeDeliveryData?.ncmOrderId || activeDeliveryData?.id || trackingOrder.deliveryJobId || "Processing in Hub"}
                   </span>
                 </div>
 
@@ -1105,14 +1233,48 @@ const Orders = () => {
                   <span className="font-bold text-slate-900">{trackingOrder.address?.city || "Nepal Hub"}</span>
                 </div>
 
-                {activeDeliveryData?.originBranchName && activeDeliveryData?.destinationBranchName && (
+                {!isSelfDelivery && activeDeliveryData?.originBranchName && activeDeliveryData?.destinationBranchName && (
                   <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-600">
                     <span>Origin: <strong>{activeDeliveryData.originBranchName}</strong></span>
                     <span>→</span>
                     <span>Hub: <strong>{activeDeliveryData.destinationBranchName}</strong></span>
                   </div>
                 )}
+                {isCod && (
+                  <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500 font-semibold">Cash on Delivery:</span>
+                    <strong className={trackingOrder.payment ? "text-emerald-700" : "text-amber-700"}>
+                      {trackingOrder.payment
+                        ? "Payment recorded"
+                        : isCod && deliveryStatus.toLowerCase() === "delivered"
+                          ? "Collection not verified"
+                          : "Due on delivery"}
+                    </strong>
+                  </div>
+                )}
               </div>
+                );
+              })()}
+
+              {(() => {
+                const isCustomerNotFound =
+                  String(trackingOrder.status || "").toLowerCase().includes("not found") ||
+                  String(trackingOrder.status || "").toLowerCase().includes("undelivered") ||
+                  String(trackingOrder.fulfillmentStatus || "").toLowerCase().includes("customer_not_found") ||
+                  String(trackingOrder.distributorDelivery?.status || "").toLowerCase().includes("customer_not_found");
+                if (!isCustomerNotFound) return null;
+                return (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-amber-950">Delivery Attempt Unsuccessful</p>
+                      <p className="mt-1 text-amber-800 leading-relaxed">
+                        The delivery agent attempted delivery but could not contact you at the delivery address. Please keep your phone reachable for the next delivery attempt or contact customer support for assistance.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 5-Step Visual Stepper */}
               <div>
@@ -1121,7 +1283,41 @@ const Orders = () => {
                 </h4>
                 {(() => {
                   const stage = calculateTrackingStage(trackingOrder, activeDeliveryData);
-                  const steps = [
+                  const isSelfDelivery = trackingOrder.distributorDelivery?.deliveryType === "SELF_DELIVERY";
+                  const distributorDelivery = trackingOrder.distributorDelivery || {};
+                  const formatTime = (value, fallback) => value ? new Date(value).toLocaleString() : fallback;
+                  const steps = isSelfDelivery ? [
+                    {
+                      num: 1,
+                      title: "Order Placed & Confirmed",
+                      desc: "Your order has been validated and recorded.",
+                      time: new Date(trackingOrder.dateNum).toLocaleString(),
+                    },
+                    {
+                      num: 2,
+                      title: "Preparing at Distributor Hub",
+                      desc: `Your order is prepared for local delivery by ${distributorDelivery.distributor?.name || "the assigned distributor"}.`,
+                      time: stage >= 2 ? "Completed" : "Pending",
+                    },
+                    {
+                      num: 3,
+                      title: "Dispatched by Distributor",
+                      desc: "The distributor has dispatched your order for local delivery.",
+                      time: formatTime(distributorDelivery.dispatchedAt, stage >= 3 ? "Dispatched" : "Pending dispatch"),
+                    },
+                    {
+                      num: 4,
+                      title: "Out for Delivery",
+                      desc: "The distributor is delivering your order to the delivery address.",
+                      time: formatTime(distributorDelivery.onTheWayAt, stage >= 4 ? "Out for delivery" : "Pending"),
+                    },
+                    {
+                      num: 5,
+                      title: "Delivered to Customer",
+                      desc: "Your order has been handed to you.",
+                      time: formatTime(distributorDelivery.deliveredAt, stage >= 5 ? "Delivered" : "Pending delivery"),
+                    },
+                  ] : [
                     {
                       num: 1,
                       title: "Order Placed & Confirmed",
@@ -1191,7 +1387,8 @@ const Orders = () => {
               </div>
 
               {/* Event Log if available */}
-              {activeDeliveryData?.events && activeDeliveryData.events.length > 0 && (
+              {trackingOrder.distributorDelivery?.deliveryType !== "SELF_DELIVERY" &&
+                activeDeliveryData?.events && activeDeliveryData.events.length > 0 && (
                 <div className="pt-4 border-t border-slate-200 space-y-2">
                   <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px]">
                     Detailed Carrier Events Log
@@ -1222,6 +1419,109 @@ const Orders = () => {
         </div>
       )}
 
+      {exchangeViewRequest && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setExchangeViewRequest(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="exchange-details-title"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 p-5">
+              <div>
+                <h2 id="exchange-details-title" className="text-base font-bold text-slate-900">Exchange request details</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Order #{orders.find((order) => order.id === exchangeViewRequest.orderId)?.orderReference || exchangeViewRequest.orderId}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExchangeViewRequest(null)}
+                className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                aria-label="Close exchange details"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </header>
+
+            <div className="space-y-5 p-5 text-xs">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Status</p>
+                  <p className="mt-1 font-bold text-slate-900">{String(exchangeViewRequest.status || "Requested").replace(/_/g, " ")}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Requested</p>
+                  <p className="mt-1 font-semibold text-slate-800">{exchangeViewRequest.createdAt ? new Date(exchangeViewRequest.createdAt).toLocaleString() : "—"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reason</p>
+                  <p className="mt-1 font-semibold text-slate-800">{String(exchangeViewRequest.reasonCode || "—").replace(/_/g, " ")}</p>
+                  {exchangeViewRequest.reasonDetails && <p className="mt-1 text-slate-600">{exchangeViewRequest.reasonDetails}</p>}
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Price difference</p>
+                  <p className="mt-1 font-semibold text-slate-800">{currency}{Number(exchangeViewRequest.priceDifference || 0).toLocaleString()}</p>
+                </div>
+              </div>
+
+              {[["Items requested for exchange", exchangeViewRequest.items], ["Replacement items", exchangeViewRequest.replacementItems]].map(([title, items]) => (
+                <div key={title}>
+                  <h3 className="mb-2 font-bold text-slate-900">{title}</h3>
+                  {Array.isArray(items) && items.length ? (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-[10px] uppercase text-slate-500">
+                          <tr><th className="px-3 py-2">Product</th><th className="px-3 py-2">Size / Color</th><th className="px-3 py-2 text-right">Quantity</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {items.map((item, index) => (
+                            <tr key={`${item.productId || item.name || "item"}-${index}`}>
+                              <td className="px-3 py-2 font-semibold text-slate-800">{item.name || item.productName || item.productId || "Product"}</td>
+                              <td className="px-3 py-2 text-slate-600">{[item.size, item.color].filter(Boolean).join(" / ") || "—"}</td>
+                              <td className="px-3 py-2 text-right font-bold text-slate-800">{item.quantity || 0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <p className="rounded-xl bg-slate-50 p-3 text-slate-500">No item details available.</p>}
+                </div>
+              ))}
+
+              {(exchangeViewRequest.ncmSubmissionError || exchangeViewRequest.decisionReason || exchangeViewRequest.ncmTotalCharge > 0) && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <h3 className="font-bold text-amber-950">Delivery and review notes</h3>
+                  {exchangeViewRequest.decisionReason && <p className="mt-1 text-amber-900">{exchangeViewRequest.decisionReason}</p>}
+                  {exchangeViewRequest.ncmSubmissionError && <p className="mt-1 text-rose-800">Carrier update: {exchangeViewRequest.ncmSubmissionError}</p>}
+                  {Number(exchangeViewRequest.ncmTotalCharge || 0) > 0 && <p className="mt-1 text-amber-900">Carrier charges: {currency}{Number(exchangeViewRequest.ncmTotalCharge).toLocaleString()} ({exchangeViewRequest.ncmChargePayer || "payer not specified"})</p>}
+                </div>
+              )}
+
+              {Array.isArray(exchangeViewRequest.events) && exchangeViewRequest.events.length > 0 && (
+                <div>
+                  <h3 className="mb-2 font-bold text-slate-900">Request history</h3>
+                  <ol className="space-y-2 border-l-2 border-slate-200 pl-4">
+                    {exchangeViewRequest.events.map((event, index) => (
+                      <li key={`${event.eventType || event.toStatus || "event"}-${index}`} className="relative">
+                        <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
+                        <p className="font-semibold text-slate-800">{String(event.toStatus || event.eventType || "Update").replace(/_/g, " ")}</p>
+                        {event.reason && <p className="mt-0.5 text-slate-600">{event.reason}</p>}
+                        <p className="mt-0.5 text-[10px] text-slate-400">{event.occurredAt ? new Date(event.occurredAt).toLocaleString() : ""}</p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* Detailed Order Receipt / Invoice Modal */}
       {invoiceOrder && (
         <div
@@ -1236,7 +1536,7 @@ const Orders = () => {
             <div className="p-4 bg-slate-900 text-white flex items-center justify-between print:hidden">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-emerald-400" />
-                <span className="font-bold text-sm">Official Order Receipt</span>
+                <span className="font-bold text-sm">Order Details & Receipt</span>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1267,13 +1567,13 @@ const Orders = () => {
                 <div className="text-left sm:text-right">
                   <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Order Reference</p>
                   <p className="text-base font-mono font-bold text-slate-900">
-                    #{invoiceOrder.id.slice(0, 8).toUpperCase()}
+                    #{invoiceOrder.orderReference}
                   </p>
                   <p className="text-[11px] text-slate-500 mt-0.5">
                     Date: {new Date(invoiceOrder.dateNum).toLocaleDateString()}
                   </p>
                   <p className="text-[11px] font-bold text-emerald-600">
-                    Payment: {invoiceOrder.paymentMethod} ({invoiceOrder.payment ? "Paid" : "Due on Delivery"})
+                    Payment: {invoiceOrder.paymentMethod} ({invoiceOrder.payment ? "Recorded" : "Not recorded"})
                   </p>
                 </div>
               </div>
@@ -1301,6 +1601,16 @@ const Orders = () => {
                   <p className="text-slate-600">{invoiceOrder.address?.country || "Nepal"}</p>
                 </div>
               </div>
+
+              {invoiceOrder.assignedGift && (
+                <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
+                  <Gift className="h-5 w-5 shrink-0 text-emerald-700" />
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Gift included with this shipment</p>
+                    <p className="mt-0.5 font-bold">{invoiceOrder.assignedGift.name}</p>
+                  </div>
+                </div>
+              )}
 
               {/* Itemized Table */}
               <div>
@@ -1358,6 +1668,13 @@ const Orders = () => {
                     </span>
                   </div>
 
+                  <div className="flex justify-between text-slate-600">
+                    <span>Delivery Charge:</span>
+                    <span className="font-mono">
+                      {currency}{Number(invoiceOrder.deliveryFee || 0).toLocaleString()}
+                    </span>
+                  </div>
+
                   {invoiceOrder.loyaltyDiscount > 0 && (
                     <div className="flex justify-between text-emerald-600 font-semibold">
                       <span>Loyalty / Reward:</span>
@@ -1375,13 +1692,102 @@ const Orders = () => {
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end print:hidden">
-              <button
-                onClick={() => setInvoiceOrder(null)}
-                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl cursor-pointer transition"
-              >
-                Close Receipt
-              </button>
+            <div className="border-t border-slate-200 bg-slate-50 p-4 print:hidden">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = invoiceOrder;
+                    setInvoiceOrder(null);
+                    handleOpenTracking(order);
+                  }}
+                  className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700"
+                >
+                  <span className="inline-flex items-center gap-1.5"><Truck className="h-3.5 w-3.5" />Track order</span>
+                </button>
+                {canCancelBeforeNcmHandoff(invoiceOrder) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCancelOrderTarget(invoiceOrder);
+                      setCancelReason("");
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50"
+                  >
+                    Cancel order
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && !invoiceHasActiveExchange && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openExchangeRequest(invoiceOrder);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-800 hover:bg-blue-50"
+                  >
+                    Request exchange
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && !invoiceHasActiveReturn && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openReturnRequest(invoiceOrder);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-800 hover:bg-rose-50"
+                  >
+                    Request return
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && Boolean(invoiceOrder.assignedDistributorId) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReviewOrderTarget(invoiceOrder);
+                      setReviewRating(invoiceOrder.distributorReview?.rating || 5);
+                      setReviewComment(invoiceOrder.distributorReview?.comment || "");
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50"
+                  >
+                    {invoiceOrder.distributorReview ? "View / edit hub rating" : "Rate hub"}
+                  </button>
+                )}
+                {invoiceExchanges.map((request) => (
+                  <button
+                    key={request.id}
+                    type="button"
+                    onClick={() => {
+                      setExchangeViewRequest(request);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-800 hover:bg-indigo-50"
+                  >
+                    View exchange · {String(request.status || "REQUESTED").replace(/_/g, " ")}
+                  </button>
+                ))}
+              </div>
+              {invoiceReturns.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
+                  {invoiceReturns.map((request) => (
+                    <span key={request.id}>
+                      Return request: <strong>{String(request.lifecycleStatus || request.status || "REQUESTED").replace(/_/g, " ")}</strong>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setInvoiceOrder(null)}
+                  className="rounded-xl bg-slate-900 px-5 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

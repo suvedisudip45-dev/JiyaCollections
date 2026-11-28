@@ -1,0 +1,240 @@
+- generic [ref=e3]:
+  - generic "Store announcements" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e7]: •
+        - text: Made for everyday movement
+      - generic [aria-hidden] [ref=e8]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e9]: •
+        - text: Made for everyday movement
+  - navigation [ref=e10]:
+    - generic [ref=e11]:
+      - link "Aama Clothings home" [ref=e12] [cursor=pointer]:
+        - /url: /
+        - img "Aama Clothings" [ref=e13]
+        - generic [ref=e14]: Kathmandu / Nepal
+      - list [ref=e15]:
+        - listitem [ref=e16]:
+          - link "MEN" [ref=e17] [cursor=pointer]:
+            - /url: /shop?category=Men
+        - listitem [ref=e18]:
+          - link "WOMEN" [ref=e19] [cursor=pointer]:
+            - /url: /shop?category=Women
+        - link "Unisex UNISEX" [ref=e20] [cursor=pointer]:
+          - /url: /shop?category=Unisex
+          - generic [ref=e21]: Unisex
+          - generic [ref=e22]: UNISEX
+        - link "New Arrivals" [ref=e23] [cursor=pointer]:
+          - /url: /shop?featured=new
+        - link "Best Sellers" [ref=e24] [cursor=pointer]:
+          - /url: /shop?featured=bestseller
+        - link "The Journal" [ref=e25] [cursor=pointer]:
+          - /url: /about
+      - generic [ref=e26]:
+        - button "Search products" [ref=e27] [cursor=pointer]
+        - button "Account" [ref=e32] [cursor=pointer]
+        - button "Wishlist" [ref=e36] [cursor=pointer]
+        - link "Shopping bag, 0 items" [ref=e39] [cursor=pointer]:
+          - /url: /cart
+          - generic [ref=e43]: "0"
+  - main [ref=e44]:
+    - navigation "Breadcrumb" [ref=e45]:
+      - generic [ref=e46]: Home
+    - generic [ref=e48]:
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - generic [ref=e52]: FEATURED ARRIVAL • SEASON DROP
+          - generic [ref=e55]:
+            - heading "New in Store" [level=1] [ref=e56]
+            - paragraph [ref=e57]: jeans
+            - paragraph [ref=e58]: Crafted from high-grade breathable cotton with a relaxed streetwear cut. Built for everyday durability and modern lifestyle movement.
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - generic [ref=e61]: Rs 1519
+              - generic [ref=e62]: Rs 1550
+            - generic [ref=e63]: 2% OFF
+          - generic [ref=e64]:
+            - link "Shop Product" [ref=e65] [cursor=pointer]:
+              - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+            - link "Explore Shop" [ref=e69] [cursor=pointer]:
+              - /url: /shop
+          - generic [ref=e71]:
+            - generic [ref=e72]: Fast Nepal Delivery
+            - generic [ref=e79]: 100% Cotton Feel
+            - generic [ref=e84]: Easy Exchanges
+        - link "jeans ★ FEATURED PIECE Available In Stock jeans Quick View" [ref=e92] [cursor=pointer]:
+          - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+          - img "jeans" [ref=e93]
+          - generic [ref=e95]: ★ FEATURED PIECE
+          - generic [ref=e96]:
+            - generic [ref=e97]:
+              - text: Available In Stock
+              - paragraph [ref=e98]: jeans
+            - generic [ref=e99]: Quick View
+      - generic [ref=e103]:
+        - link "Shop Men COLLECTION 01 Shop Men Oversized Tees, Cargos & Street Layering Explore Drops →" [ref=e104] [cursor=pointer]:
+          - /url: /shop?category=Men
+          - img "Shop Men" [ref=e105]
+          - generic [ref=e107]: COLLECTION 01
+          - generic [ref=e113]:
+            - heading "Shop Men" [level=3] [ref=e114]
+            - paragraph [ref=e115]: Oversized Tees, Cargos & Street Layering
+            - generic [ref=e116]: Explore Drops →
+        - link "Shop Women COLLECTION 02 Shop Women Tanks, Fits, Crop Tees & Bottomwear Explore Drops →" [ref=e118] [cursor=pointer]:
+          - /url: /shop?category=Women
+          - img "Shop Women" [ref=e119]
+          - generic [ref=e121]: COLLECTION 02
+          - generic [ref=e127]:
+            - heading "Shop Women" [level=3] [ref=e128]
+            - paragraph [ref=e129]: Tanks, Fits, Crop Tees & Bottomwear
+            - generic [ref=e130]: Explore Drops →
+        - link "Everyday Essentials THE EDIT Everyday Essentials All-Season Signatures & Timeless Basics Explore Drops →" [ref=e132] [cursor=pointer]:
+          - /url: /shop
+          - img "Everyday Essentials" [ref=e133]
+          - generic [ref=e135]: THE EDIT
+          - generic [ref=e141]:
+            - heading "Everyday Essentials" [level=3] [ref=e142]
+            - paragraph [ref=e143]: All-Season Signatures & Timeless Basics
+            - generic [ref=e144]: Explore Drops →
+      - generic [ref=e146]:
+        - generic [ref=e147]:
+          - generic [ref=e148]:
+            - paragraph [ref=e149]: Just landed
+            - heading "New in" [level=2] [ref=e150]
+            - paragraph [ref=e151]: Fresh shapes, easy layers, and the pieces that set the tone for your next fit.
+          - generic [ref=e152]:
+            - button "Previous products" [ref=e153] [cursor=pointer]
+            - button "Next products" [ref=e156] [cursor=pointer]
+            - link "Shop new arrivals" [ref=e159] [cursor=pointer]:
+              - /url: /shop
+        - link "jeans Add jeans to wishlist New arrival 2% OFF jeans Rs 1,519 Rs 1,550" [ref=e164] [cursor=pointer]:
+          - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+          - generic [ref=e165]:
+            - img "jeans" [ref=e166]
+            - button "Add jeans to wishlist" [ref=e167]
+            - generic [ref=e170]: New arrival
+            - generic [ref=e172]: 2% OFF
+          - generic [ref=e173]:
+            - paragraph [ref=e175]: jeans
+            - generic [ref=e176]:
+              - generic [ref=e177]: Rs 1,519
+              - generic [ref=e178]: Rs 1,550
+      - generic [ref=e179]:
+        - generic [ref=e180]:
+          - generic [ref=e181]:
+            - paragraph [ref=e182]: The repeat rotation
+            - heading "Best sellers" [level=2] [ref=e183]
+            - paragraph [ref=e184]: The fits our community keeps reaching for, now in the everyday edit.
+          - generic [ref=e185]:
+            - button "Previous products" [ref=e186] [cursor=pointer]
+            - button "Next products" [ref=e189] [cursor=pointer]
+            - link "Shop best sellers" [ref=e192] [cursor=pointer]:
+              - /url: /shop
+        - link "jeans Add jeans to wishlist New arrival 2% OFF jeans Rs 1,519 Rs 1,550" [ref=e197] [cursor=pointer]:
+          - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+          - generic [ref=e198]:
+            - img "jeans" [ref=e199]
+            - button "Add jeans to wishlist" [ref=e200]
+            - generic [ref=e203]: New arrival
+            - generic [ref=e205]: 2% OFF
+          - generic [ref=e206]:
+            - paragraph [ref=e208]: jeans
+            - generic [ref=e209]:
+              - generic [ref=e210]: Rs 1,519
+              - generic [ref=e211]: Rs 1,550
+      - generic [ref=e212]:
+        - generic [ref=e213]:
+          - paragraph [ref=e214]: BROWSE BY CATEGORY
+          - generic [ref=e215]:
+            - button "Men(1)" [ref=e216] [cursor=pointer]:
+              - text: Men
+              - generic [ref=e217]: (1)
+            - button "Women(1)" [ref=e218] [cursor=pointer]:
+              - text: Women
+              - generic [ref=e219]: (1)
+        - generic [ref=e220]:
+          - generic [ref=e221]:
+            - generic [ref=e222]:
+              - generic [ref=e223]: CATEGORY SHOWCASE
+              - heading "Men" [level=2] [ref=e226]
+              - paragraph [ref=e227]: Curated selection of newly added arrivals and highly rated customer favorites.
+            - generic [ref=e228]:
+              - generic [ref=e229]: Browse by
+              - combobox "Browse Men products by" [ref=e230]:
+                - option "Curated Mix" [selected]
+                - option "New Arrivals"
+                - option "Top Rated"
+          - link "jeans Add jeans to wishlist New arrival 2% OFF jeans Rs 1,519 Rs 1,550" [ref=e232] [cursor=pointer]:
+            - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+            - generic [ref=e233]:
+              - img "jeans" [ref=e234]
+              - button "Add jeans to wishlist" [ref=e235]
+              - generic [ref=e238]: New arrival
+              - generic [ref=e240]: 2% OFF
+            - generic [ref=e241]:
+              - paragraph [ref=e243]: jeans
+              - generic [ref=e244]:
+                - generic [ref=e245]: Rs 1,519
+                - generic [ref=e246]: Rs 1,550
+          - link "View all 1 items in Men →" [ref=e248] [cursor=pointer]:
+            - /url: /shop
+            - generic [ref=e249]: View all 1 items in Men
+            - generic [ref=e250]: →
+        - generic [ref=e251]:
+          - generic [ref=e252]:
+            - generic [ref=e253]:
+              - generic [ref=e254]: CATEGORY SHOWCASE
+              - heading "Women" [level=2] [ref=e257]
+              - paragraph [ref=e258]: Curated selection of newly added arrivals and highly rated customer favorites.
+            - generic [ref=e259]:
+              - generic [ref=e260]: Browse by
+              - combobox "Browse Women products by" [ref=e261]:
+                - option "Curated Mix" [selected]
+                - option "New Arrivals"
+                - option "Top Rated"
+          - link "jeans Add jeans to wishlist New arrival 2% OFF jeans Rs 1,519 Rs 1,550" [ref=e263] [cursor=pointer]:
+            - /url: /product/6b28385d-8f73-43ff-8309-05d18f4fea70
+            - generic [ref=e264]:
+              - img "jeans" [ref=e265]
+              - button "Add jeans to wishlist" [ref=e266]
+              - generic [ref=e269]: New arrival
+              - generic [ref=e271]: 2% OFF
+            - generic [ref=e272]:
+              - paragraph [ref=e274]: jeans
+              - generic [ref=e275]:
+                - generic [ref=e276]: Rs 1,519
+                - generic [ref=e277]: Rs 1,550
+          - link "View all 1 items in Women →" [ref=e279] [cursor=pointer]:
+            - /url: /shop
+            - generic [ref=e280]: View all 1 items in Women
+            - generic [ref=e281]: →
+      - generic [ref=e282]:
+        - generic [ref=e283]:
+          - paragraph [ref=e284]: Easy Exchange Policy
+          - paragraph [ref=e285]: We offer hassle free exchange policy
+        - generic [ref=e286]:
+          - paragraph [ref=e287]: 7 Days Return Policy
+          - paragraph [ref=e288]: We provide 7 days free return policy
+        - generic [ref=e289]:
+          - paragraph [ref=e290]: Best customer support
+          - paragraph [ref=e291]: We provide 24/7 customer support
+  - contentinfo [ref=e292]:
+    - generic [ref=e293]:
+      - generic [ref=e294]:
+        - img "Aama Collections" [ref=e295]
+        - paragraph [ref=e296]: At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.
+      - generic [ref=e297]:
+        - paragraph [ref=e298]: Company
+        - list [ref=e299]:
+          - listitem [ref=e300]: Home
+          - listitem [ref=e301]: About us
+          - listitem [ref=e302]: Delivery
+          - listitem [ref=e303]: Privacy policy
+      - generic [ref=e304]:
+        - paragraph [ref=e305]: Get in touch
+        - list [ref=e306]:
+          - listitem [ref=e307]: +1-8515-56789
+          - listitem [ref=e308]: contact@aamacollections.com
+    - paragraph [ref=e310]: Copyright 2026 @ Aasha Technologies - All Rights Reserved.

@@ -1,5 +1,5 @@
 /* eslint-disable no-unused-vars, react/prop-types */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { usePermissions } from "../auth/PermissionsContext";
 import { ADMIN_ROUTE_PERMISSIONS, ADMIN_SECTION_PERMISSIONS } from "../auth/adminRoutePermissions";
@@ -27,18 +27,18 @@ const PermissionNavItem = ({ to, icon, label, indent = false }) => {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-medium transition-all duration-150 group ${
+        `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-150 group ${
           indent ? "ml-3 pl-3" : ""
         } ${
           isActive
-            ? "bg-slate-900 text-white shadow-sm"
-            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+            ? "bg-brand-50 text-brand-700 shadow-sm ring-1 ring-brand-100"
+            : "text-ink-secondary hover:text-ink-primary hover:bg-surface-subtle"
         }`
       }
     >
       {({ isActive }) => (
         <>
-          <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-700"}`}>
+          <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
             {icon}
           </span>
           <span className="truncate">{label}</span>
@@ -61,11 +61,11 @@ const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [],
     <div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[11.5px] font-semibold uppercase tracking-wide transition-all duration-150 group ${
-          open ? "text-slate-800" : "text-slate-500 hover:text-slate-700 hover:bg-slate-100/60"
+        className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-[0.08em] transition-all duration-150 group ${
+          open ? "text-ink-primary" : "text-ink-muted hover:text-ink-secondary hover:bg-surface-subtle"
         }`}
       >
-        <span className={`w-4 h-4 flex-shrink-0 ${open ? "text-slate-700" : "text-slate-400 group-hover:text-slate-600"}`}>
+        <span className={`w-4 h-4 flex-shrink-0 ${open ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
           {icon}
         </span>
         <span className="flex-1 text-left">{label}</span>
@@ -79,7 +79,7 @@ const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [],
           transition: "max-height 0.25s ease",
         }}
       >
-        <nav className="mt-1 ml-2 pl-3 border-l border-slate-100 space-y-0.5 pb-1">
+        <nav className="mt-1 ml-2 space-y-0.5 border-l border-border-light pb-1 pl-3">
           {children}
         </nav>
       </div>
@@ -131,22 +131,44 @@ const Icon = {
 };
 
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
-const Sidebar = () => {
+const Sidebar = ({ isOpen = false, onClose }) => {
   const { can, canAny } = usePermissions();
+  const location = useLocation();
+
+  useEffect(() => {
+    onClose?.();
+  }, [location.pathname, onClose]);
+
   return (
-    <aside className="w-60 shrink-0 bg-white border-r border-slate-200/80 flex flex-col select-none" style={{ height: "calc(100vh - 65px)", position: "sticky", top: "65px" }}>
+    <>
+      {isOpen && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close navigation menu"
+          className="fixed inset-x-0 bottom-0 top-[65px] z-40 bg-slate-950/30 sm:hidden"
+        />
+      )}
+      <aside
+        aria-label="Admin navigation"
+        className={`fixed left-0 top-[65px] z-50 flex w-72 shrink-0 select-none flex-col border-r border-border-light bg-white shadow-elevated transition-transform duration-200 sm:sticky sm:top-[65px] sm:z-auto sm:w-64 sm:shadow-none ${
+          isOpen ? "translate-x-0" : "-translate-x-full sm:translate-x-0"
+        }`}
+        style={{ height: "calc(100vh - 65px)" }}
+      >
 
       {/* Scrollable nav area */}
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#dfe7e3 transparent" }}>
+          <div className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden px-3 py-4" style={{ scrollbarWidth: "thin", scrollbarColor: "#cbd5e1 transparent" }}>
 
-        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
+        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:driver_users_manage", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
           <>
             <SectionGroup
               label="Access Control"
               icon={Icon.lock}
-              routes={["/access-control/users", "/access-control/roles", "/access-control/permissions", "/audit-history"]}
+              routes={["/access-control/users", "/access-control/drivers", "/access-control/roles", "/access-control/permissions", "/audit-history"]}
             >
               {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"]) && <NavItem to="/access-control/users" icon={Icon.customers} label="Portal Users" />}
+              {can("access:driver_users_manage") && <NavItem to="/access-control/drivers" icon={Icon.shipping} label="Driver Access" />}
               {can("access:roles_read") && <NavItem to="/access-control/roles" icon={Icon.partners} label="Admin Roles" />}
               {can("access:permissions_read") && <NavItem to="/access-control/permissions" icon={Icon.lock} label="Permissions" />}
               {can("access:audit_read") && <NavItem to="/audit-history" icon={Icon.lock} label="Audit History" />}
@@ -157,17 +179,16 @@ const Sidebar = () => {
 
         {/* ── CATALOG & PRODUCTS ── */}
         <SectionGroup
-          label="Catalog & Products"
+          label="Merchandising"
           icon={Icon.catalog}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.catalog}
           defaultOpen={true}
-          routes={["/list", "/add", "/categories", "/combo-bundles", "/collaborations", "/special-offers"]}
+          routes={["/list", "/add", "/categories", "/combo-bundles", "/special-offers"]}
         >
           <NavItem to="/list"          icon={Icon.products}   label="All Products" />
           <NavItem to="/add"           icon={Icon.add}        label="Add Product" />
           <NavItem to="/categories"    icon={Icon.categories} label="Categories & Types" />
           <NavItem to="/combo-bundles" icon={Icon.categories} label="Combo Bundles" />
-          <NavItem to="/collaborations" icon={Icon.partners} label="Collaborations" />
           <NavItem to="/special-offers" icon={Icon.offers}   label="Festive Campaigns" />
         </SectionGroup>
 
@@ -178,25 +199,33 @@ const Sidebar = () => {
           label="Sales & Orders"
           icon={Icon.sales}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.sales}
-          routes={["/orders", "/create-order"]}
+          routes={["/orders", "/create-order", "/product-analytics", "/discount-analytics"]}
         >
           <NavItem to="/orders"        icon={Icon.orders}      label="Customer Orders" />
           <NavItem to="/create-order"  icon={Icon.createOrder} label="Create Direct Order" />
+          <NavItem to="/product-analytics" icon={Icon.products} label="Product performance" />
+          <NavItem to="/discount-analytics" icon={Icon.offers} label="Discount analytics" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />
 
         {/* ── SUPPLY CHAIN ── */}
         <SectionGroup
-          label="Supply Chain"
+          label="Logistics & Supply Chain"
           icon={Icon.supply}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.supply}
-          routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory"]}
+          routes={["/order-assignments", "/delivery-monitor", "/ncm-deliveries", "/self-deliveries", "/manufacturers", "/manufacturer-inventory", "/manufacturer-production", "/distributor-applications", "/distributors", "/stock-transfers"]}
         >
           <NavItem to="/order-assignments"     icon={Icon.routing}   label="Order Routing Engine" />
           <NavItem to="/delivery-monitor"      icon={Icon.shipping}  label="Delivery & COD Monitor" />
+          <NavItem to="/ncm-deliveries"        icon={Icon.shipping}  label="NCM Deliveries" />
+          <NavItem to="/self-deliveries"       icon={Icon.shipping}  label="Distributor Self-Delivery" />
           <NavItem to="/manufacturers"         icon={Icon.factory}   label="Manufacturers" />
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
+          <NavItem to="/manufacturer-production" icon={Icon.factory} label="Production Requests" />
+          <NavItem to="/distributor-applications" icon={Icon.factory} label="Distributor Applications" />
+          <NavItem to="/distributors" icon={Icon.customers} label="Distributor Directory" />
+          <NavItem to="/stock-transfers" icon={Icon.shipping} label="Bulk Stock Transfers" />
         </SectionGroup>
 
         <SectionGroup
@@ -223,21 +252,35 @@ const Sidebar = () => {
 
         {/* ── OPERATIONS ── */}
         <SectionGroup
-          label="Operations"
+          label="Operations & Costing"
           icon={Icon.ops}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.operations}
-          routes={["/inventory", "/cogs", "/shipping"]}
+          routes={["/inventory", "/inventory-ledger", "/cogs", "/shipping"]}
         >
           <NavItem to="/inventory" icon={Icon.inventory} label="Inventory & Stock" />
+          <NavItem to="/inventory-ledger" icon={Icon.inventory} label="Inventory Ledger Audit" />
           <NavItem to="/cogs"      icon={Icon.cogs}      label="COGS & Margins" />
           <NavItem to="/shipping"  icon={Icon.shipping}  label="Shipping Rates" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />
 
+        <SectionGroup
+          label="Platform Settings"
+          icon={Icon.ops}
+          requiredPermissions={[...ADMIN_SECTION_PERMISSIONS.platform, "finance:tax_configure"]}
+          routes={["/platform-features", "/storefront-content", "/nepali-calendar"]}
+        >
+          <NavItem to="/platform-features" icon={Icon.ops} label="Feature Settings" />
+          <NavItem to="/storefront-content" icon={Icon.ops} label="Storefront Content" />
+          <NavItem to="/nepali-calendar" icon={Icon.tax} label="Nepali Calendar" />
+        </SectionGroup>
+
+        <div className="h-px bg-slate-100 my-1" />
+
         {/* ── FINANCE ── */}
         <SectionGroup
-          label="Finance"
+          label="Finance & Banking"
           icon={Icon.finance}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.finance}
           routes={["/finance", "/treasury", "/assets", "/partners", "/expenses", "/tax", "/returns", "/payables", "/statements"]}
@@ -247,7 +290,7 @@ const Sidebar = () => {
           <NavItem to="/assets"      icon={Icon.asset}      label="Assets & Depreciation" />
           <NavItem to="/partners"    icon={Icon.partners}   label="Partners & Investors" />
           <NavItem to="/expenses"    icon={Icon.expense}    label="Expenses & Overhead" />
-          <NavItem to="/tax"         icon={Icon.tax}        label="13% VAT & Tax" />
+          <NavItem to="/tax"         icon={Icon.tax}        label="Tax Compliance" />
           <NavItem to="/returns"     icon={Icon.returns}    label="Returns & Debit Notes" />
           <NavItem to="/payables"    icon={Icon.payables}   label="Payables & Receivables" />
           <NavItem to="/statements"  icon={Icon.statements} label="Financial Statements" />
@@ -260,10 +303,11 @@ const Sidebar = () => {
           label="General Ledger"
           icon={Icon.gl}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.accounting}
-          routes={["/chart-of-accounts", "/journal-entries", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
+          routes={["/chart-of-accounts", "/journal-entries", "/accounting-approvals", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
         >
           <NavItem to="/chart-of-accounts"  icon={Icon.chartAcct}  label="Chart of Accounts" />
           <NavItem to="/journal-entries"    icon={Icon.journal}    label="Journal Entries" />
+          <NavItem to="/accounting-approvals" icon={Icon.lock} label="Accounting Approvals" />
           <NavItem to="/general-ledger"     icon={Icon.ledger}     label="General Ledger" />
           <NavItem to="/trial-balance"      icon={Icon.balance}    label="Trial Balance" />
           <NavItem to="/fiscal-periods"     icon={Icon.lock}       label="Fiscal Periods" />
@@ -295,14 +339,14 @@ const Sidebar = () => {
           className={({ isActive }) =>
             `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 group ${
               isActive
-                ? "bg-slate-900 text-white"
-                : "text-slate-500 hover:text-slate-800 hover:bg-slate-100/80"
+                ? "bg-brand-50 text-brand-700"
+                : "text-ink-muted hover:text-ink-primary hover:bg-surface-subtle"
             }`
           }
         >
           {({ isActive }) => (
             <>
-              <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-600"}`}>
+              <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
                 {Icon.lock}
               </span>
               <span>Change Password</span>
@@ -310,16 +354,18 @@ const Sidebar = () => {
           )}
         </NavLink>
 
-        {/* System status badge */}
-        <div className="flex items-center gap-2 px-2 py-1.5 bg-slate-50 rounded-xl">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
-          <div className="text-[11px] leading-tight min-w-0">
-            <p className="font-semibold text-slate-700 truncate">Aama Store Active</p>
-            <p className="text-[10px] text-slate-400">v2.4 Management</p>
+        <div className="flex items-center gap-2 rounded-xl border border-border-light bg-surface-base px-2.5 py-2">
+          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-700">
+            {Icon.catalog}
+          </div>
+          <div className="min-w-0 text-[11px] leading-tight">
+            <p className="truncate font-semibold text-ink-primary">Aama Clothings</p>
+            <p className="text-[10px] text-ink-muted">Admin workspace</p>
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
 

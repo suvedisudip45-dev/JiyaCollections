@@ -9,7 +9,8 @@ import {
   recordLoyaltyGift,
   getHubGifts,
 } from "../controllers/loyaltyController.js";
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
+import requirePlatformFeature from "../middleware/requirePlatformFeature.js";
 
 const loyaltyRouter = express.Router();
 
@@ -17,23 +18,23 @@ const loyaltyRouter = express.Router();
 loyaltyRouter.get("/levels", getAllLevels);
 
 // ── Customer loyalty status ──────────────────────────────────────────────────
-loyaltyRouter.get("/my-status", authenticate, authorize("customer:loyalty_read"), getUserLoyaltyStatus);
+loyaltyRouter.get("/my-status", authenticate, authorize("customer:loyalty_read"), requirePlatformFeature("loyaltyEnabled"), getUserLoyaltyStatus);
 
 // ── Admin level configuration ────────────────────────────────────────────────
 loyaltyRouter.post("/level", authenticate, authorize("loyalty:level_manage"), createOrUpdateLevel);
 loyaltyRouter.delete("/level/:id", authenticate, authorize("loyalty:level_manage"), deleteLevel);
 
-// ── Manufacturer loyalty endpoints ───────────────────────────────────────────
+// ── Distributor hub loyalty endpoints ────────────────────────────────────────
 // Look up customer loyalty status by phone number
-loyaltyRouter.get("/customer-by-phone", authenticate, authorize("manufacturer:loyalty_lookup"), setManufacturerContext, getCustomerLoyaltyByPhone);
+loyaltyRouter.get("/customer-by-phone", authenticate, authorize("distributor:loyalty_lookup"), requirePlatformFeature("loyaltyEnabled"), setDistributorContext, getCustomerLoyaltyByPhone);
 
 // Get all hub customers (deduped from direct orders) with loyalty tiers
-loyaltyRouter.get("/hub-customers", authenticate, authorize("manufacturer:hub_customers_read"), setManufacturerContext, getHubCustomers);
+loyaltyRouter.get("/hub-customers", authenticate, authorize("distributor:hub_customers_read"), requirePlatformFeature("loyaltyEnabled"), setDistributorContext, getHubCustomers);
 
 // Record a loyalty gift/perk physically given to a customer
-loyaltyRouter.post("/hub-gift", authenticate, authorize("manufacturer:hub_gift_record"), setManufacturerContext, recordLoyaltyGift);
+loyaltyRouter.post("/hub-gift", authenticate, authorize("distributor:hub_gift_record"), requirePlatformFeature("loyaltyEnabled"), setDistributorContext, recordLoyaltyGift);
 
-// Get all gift records for this manufacturer hub
-loyaltyRouter.get("/hub-gifts", authenticate, authorize("manufacturer:hub_gifts_read"), setManufacturerContext, getHubGifts);
+// Get all gift records for this distributor hub
+loyaltyRouter.get("/hub-gifts", authenticate, authorize("distributor:hub_gifts_read"), requirePlatformFeature("loyaltyEnabled"), setDistributorContext, getHubGifts);
 
 export default loyaltyRouter;

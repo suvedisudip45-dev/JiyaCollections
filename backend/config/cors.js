@@ -5,6 +5,21 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:5176",
 ];
 
+export const ALLOWED_CORS_HEADERS = [
+  "Content-Type",
+  "Authorization",
+  "token",
+  "adminToken",
+  "manufacturerToken",
+  "distributorToken",
+  "x-requested-with",
+  "x-correlation-id",
+  "idempotency-key",
+  "Request-Signature",
+  "request-signature",
+  "x-request-signature",
+];
+
 const normalizeOrigin = (value) => {
   if (!value) return "";
   return String(value).trim().replace(/\/+$/, "");

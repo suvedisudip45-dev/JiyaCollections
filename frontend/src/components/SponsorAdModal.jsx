@@ -8,6 +8,7 @@ export const SponsorAdModal = ({
   onProceed,
   ad = null,
   partner = {},
+  proceedLabel = "Proceed to Scan QR",
 }) => {
   const [countdown, setCountdown] = useState(3);
 
@@ -101,7 +102,7 @@ export const SponsorAdModal = ({
               onClick={onProceed}
               className="w-full flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 py-2.5 px-4 text-xs font-black text-white shadow hover:bg-slate-800 transition-all"
             >
-              <span>{countdown > 0 ? `Proceed in ${countdown}s` : "Proceed to Scan QR"}</span>
+              <span>{countdown > 0 ? `Continue in ${countdown}s` : proceedLabel}</span>
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>

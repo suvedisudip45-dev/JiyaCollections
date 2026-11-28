@@ -22,9 +22,11 @@ import ShippingLabelModal from "../components/ShippingLabelModal";
 import Pagination from "../components/Pagination";
 
 const Orders = () => {
-  const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
+  const { token, backendUrl, currency, setStats, distributor, platformFeatures } = useManufacturer();
+  const loyaltyEnabled = Boolean(platformFeatures?.loyaltyEnabled);
+  const marketingCardsEnabled = Boolean(platformFeatures?.marketingCardsEnabled);
+  const lettersEnabled = Boolean(platformFeatures?.lettersEnabled);
   const [assignments, setAssignments] = useState([]);
-  const [returnCases, setReturnCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
@@ -32,12 +34,12 @@ const Orders = () => {
   const [pagination, setPagination] = useState(null);
 
 
-  const manufacturerPickupReadiness = (() => {
-    const branch = (manufacturer?.ncmPickupBranch || "").trim();
-    const pickupAddress = (manufacturer?.pickupAddress || "").trim();
-    const pickupContactName = (manufacturer?.pickupContactName || "").trim();
-    const pickupContactPhone = (manufacturer?.pickupContactPhone || "").trim();
-    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+  const distributorPickupReadiness = (() => {
+    const branch = (distributor?.ncmPickupBranch || "").trim();
+    const pickupAddress = (distributor?.pickupAddress || "").trim();
+    const pickupContactName = (distributor?.pickupContactName || "").trim();
+    const pickupContactPhone = (distributor?.pickupContactPhone || "").trim();
+    const pickupWindow = (distributor?.pickupWindow || "").trim();
 
     const missingFields = [];
     if (!branch) missingFields.push("NCM pickup branch assignment");
@@ -73,9 +75,6 @@ const Orders = () => {
         const list = res.data.assignments || [];
         setAssignments(list);
         setPagination(res.data.pagination || null);
-        const returnsResponse = await axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }).catch(() => null);
-        if (returnsResponse?.data?.success) setReturnCases(returnsResponse.data.returns || []);
-
         const pending = list.filter((a) => a.status === "assigned").length;
         const accepted = list.filter((a) => a.status === "accepted").length;
         const preparing = list.filter((a) => ["preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length;
@@ -93,9 +92,17 @@ const Orders = () => {
           total: list.length,
           active: accepted + preparing + packed + ready,
         });
+      } else {
+        setAssignments([]);
+        setPagination(null);
+        setStats({ pending: 0, accepted: 0, preparing: 0, packed: 0, ready: 0, delivered: 0, total: 0, active: 0 });
+        toast.error(res.data.message || "Failed to load orders");
       }
     } catch (err) {
-      toast.error("Failed to load orders");
+      setAssignments([]);
+      setPagination(null);
+      setStats({ pending: 0, accepted: 0, preparing: 0, packed: 0, ready: 0, delivered: 0, total: 0, active: 0 });
+      toast.error(err.response?.data?.message || "Failed to load orders");
     } finally {
       setLoading(false);
     }
@@ -142,7 +149,7 @@ const Orders = () => {
 
   const handlePrintSelected = () => {
     const selected = assignments
-      .filter((a) => selectedOrderIds.has(a.id))
+      .filter((a) => a.status !== "on_hold" && selectedOrderIds.has(a.id))
       .map((a) => a.order || { id: a.orderId });
     if (selected.length === 0) {
       toast.warning("Please select at least 1 order to print shipping labels.");
@@ -152,9 +159,11 @@ const Orders = () => {
   };
 
   // Filter logic
-  const filteredOrders = assignments.filter((item) => {
+  const hubAssignments = assignments;
+  const filteredOrders = hubAssignments.filter((item) => {
     // 1. Tab filter
     if (activeTab === "pending" && item.status !== "assigned") return false;
+    if (activeTab === "delivery_queue" && item.status !== "on_hold") return false;
     if (
       activeTab === "production" &&
       !["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(item.status)
@@ -194,12 +203,13 @@ const Orders = () => {
   });
 
   const tabCounts = {
-    all: assignments.length,
-    pending: assignments.filter((a) => a.status === "assigned").length,
-    production: assignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
-    ready: assignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
-    completed: assignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
-    rejected: assignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
+    all: hubAssignments.length,
+    pending: hubAssignments.filter((a) => a.status === "assigned").length,
+    delivery_queue: hubAssignments.filter((a) => a.status === "on_hold").length,
+    production: hubAssignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
+    ready: hubAssignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
+    completed: hubAssignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
+    rejected: hubAssignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
   };
 
   return (
@@ -209,10 +219,10 @@ const Orders = () => {
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-2">
             <Package className="w-6 h-6 text-emerald-600" />
-            Manufacturing &amp; Fulfillment Orders
+            Distributor Hub Orders
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Produce, package, and dispatch orders assigned to your hub. Print thermal courier slips for delivery fleet.
+            Accept, pack, and dispatch customer orders assigned to your distributor hub. Print courier slips for delivery.
           </p>
         </div>
 
@@ -237,30 +247,13 @@ const Orders = () => {
         </div>
       </div>
 
-      {returnCases.length > 0 && (
-        <section className="border-y border-rose-200 bg-rose-50/70 py-4">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <h2 className="text-sm font-bold text-rose-950">Incoming customer returns</h2>
-            <span className="text-[11px] font-semibold text-rose-800">{returnCases.length} active</span>
-          </div>
-          <div className="space-y-2">
-            {returnCases.map((record) => (
-              <article key={record.id} className="grid gap-2 border border-rose-200 bg-white p-3 text-xs sm:grid-cols-[1fr_1fr_auto]">
-                <div><p className="font-bold text-slate-900">RMA-{record.id.slice(0, 8).toUpperCase()} · Order #{String(record.orderId || "").slice(0, 8).toUpperCase()}</p><p className="text-slate-500">{record.customerName} · NCM #{record.ncmReturnOrderId || record.originalNcmOrderId || "Pending"}</p></div>
-                <div><p className="text-slate-700">{record.reason}</p><p className="text-slate-500">Pickup: {String(record.returnPickupStatus || record.lifecycleStatus).replace(/_/g, " ")}</p></div>
-                <p className="font-semibold text-slate-800">NCM-reported charge: {record.ncmDeliveryCharge == null ? "Not supplied" : `${currency}${Number(record.ncmDeliveryCharge).toLocaleString()}`} · {record.ncmChargePayer}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200">
         {[
           { id: "all", label: "All Assigned Orders", count: tabCounts.all },
           { id: "pending", label: "Pending Acceptance", count: tabCounts.pending, color: "text-rose-600" },
-          { id: "production", label: "In Production / Stitching", count: tabCounts.production },
+          { id: "delivery_queue", label: "Delivery Queue", count: tabCounts.delivery_queue },
+          { id: "production", label: "Processing & QA", count: tabCounts.production },
           { id: "ready", label: "Packed & Ready for Courier", count: tabCounts.ready },
           { id: "completed", label: "Delivered / In Transit", count: tabCounts.completed },
           { id: "rejected", label: "Declined", count: tabCounts.rejected },
@@ -313,85 +306,95 @@ const Orders = () => {
           <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
           <p className="font-semibold text-slate-600 text-sm">No orders in this stage</p>
           <p className="text-xs text-slate-400 mt-1">
-            New customer orders routed to your hub will appear here automatically.
+            New customer orders assigned to your distributor hub will appear here automatically.
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+          <table className="w-full min-w-[850px] text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Order / Date</th>
+                <th className="px-4 py-3">Customer / Destination</th>
+                <th className="px-4 py-3">Products</th>
+                <th className="px-4 py-3">Total</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
           {filteredOrders.map((item) => {
             const order = item.order || {};
             const items = Array.isArray(order.items) ? order.items : [];
             const address = order.address || {};
             const isSelected = selectedOrderIds.has(item.id);
             const isNewAssigned = item.status === "assigned";
-            const pickupReadyForThisOrder = manufacturerPickupReadiness.isReady;
-            const dispatchWarningText = manufacturerPickupReadiness.missingFields.length
-              ? `Pickup blocked: ${manufacturerPickupReadiness.missingFields[0]} missing.`
+            const isReadOnly = ["on_hold", "ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes(String(item.status || "").toLowerCase()) ||
+              Boolean(item.delivery?.ncmOrderId || item.delivery?.pickedUpAt || item.delivery?.deliveredAt);
+            const pickupReadyForThisOrder = distributorPickupReadiness.isReady;
+            const dispatchWarningText = distributorPickupReadiness.missingFields.length
+              ? `Pickup blocked: ${distributorPickupReadiness.missingFields[0]} missing.`
               : "Dispatch ready: all required pickup details are complete.";
             const benefits = order.fulfillmentBenefits || {};
-
+            const isExpanded = false;
             return (
-              <div
-                key={item.id}
-                className={`bg-white rounded-2xl border transition-all shadow-xs hover:shadow-md ${
-                  isSelected
-                    ? "border-indigo-500 ring-2 ring-indigo-200"
-                    : isNewAssigned
-                    ? "border-amber-300 ring-2 ring-amber-100"
-                    : "border-slate-200/80"
-                }`}
-              >
-                {/* Order Top Bar */}
-                <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/60 rounded-t-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2.5">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleSelectOrder(item.id)}
-                      className="rounded text-emerald-600 cursor-pointer w-4 h-4"
-                      title="Select for batch shipping label"
-                    />
-
-                    {isNewAssigned && (
-                      <span className="px-2 py-0.5 bg-amber-500 text-white text-[10px] font-extrabold rounded-md uppercase tracking-wider animate-pulse">
-                        NEW ALLOCATION
-                      </span>
-                    )}
-
-                    <span className="font-mono font-bold text-slate-900">
-                      ORDER #{order.id?.slice(-8).toUpperCase() || item.orderId?.slice(-8).toUpperCase()}
-                    </span>
-                    <span className="text-slate-300">•</span>
-                    <span className="text-slate-500 text-[11px]">
-                      {new Date(item.assignedAt || item.createdAt).toLocaleDateString()}
-                    </span>
-
-                    {item.notes && (
-                      <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 max-w-xs truncate">
-                        {item.notes}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Courier Slip Print Button */}
+              <React.Fragment key={item.id}>
+              <tr className="hover:bg-slate-50/80">
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelectOrder(item.id)}
+                    aria-label={`Select order ${order.id || item.orderId} for shipping label`}
+                    className="mr-2"
+                  />
+                  <p className="font-mono font-bold text-slate-900">#{(order.id || item.orderId || "").slice(-8).toUpperCase()}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{new Date(item.assignedAt || item.createdAt).toLocaleDateString()}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <p className="font-semibold text-slate-800">{address.name || `${address.firstName || ""} ${address.lastName || ""}`.trim() || "Customer"}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{address.city || "Destination unavailable"}{address.state ? `, ${address.state}` : ""}</p>
+                </td>
+                <td className="px-4 py-3 text-slate-700">
+                  {(items[0]?.name || "Product")}{items.length > 1 ? ` +${items.length - 1} more` : ""}
+                  <span className="ml-1 text-[10px] text-slate-500">({items.reduce((sum, line) => sum + Number(line.quantity || 0), 0)} units)</span>
+                </td>
+                <td className="px-4 py-3 font-semibold">{currency}{order.amount || 0}</td>
+                <td className="px-4 py-3"><StatusBadge status={item.status} deliveryStatus={item.delivery?.ncmStatus} /></td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setPrintOrdersList([order])}
+                    className="mr-2 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Slip
+                  </button>
+                  {item.status === "assigned" && (
                     <button
                       type="button"
-                      onClick={() => setPrintOrdersList([order])}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                      onClick={() => {
+                        setSelectedAssignmentId(item.id);
+                        setRejectModalOpen(true);
+                      }}
+                      className="mr-2 rounded-lg border border-rose-200 px-2.5 py-1.5 font-semibold text-rose-700 hover:bg-rose-50"
                     >
-                      <Printer className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Courier Slip (4×6)</span>
+                      Reject
                     </button>
-
-                    <StatusBadge status={item.status} deliveryStatus={item.delivery?.ncmStatus} />
-                  </div>
-                </div>
-
-                {/* Main Order Content */}
-                <div className="p-5 grid grid-cols-1 md:grid-cols-12 gap-5 text-xs">
-                  {/* Column 1: Ordered Items & Variants (5 cols) */}
-                  <div className="md:col-span-5 space-y-2.5 border-b md:border-b-0 md:border-r border-slate-100 pb-4 md:pb-0 md:pr-4">
+                  )}
+                  <Link
+                    to={`/orders/${item.id}`}
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-1.5 font-bold text-white hover:bg-emerald-800"
+                  >
+                    {isReadOnly ? "View Details" : "View / Proceed"}
+                  </Link>
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr>
+                  <td colSpan={6} className="bg-slate-50/70 p-4">
+                    <div className="rounded-xl border border-slate-200 bg-white shadow-xs">
+                      <div className="p-5 grid grid-cols-1 md:grid-cols-12 gap-5 text-xs">
+                        <div className="md:col-span-5 space-y-2.5 border-b md:border-b-0 md:border-r border-slate-100 pb-4 md:pb-0 md:pr-4">
                     <div className="flex items-center gap-1.5 text-slate-400 uppercase text-[10px] font-bold tracking-wider">
                       <Layers className="w-3.5 h-3.5 text-emerald-600" />
                       <span>Garment Varieties to Produce ({items.length})</span>
@@ -482,13 +485,13 @@ const Orders = () => {
                   {/* Column 3: Production Action Stepper (3 cols) */}
                   <div className="md:col-span-3 flex flex-col justify-between space-y-3">
                     <div className="space-y-2">
-                      {(benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
+                      {loyaltyEnabled && (benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
                         <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-2.5 space-y-1.5">
                           <p className="text-[10px] font-bold uppercase tracking-wider text-teal-800">Customer benefits</p>
                           <p className="text-[11px] font-bold text-slate-900">{benefits.loyaltyTier}</p>
                           {benefits.totalDiscount > 0 && <p className="text-[10px] text-teal-800">Discount applied: {currency}{benefits.totalDiscount.toLocaleString()}</p>}
                           {benefits.giftDescription && <p className="text-[10px] text-slate-700">Gift: {benefits.giftDescription}</p>}
-                          {benefits.handwrittenCard && <p className="text-[10px] font-semibold text-amber-800">Include handwritten thank-you card</p>}
+                          {lettersEnabled && benefits.handwrittenCard && <p className="text-[10px] font-semibold text-amber-800">Include handwritten thank-you card</p>}
                           {benefits.customPerk && <p className="text-[10px] text-slate-700">{benefits.customPerk}</p>}
                         </div>
                       )}
@@ -511,10 +514,10 @@ const Orders = () => {
                               <span>Packaging Checklist Verified</span>
                             </div>
                             <div className="flex flex-wrap gap-1 text-[10px] text-slate-700">
-                              {parsedChecklist.loyaltyGift && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">🎁 Loyalty Gift</span>}
-                              {parsedChecklist.thankYouLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">✍️ Thank-You Letter</span>}
-                              {parsedChecklist.additionalLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">📄 Additional Letter</span>}
-                              {parsedChecklist.marketingCard && (
+                              {loyaltyEnabled && parsedChecklist.loyaltyGift && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">🎁 Loyalty Gift</span>}
+                              {lettersEnabled && parsedChecklist.thankYouLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">✍️ Thank-You Letter</span>}
+                              {lettersEnabled && parsedChecklist.additionalLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">📄 Additional Letter</span>}
+                              {marketingCardsEnabled && parsedChecklist.marketingCard && (
                                 <span className="bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-200 text-amber-900 font-semibold">
                                   💳 Partner Card: {parsedChecklist.marketingCardId || "Enclosed"}
                                 </span>
@@ -622,8 +625,14 @@ const Orders = () => {
                   </div>
                 </div>
               </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -652,7 +661,7 @@ const Orders = () => {
             </div>
 
             <p className="text-xs text-slate-500">
-              Declining will automatically route this order to the next nearest licensed manufacturer in the proximity network.
+              Declining will return this order for distributor reallocation based on hub coverage and stock.
             </p>
 
             <form onSubmit={handleRejectSubmit} className="space-y-4">

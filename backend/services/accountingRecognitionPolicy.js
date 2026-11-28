@@ -26,31 +26,18 @@ export const classifySaleChannel = (order = {}) => {
   if (orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(directOrderType)) {
     return "MANUFACTURER_DIRECT";
   }
+  if (orderType === "DIRECT_DISTRIBUTOR" && ["PHONE_ORDER", "HUB_VISIT"].includes(directOrderType)) {
+    return "DISTRIBUTOR_DIRECT";
+  }
   if (orderType === "ONLINE_STORE") return "ONLINE_STORE";
   if (orderType === "ADMIN_DIRECT") return "ADMIN_DIRECT";
   return "UNKNOWN";
 };
 
-export const isDeliveredAndNotReturnedToManufacturer = ({
-  order = {},
-  deliveryState,
-  returnedToManufacturer = false,
-}) => {
-  if (returnedToManufacturer) return false;
+export const isLegacyPerOrderDeliveryExpenseEntry = ({ accountCode, sourceType } = {}) =>
+  accountCode === "6430" && ["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType);
 
-  const deliveredStatuses = [
-    normalize(deliveryState),
-    normalize(order.fulfillmentStatus),
-    normalize(order.status),
-  ];
-  return deliveredStatuses.includes("DELIVERED");
-};
-
-export const isManufacturerCommissionEligible = ({ order, deliveryState, returnedToManufacturer }) =>
-  classifySaleChannel(order) === "MANUFACTURER_DIRECT" &&
-  isDeliveredAndNotReturnedToManufacturer({ order, deliveryState, returnedToManufacturer });
-
-export const calculateManufacturerCommission = ({
+export const calculateLegacyManufacturerCommission = ({
   productRevenueExVat,
   agreedCogsVatInclusive,
   recoverableInputVat = 0,

@@ -42,6 +42,8 @@ test("standard semantic account mappings seed idempotently", async () => {
   assert.equal(mappings.size, STANDARD_ACCOUNT_MAPPINGS.length);
   assert.equal(mappings.get("MANUFACTURER_PAYABLE").accountId, "account-2160");
   assert.equal(mappings.get("NCM_COD_RECEIVABLE").accountId, "account-1170");
+  assert.equal(mappings.get("DISTRIBUTOR_COD_RECEIVABLE").accountId, "account-1190");
+  assert.equal(mappings.get("DISTRIBUTOR_PAYABLE").accountId, "account-2190");
 });
 
 test("existing admin account remaps are not overwritten by standard mapping seeding", async () => {

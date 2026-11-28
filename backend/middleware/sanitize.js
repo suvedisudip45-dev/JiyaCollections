@@ -10,10 +10,16 @@
 
 // Characters/patterns commonly used in SQL injection exploits
 const DANGEROUS_SQL_PATTERNS = [
-  /(\b(UNION(\s+ALL)?|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|EXEC|EXECUTE)\b\s+)/gi,
-  /(--|#|\/\*|\*\/)/g,
-  /(\bOR\b\s+['"\d\w]+\s*=\s*['"\d\w]+)/gi,
-  /(\bAND\b\s+['"\d\w]+\s*=\s*['"\d\w]+)/gi,
+  /\bUNION(?:\s+ALL)?\s+SELECT\b/i,
+  /\bSELECT\b[\s\S]{0,200}\bFROM\b/i,
+  /\bINSERT\s+INTO\b/i,
+  /\bUPDATE\s+[\w`]+\s+SET\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\b(?:DROP|ALTER|CREATE)\s+(?:TABLE|DATABASE|INDEX|USER|SCHEMA)\b/i,
+  /\bEXEC(?:UTE)?\s+[\w.[\]`]+\b/i,
+  /\b(?:OR|AND)\s+['"]?\w+['"]?\s*=\s*['"]?\w+['"]?/i,
+  /;\s*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|EXEC(?:UTE)?)\b/i,
+  /(?:--|\/\*|\*\/)/,
 ];
 
 // Dangerous HTML/XSS tags and handlers
@@ -72,7 +78,7 @@ export const sanitizeText = (val, options = {}) => {
     cleaned = cleaned.replace(/<[^>]*>?/gm, "");
   }
 
-  return cleaned.trim();
+  return options.preserveWhitespace ? cleaned : cleaned.trim();
 };
 
 /**
@@ -94,17 +100,27 @@ export const containsSqlInjection = (val) => {
  * - Prevents Prototype Pollution by deleting `__proto__`, `constructor`, and `prototype` keys
  * - Recursively cleans string properties
  */
-export const sanitizeObject = (target, depth = 0) => {
+const preservesContentWhitespace = (path) => (
+  (path.length === 1 && path[0] === "footerDescription")
+  || path[0] === "description"
+  || (path[0] === "termsAndConditions" && path[1] === "notice")
+  || (path[0] === "termsAndConditions" && path[1] === "conditions" && path[3] === "description")
+  || (path[0] === "aboutPage" && ["description", "missionDescription"].includes(path[1]))
+  || (path[0] === "aboutPage" && path[1] === "whyCards" && path[3] === "description")
+  || (path[0] === "benefits" && path[2] === "description")
+);
+
+export const sanitizeObject = (target, depth = 0, path = []) => {
   if (depth > 10) return target; // Prevent deep recursion DOS
   if (!target || typeof target !== "object") {
     if (typeof target === "string") {
-      return sanitizeText(target);
+      return sanitizeText(target, { preserveWhitespace: preservesContentWhitespace(path) });
     }
     return target;
   }
 
   if (Array.isArray(target)) {
-    return target.map((item) => sanitizeObject(item, depth + 1));
+    return target.map((item, index) => sanitizeObject(item, depth + 1, [...path, index]));
   }
 
   const clean = {};
@@ -118,9 +134,9 @@ export const sanitizeObject = (target, depth = 0) => {
     const cleanKey = sanitizeText(key, { stripAllHtml: true });
 
     if (typeof value === "object" && value !== null) {
-      clean[cleanKey] = sanitizeObject(value, depth + 1);
+      clean[cleanKey] = sanitizeObject(value, depth + 1, [...path, cleanKey]);
     } else if (typeof value === "string") {
-      clean[cleanKey] = sanitizeText(value);
+      clean[cleanKey] = sanitizeText(value, { preserveWhitespace: preservesContentWhitespace([...path, cleanKey]) });
     } else {
       clean[cleanKey] = value;
     }

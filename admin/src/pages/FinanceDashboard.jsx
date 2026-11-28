@@ -1,40 +1,101 @@
-/* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import React, { useCallback, useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import { Link } from "react-router-dom";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
+import { getCurrentNepaliDateRange, getNepaliDateRangeForDate } from "../utils/nepaliDate";
 
 const FinanceDashboard = ({ token }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
+  const [calendars, setCalendars] = useState([]);
+  const [costDetailsView, setCostDetailsView] = useState(null);
+  const [dateRange, setDateRange] = useState(() => getCurrentNepaliDateRange());
+  const [reportError, setReportError] = useState("");
+  const dashboardRequestId = useRef(0);
 
-  const fetchDashboardData = async (month) => {
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    setLoading(true);
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (active) {
+          setCalendars(response.data.years);
+        }
+        if (active) {
+          setDateRange(getNepaliDateRangeForDate(response.data.currentDate));
+        }
+        if (active) setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load configured Nepali date error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          setLoading(false);
+          toast.error(message);
+        }
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
+
+  const fetchDashboardData = useCallback(async ({ startDate, endDate }) => {
+    const requestId = ++dashboardRequestId.current;
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/finance/dashboard?month=${month}`, {
+      setData(null);
+      setReportError("");
+      const res = await axios.get(`${backendUrl}/api/finance/dashboard`, {
         headers: { token },
+        params: { startDate, endDate, calendar: "BS" },
       });
       if (res.data.success) {
-        setData(res.data.data);
+        if (requestId === dashboardRequestId.current) setData(res.data.data);
       } else {
-        toast.error(res.data.message || "Failed to load financial data");
+        throw new Error(res.data.message || "Failed to load financial data");
       }
     } catch (err) {
       console.error(err);
-      toast.error(err.response?.data?.message || err.message);
+      if (requestId === dashboardRequestId.current) {
+        const message = err.response?.data?.message || err.message || "Failed to load financial data";
+        setReportError(message);
+        toast.error(message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === dashboardRequestId.current) setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
-    if (token) fetchDashboardData(selectedMonth);
-  }, [token, selectedMonth]);
+    if (token && calendarReady) fetchDashboardData(dateRange);
+  }, [token, dateRange, calendarReady, fetchDashboardData]);
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
 
   if (loading && !data) {
     return (
@@ -49,12 +110,48 @@ const FinanceDashboard = ({ token }) => {
     );
   }
 
+  if (reportError && !data) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{reportError}</p>
+        <button
+          type="button"
+          onClick={() => fetchDashboardData(dateRange)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   const revenue = data?.revenue || {};
   const costs = data?.costsAndExpenses || {};
   const profit = data?.profitability || {};
   const breakEven = data?.breakEven || {};
   const bs = data?.balanceSheetSnapshot || {};
   const analytics = data?.analytics || {};
+  const postedAccounting = data?.postedAccounting || null;
+  const postedIncome = postedAccounting?.incomeStatement || {};
+  const postedVat = postedAccounting?.vat || {};
+  const postedBalanceSheet = postedAccounting?.balanceSheet || {};
+  const costDetails = costs.details || {};
+  const openCostDetails = (title, groups) => {
+    const rows = groups.flatMap(({ category, entries }) =>
+      (Array.isArray(entries) ? entries : []).map((entry) => ({ ...entry, detailCategory: category }))
+    );
+    setCostDetailsView({ title, rows });
+  };
+  const getDetailAmount = (entry) => Number(entry.totalAmount ?? entry.amount ?? 0);
+  const formatDetailAmount = (value) => Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const formatDetailDate = (value) => {
+    if (!value) return "—";
+    const date = new Date(typeof value === "number" || /^\d+$/.test(String(value)) ? Number(value) : value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
+  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -62,43 +159,94 @@ const FinanceDashboard = ({ token }) => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-200/60">
-              Enterprise Finance
+            <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-amber-50 text-amber-800 rounded-lg border border-amber-200/60">
+              Operational analytics
             </span>
-            <span className="text-xs font-medium text-slate-400">
-              QuickBooks &amp; Xero Standard
+            <span className="text-xs font-medium text-slate-500">
+              Estimates are not posted GL
             </span>
           </div>
           <h1 className="text-2xl font-black text-slate-900 mt-1">
             Financial &amp; Executive Analytics
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time ROI, profit margins, break-even simulation, and live assets valuation.
+            Operational analytics and estimates; posted journal totals are shown separately.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-            <label className="text-xs font-semibold text-slate-600">Period:</label>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
-            />
-          </div>
-
+        <div className="flex items-end gap-3">
+          <NepaliDateRangePicker
+            startDate={dateRange.startDate}
+            endDate={dateRange.endDate}
+            onApply={setDateRange}
+            calendars={calendars}
+          />
           <button
-            onClick={() => fetchDashboardData(selectedMonth)}
-            className="p-2 bg-slate-900 text-white rounded-xl hover:bg-slate-800 transition-colors shadow-xs"
+            onClick={() => fetchDashboardData(dateRange)}
+            className="mb-1 rounded-xl bg-slate-900 p-2 text-white shadow-xs transition-colors hover:bg-slate-800"
             title="Refresh Analytics"
+            aria-label="Refresh Analytics"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={data?.accountingPostingStatus} />
+
+      {postedAccounting && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-6 shadow-xs">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Posted Ledger Summary</h2>
+              <p className="mt-1 text-xs text-slate-600">
+                Authoritative financial totals from posted journal entries for BS {dateRange.startDate} to {dateRange.endDate}. Operational estimates and pending settlements are shown separately below.
+              </p>
+            </div>
+            <span className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-800">
+              Posted journals only
+            </span>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ["Net revenue", postedIncome.netRevenue],
+              ["COGS", postedIncome.totalCogs],
+              ["Operating expenses", postedIncome.totalOperatingExpenses],
+              ["Net profit before tax", postedIncome.netProfitBeforeTax],
+              ["Output VAT payable", postedVat.outputVat],
+              ["Input VAT receivable", postedVat.inputVat],
+              ["Inventory (GL)", postedBalanceSheet.inventory],
+              ["COD receivable (GL)", postedBalanceSheet.codReceivable],
+              ["Manufacturer payable (GL)", postedBalanceSheet.manufacturerPayable],
+              ["Carrier payable (GL)", postedBalanceSheet.carrierPayable],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-emerald-100 bg-white p-4">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                <p className="mt-2 text-lg font-black text-slate-900">{currency}{Number(value || 0).toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section
+        role="note"
+        aria-label="Operational estimate notice"
+        className="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4"
+      >
+        <div>
+          <h2 className="text-sm font-bold text-amber-950">Operational metrics below are estimates, not posted GL</h2>
+          <p className="mt-1 max-w-4xl text-xs text-amber-900">
+            ROI, profitability, break-even, and net-worth figures use operational records and may differ from posted journal totals.
+            Activity metrics use the selected BS period; the asset and liability snapshot reflects current operational balances.
+          </p>
+        </div>
+        <Link to="/statements" className="text-xs font-bold text-amber-950 underline underline-offset-2">
+          View posted financial statements
+        </Link>
+      </section>
 
       {/* TOP ROW: EXECUTIVE METRICS CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -294,6 +442,160 @@ const FinanceDashboard = ({ token }) => {
           </div>
         </div>
       </div>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Operational Cost Detail</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Operational costing and shipment-level batch charges; these subledger figures are not posted journal totals. Compare with the Posted Ledger Summary above.
+            </p>
+          </div>
+          <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+            {revenue.unitsSold || 0} units in period
+          </span>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {[
+            { label: "Product COGS", value: costs.directCOGS, style: "bg-blue-50 border-blue-100 text-blue-900", details: [{ category: "Product COGS", entries: costDetails.productCOGS }] },
+            { label: "Manufacturer-to-distributor logistics", value: costs.deliveryAndOtherOverheads, style: "bg-amber-50 border-amber-100 text-amber-900", details: [{ category: "Manufacturer-to-distributor logistics", entries: costDetails.deliveryAndOtherOverheads }] },
+            { label: "Fixed overhead", value: costs.fixedOverheads, style: "bg-slate-50 border-slate-100 text-slate-800", details: [{ category: "Fixed overhead", entries: costDetails.fixedOverheads }] },
+            { label: "Marketing", value: costs.marketingSpend, style: "bg-violet-50 border-violet-100 text-violet-900", details: [{ category: "Marketing", entries: costDetails.marketingSpend }] },
+            {
+              label: "Total operating expenses",
+              value: costs.totalOperatingExpenses,
+              style: "bg-rose-50 border-rose-100 text-rose-900",
+              details: [
+                { category: "Manufacturer-to-distributor logistics", entries: costDetails.deliveryAndOtherOverheads },
+                { category: "Fixed overhead", entries: costDetails.fixedOverheads },
+                { category: "Marketing", entries: costDetails.marketingSpend },
+              ],
+            },
+          ].map((row) => (
+            <div key={row.label} className={`rounded-xl border p-4 ${row.style}`}>
+              <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{row.label}</p>
+              <p className="mt-2 text-lg font-black">{currency}{Number(row.value || 0).toLocaleString()}</p>
+              <button
+                type="button"
+                onClick={() => openCostDetails(row.label, row.details)}
+                className="mt-2 text-[11px] font-bold underline decoration-current/40 underline-offset-2 hover:decoration-current"
+              >
+                View details
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {costDetailsView && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCostDetailsView(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cost-details-title"
+            className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <h2 id="cost-details-title" className="text-lg font-black text-slate-900">{costDetailsView.title} details</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Itemized cost entries for BS {dateRange.startDate} to {dateRange.endDate}. Amounts follow the same cost rules as the dashboard totals.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCostDetailsView(null)}
+                aria-label="Close cost details"
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </header>
+            <div className="max-h-[calc(90vh-150px)] overflow-auto">
+              {!costDetailsView.rows.length ? (
+                <p className="p-8 text-center text-sm text-slate-500">No itemized entries for this category in the selected period.</p>
+              ) : (
+                <table className="w-full min-w-[850px] text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Order / shipment</th>
+                      <th className="px-4 py-3">Cost detail</th>
+                      <th className="px-4 py-3">Quantity / rate</th>
+                      <th className="px-4 py-3">Source / vendor</th>
+                      <th className="px-4 py-3 text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {costDetailsView.rows.map((entry) => {
+                      const isProductionCost = entry.orderId || entry.productId;
+                      const detail = isProductionCost
+                        ? [entry.detailCategory, entry.productName, entry.size, entry.color].filter(Boolean).join(" · ")
+                        : entry.transferId
+                          ? [entry.detailCategory, "Batch transportation and logistics"].filter(Boolean).join(" · ")
+                          : [entry.detailCategory, entry.title, entry.category].filter(Boolean).join(" · ");
+                      return (
+                        <tr key={`${entry.detailCategory}-${entry.id}`} className="align-top hover:bg-slate-50/70">
+                          <td className="whitespace-nowrap px-4 py-3 text-slate-600">{formatDetailDate(entry.date)}</td>
+                          <td className="px-4 py-3 font-mono text-[10px] text-slate-700">
+                            {entry.orderId
+                              ? `Order #${String(entry.orderId).slice(0, 10)}`
+                              : entry.transferId
+                                ? `Transfer #${String(entry.transferId).slice(0, 10)}`
+                                : entry.invoiceNumber || "—"}
+                          </td>
+                          <td className="max-w-sm px-4 py-3 font-semibold text-slate-800">{detail}</td>
+                          <td className="whitespace-nowrap px-4 py-3 text-slate-600">
+                            {entry.transferId
+                              ? "One dispatched batch"
+                              : entry.quantity
+                                ? `${entry.quantity} × ${currency}${formatDetailAmount(entry.unitAmount)}`
+                                : "—"}
+                          </td>
+                          <td className="max-w-xs px-4 py-3 text-slate-600">
+                            <p className="font-semibold text-slate-800">
+                              {entry.vendorName || entry.source || "Recorded operating expense"}
+                            </p>
+                            {entry.source && entry.vendorName && <p className="mt-1 text-[10px]">{entry.source}</p>}
+                            {entry.trackingNumber && <p className="mt-1 font-mono text-[10px]">Tracking: {entry.trackingNumber}</p>}
+                            {entry.manufacturerName && <p className="mt-1 text-[10px]">Manufacturer: {entry.manufacturerName}</p>}
+                            {entry.distributorName && <p className="mt-1 text-[10px]">Distributor: {entry.distributorName}</p>}
+                            {entry.transferId && <p className="mt-1 font-mono text-[10px]">Transfer: {entry.transferId}</p>}
+                            {entry.referenceId && <p className="mt-1 font-mono text-[10px]">Cost layer: {String(entry.referenceId).slice(0, 12)}</p>}
+                            {entry.paymentStatus && <p className="mt-1 text-[10px]">Payment: {entry.paymentStatus}</p>}
+                            {entry.transferId && entry.paidAmount !== undefined && (
+                              <p className="mt-1 text-[10px]">
+                                Paid {currency}{formatDetailAmount(entry.paidAmount)} · Outstanding {currency}{formatDetailAmount(entry.outstandingAmount)}
+                              </p>
+                            )}
+                            {entry.notes && <p className="mt-1 break-words text-[10px]">{entry.notes}</p>}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-right font-bold text-slate-900">
+                            {currency}{formatDetailAmount(getDetailAmount(entry))}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="sticky bottom-0 bg-slate-50">
+                    <tr>
+                      <td colSpan="5" className="px-4 py-3 text-right text-xs font-bold text-slate-700">Total</td>
+                      <td className="px-4 py-3 text-right text-xs font-black text-slate-950">
+                        {currency}{formatDetailAmount(costDetailsView.rows.reduce((total, entry) => total + getDetailAmount(entry), 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* ROW 3: QUICK NAVIGATION HUBS */}
       <div>

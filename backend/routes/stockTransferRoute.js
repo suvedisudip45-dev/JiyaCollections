@@ -1,0 +1,163 @@
+import express from "express";
+import {
+  bookNcmStockTransfer,
+  createStockTransferRequest,
+  editStockTransferRequest,
+  dispatchManualStockTransfer,
+  getStockTransferCatalog,
+  getStockTransferEditCatalog,
+  listAdminStockTransfers,
+  listAdminInventoryDiscrepancies,
+  listDistributorStockTransfers,
+  listManufacturerStockTransfers,
+  receiveStockTransferShipment,
+  requestNcmStockTransferReturn,
+  resolveNcmShipmentBooking,
+  syncNcmStockTransferShipment,
+  reviewStockTransferRequest,
+  updateStockTransferPreparation,
+} from "../controllers/stockTransferController.js";
+import { authenticate, authorize, authorizeAny, setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { requireManufacturerTransferSourceLocation } from "../middleware/locationScope.js";
+
+const stockTransferRouter = express.Router();
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({ success: false, code: "ADMIN_ROLE_REQUIRED", message: "Only administrators can access all stock transfers." });
+  }
+  return next();
+};
+
+stockTransferRouter.get(
+  "/catalog",
+  authenticate,
+  authorize("transfer:distributor_request"),
+  setDistributorContext,
+  getStockTransferCatalog,
+);
+stockTransferRouter.get(
+  "/manufacturer/catalog",
+  authenticate,
+  authorize("transfer:manufacturer_read"),
+  setManufacturerContext,
+  getStockTransferEditCatalog,
+);
+stockTransferRouter.get(
+  "/admin/catalog",
+  authenticate,
+  requireAdminRole,
+  authorize("transfer:admin_review"),
+  getStockTransferEditCatalog,
+);
+stockTransferRouter.post(
+  "/requests",
+  authenticate,
+  authorize("transfer:distributor_request"),
+  setDistributorContext,
+  createStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/distributor/:id",
+  authenticate,
+  authorize("transfer:distributor_request"),
+  setDistributorContext,
+  editStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/manufacturer/:id",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  editStockTransferRequest,
+);
+stockTransferRouter.get(
+  "/distributor",
+  authenticate,
+  authorize("transfer:distributor_read"),
+  setDistributorContext,
+  listDistributorStockTransfers,
+);
+stockTransferRouter.post(
+  "/shipments/:shipmentId/receipt",
+  authenticate,
+  authorize("transfer:distributor_receive"),
+  setDistributorContext,
+  receiveStockTransferShipment,
+);
+stockTransferRouter.get(
+  "/manufacturer",
+  authenticate,
+  authorize("transfer:manufacturer_read"),
+  setManufacturerContext,
+  listManufacturerStockTransfers,
+);
+stockTransferRouter.post(
+  "/manufacturer/shipments/:shipmentId/ncm-return",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  requestNcmStockTransferReturn,
+);
+stockTransferRouter.patch(
+  "/:id/preparation",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  updateStockTransferPreparation,
+);
+stockTransferRouter.post(
+  "/:id/dispatch",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
+  dispatchManualStockTransfer,
+);
+stockTransferRouter.post(
+  "/:id/ncm-booking",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
+  bookNcmStockTransfer,
+);
+stockTransferRouter.get(
+  "/admin",
+  authenticate,
+  requireAdminRole,
+  authorizeAny("transfer:admin_read", "distributor:admin_transfers_read", "manufacturer:admin_transfers_read"),
+  listAdminStockTransfers,
+);
+stockTransferRouter.post(
+  "/admin/shipments/:shipmentId/ncm-sync",
+  authenticate,
+  authorize("transfer:admin_read"),
+  syncNcmStockTransferShipment,
+);
+stockTransferRouter.get(
+  "/admin/discrepancies",
+  authenticate,
+  authorize("transfer:admin_read"),
+  listAdminInventoryDiscrepancies,
+);
+stockTransferRouter.patch(
+  "/admin/:id",
+  authenticate,
+  requireAdminRole,
+  authorize("transfer:admin_review"),
+  editStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/admin/:id/review",
+  authenticate,
+  authorize("transfer:admin_review"),
+  reviewStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/admin/shipments/:shipmentId/ncm-resolution",
+  authenticate,
+  authorize("transfer:admin_review"),
+  resolveNcmShipmentBooking,
+);
+
+export default stockTransferRouter;

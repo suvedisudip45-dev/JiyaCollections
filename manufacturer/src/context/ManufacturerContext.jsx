@@ -1,7 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { clearAuthTokens, getAccessToken, revokeAuthSession, storeAuthTokens } from "../auth/tokenStorage";
+import {
+  clearAuthTokens,
+  getAccessToken,
+  getActiveWorkspace,
+  revokeAuthSession,
+  storeAuthTokens,
+  storeActiveWorkspace,
+} from "../auth/tokenStorage";
+import {
+  getCachedDriverProfile,
+  getDriverOfflineTokenRole,
+  saveCachedDriverProfile,
+} from "../offline/driverOfflineStore";
 
 const ManufacturerContext = createContext();
 
@@ -10,7 +22,13 @@ export const currency = "Rs ";
 
 export const ManufacturerProvider = ({ children }) => {
   const [token, setToken] = useState(() => getAccessToken());
-  const [manufacturer, setManufacturer] = useState(null);
+  const [platformFeatures, setPlatformFeatures] = useState(null);
+  const [companyContact, setCompanyContact] = useState({ email: "", phone: "" });
+  const [manufacturer, setManufacturer] = useState(null);    // active manufacturer profile (null if distributor-only view)
+  const [distributor, setDistributor] = useState(null);      // active distributor profile (null if manufacturer-only view)
+  const [driver, setDriver] = useState(null);
+  const [activeWorkspace, setActiveWorkspaceState] = useState(() => getActiveWorkspace());
+  const [availableWorkspaces, setAvailableWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     pending: 0,
@@ -19,6 +37,24 @@ export const ManufacturerProvider = ({ children }) => {
     completed: 0,
     total: 0,
   });
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/features`)
+      .then((response) => {
+        if (mounted && response.data?.success) {
+          setPlatformFeatures(response.data.features || {});
+          setCompanyContact(response.data.companyContact || { email: "", phone: "" });
+        }
+      })
+      .catch((error) => {
+        console.error("Unable to load platform feature settings:", error);
+        if (mounted) setPlatformFeatures({});
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const updateToken = (event) => {
@@ -37,8 +73,16 @@ export const ManufacturerProvider = ({ children }) => {
     await revokeAuthSession(backendUrl);
     setToken("");
     setManufacturer(null);
+    setDistributor(null);
+    setDriver(null);
+    setAvailableWorkspaces([]);
     toast.info("Logged out successfully");
   };
+
+  const setActiveWorkspace = useCallback((role) => {
+    const normalized = storeActiveWorkspace(role);
+    setActiveWorkspaceState(normalized);
+  }, []);
 
   const fetchProfile = useCallback(async () => {
     if (!token) {
@@ -46,26 +90,108 @@ export const ManufacturerProvider = ({ children }) => {
       return;
     }
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer/profile`, {
+      const sessionResponse = await axios.get(`${backendUrl}/api/auth/me`, {
         headers: { token },
       });
-      if (response.data.success) {
-        setManufacturer(response.data.manufacturer);
-      } else {
-        clearAuthTokens();
-        setToken("");
+      const role = String(sessionResponse.data?.account?.role || "").toUpperCase();
+      if (!sessionResponse.data?.success || !["MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(role)) {
+        throw new Error("An active manufacturer, distributor, or driver workspace is required.");
+      }
+      setActiveWorkspace(role);
+      const allRoles = sessionResponse.data.account.roles || [];
+      setAvailableWorkspaces(allRoles);
+      if (role === "DRIVER") {
+        const response = await axios.get(`${backendUrl}/api/driver/profile`, { headers: { token } });
+        if (!response.data?.success || !response.data.driver) throw new Error("Driver profile could not be loaded.");
+        setDriver(response.data.driver);
+        saveCachedDriverProfile(token, response.data.driver).catch((error) => {
+          console.warn("Driver profile could not be saved for offline use:", error.message);
+        });
         setManufacturer(null);
+        setDistributor(null);
+        return;
+      }
+      setDriver(null);
+
+      // Always fetch both profiles if available roles include both
+      const hasMfr = allRoles.some((w) => (typeof w === "string" ? w : w.code) === "MANUFACTURER") || role === "MANUFACTURER";
+      const hasDist = allRoles.some((w) => (typeof w === "string" ? w : w.code) === "DISTRIBUTOR") || role === "DISTRIBUTOR";
+
+      // Fetch active workspace profile
+      if (role === "DISTRIBUTOR") {
+        const res = await axios.get(`${backendUrl}/api/distributor/profile`, { headers: { token } });
+        const prof = res.data.distributor;
+        if (!res.data.success || !prof) throw new Error("Distributor profile could not be loaded.");
+        setDistributor({ ...prof, businessName: prof.businessName || prof.name || "" });
+        // If also a manufacturer, fetch that too (for sidebar context)
+        if (hasMfr) {
+          try {
+            const mRes = await axios.get(`${backendUrl}/api/manufacturer/profile`, { headers: { token } });
+            if (mRes.data.success && mRes.data.manufacturer) {
+              setManufacturer({ ...mRes.data.manufacturer, businessName: mRes.data.manufacturer.businessName || mRes.data.manufacturer.name || "" });
+            }
+          } catch { /* non-critical */ }
+        }
+      } else {
+        const res = await axios.get(`${backendUrl}/api/manufacturer/profile`, { headers: { token } });
+        const prof = res.data.manufacturer;
+        if (!res.data.success || !prof) throw new Error("Manufacturer profile could not be loaded.");
+        setManufacturer({ ...prof, businessName: prof.businessName || prof.name || "" });
+        // If also a distributor, fetch that too
+        if (hasDist) {
+          try {
+            const dRes = await axios.get(`${backendUrl}/api/distributor/profile`, { headers: { token } });
+            if (dRes.data.success && dRes.data.distributor) {
+              setDistributor({ ...dRes.data.distributor, businessName: dRes.data.distributor.businessName || dRes.data.distributor.name || "" });
+            }
+          } catch { /* non-critical */ }
+        }
       }
     } catch (err) {
       console.error("Failed to fetch profile:", err);
+      const temporarilyUnavailable = !err.response || err.response.status >= 500 || err.response.status === 429;
+      if (temporarilyUnavailable && getDriverOfflineTokenRole(token) === "DRIVER") {
+        try {
+          const cachedDriver = await getCachedDriverProfile(token);
+          if (cachedDriver) {
+            setActiveWorkspace("DRIVER");
+            setAvailableWorkspaces(["DRIVER"]);
+            setDriver(cachedDriver);
+            setManufacturer(null);
+            setDistributor(null);
+            return;
+          }
+        } catch (cacheError) {
+          console.warn("Cached driver profile could not be restored:", cacheError.message);
+        }
+      }
       clearAuthTokens();
       setToken("");
       setManufacturer(null);
+      setDistributor(null);
+      setDriver(null);
+      setAvailableWorkspaces([]);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [setActiveWorkspace, token]);
 
+  const switchWorkspace = useCallback(async () => {
+    const targetRole = activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER";
+    try {
+      const response = await axios.post(`${backendUrl}/api/auth/workspace`, { role: targetRole });
+      if (!response.data?.success || !(response.data.accessToken || response.data.token)) {
+        throw new Error(response.data?.message || "Workspace could not be changed.");
+      }
+      storeAuthTokens(response.data);
+      setActiveWorkspace(targetRole);
+      toast.success(`Switched to ${targetRole === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} view.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Workspace could not be changed.");
+    }
+  }, [activeWorkspace, setActiveWorkspace]);
+
+  // Manufacturer availability toggle (accepting auto-assigned production orders)
   const toggleAvailability = async () => {
     if (!token || !manufacturer) return;
     try {
@@ -84,6 +210,25 @@ export const ManufacturerProvider = ({ children }) => {
     }
   };
 
+  // Distributor availability toggle (accepting hub orders online / paused offline)
+  const toggleDistributorAvailability = async () => {
+    if (!token || !distributor) return;
+    try {
+      const nextState = !distributor.isActive;
+      const res = await axios.patch(
+        `${backendUrl}/api/distributor/availability`,
+        { isAvailable: nextState },
+        { headers: { token } }
+      );
+      if (res.data.success) {
+        setDistributor((prev) => ({ ...prev, isActive: nextState }));
+        toast.success(nextState ? "Hub: Accepting Orders (Online)" : "Hub: Paused (Offline)");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || "Failed to update hub availability");
+    }
+  };
+
   useEffect(() => {
     if (token) {
       storeAuthTokens({ accessToken: token });
@@ -94,6 +239,13 @@ export const ManufacturerProvider = ({ children }) => {
     }
   }, [token, fetchProfile]);
 
+  // Active profile: the one for the current workspace
+  const activeProfile = activeWorkspace === "DISTRIBUTOR"
+    ? distributor
+    : activeWorkspace === "DRIVER"
+      ? driver
+      : manufacturer;
+
   return (
     <ManufacturerContext.Provider
       value={{
@@ -101,14 +253,25 @@ export const ManufacturerProvider = ({ children }) => {
         setToken,
         manufacturer,
         setManufacturer,
+        distributor,
+        setDistributor,
+        driver,
+        setDriver,
+        activeProfile,
+        activeWorkspace,
+        availableWorkspaces,
+        switchWorkspace,
         loading,
         stats,
         setStats,
         fetchProfile,
         toggleAvailability,
+        toggleDistributorAvailability,
         logout,
         backendUrl,
         currency,
+        platformFeatures,
+        companyContact,
       }}
     >
       {children}

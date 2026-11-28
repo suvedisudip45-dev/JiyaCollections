@@ -1,5 +1,50 @@
 import { logger } from "../utils/logger.js";
 
+export const normalizeNcmPackageName = (value, fallback = "Box") => {
+  const packageName = String(value ?? "").trim() || fallback;
+  return packageName.slice(0, 50);
+};
+
+export const validateNcmPackageName = (value, fallback = "Box") => {
+  const packageName = String(value ?? "").trim() || fallback;
+  if (packageName.length > 50) {
+    throw Object.assign(new Error("NCM package name cannot exceed 50 characters."), {
+      code: "NCM_PACKAGE_NAME_TOO_LONG",
+    });
+  }
+  return packageName;
+};
+
+export const validateCodTransferBankDetails = ({ bankName, bankAccountName, bankAccountNumber } = {}) => {
+  const bankTextPattern = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’&()-]*$/u;
+  const digitPattern = /^\d+$/;
+  const normalized = {
+    bankName: typeof bankName === "string" ? bankName.trim() : "",
+    bankAccountName: typeof bankAccountName === "string" ? bankAccountName.trim() : "",
+    bankAccountNumber: typeof bankAccountNumber === "string" ? bankAccountNumber.trim() : "",
+  };
+
+  if (!normalized.bankName || !bankTextPattern.test(normalized.bankName) || normalized.bankName.length > 191) {
+    throw Object.assign(new Error("Bank name must contain text only and be 191 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  if (!normalized.bankAccountName || !bankTextPattern.test(normalized.bankAccountName) || normalized.bankAccountName.length > 191) {
+    throw Object.assign(new Error("Account holder name must contain text only and be 191 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  if (!normalized.bankAccountNumber || !digitPattern.test(normalized.bankAccountNumber) || normalized.bankAccountNumber.length > 64) {
+    throw Object.assign(new Error("Bank account number must contain digits only and be 64 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  return normalized;
+};
+
 const DEFAULT_BASE_URL = "https://demo.nepalcanmove.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
@@ -27,6 +72,91 @@ export const extractNcmCharge = (payload) => {
   return Number.isFinite(charge) && charge >= 0 ? charge : null;
 };
 
+export const extractNcmDeliveryPricing = (payload, { allowGenericDiscount = false } = {}) => {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  if (!data || typeof data !== "object") return null;
+
+  const readAmount = (keys) => {
+    for (const key of keys) {
+      if (data[key] === undefined || data[key] === null || data[key] === "") continue;
+      const amount = Number(data[key]);
+      if (Number.isFinite(amount) && amount >= 0) return Number(amount.toFixed(2));
+    }
+    return null;
+  };
+  const grossCharge = readAmount([
+    "delivery_charge_before_discount",
+    "deliveryChargeBeforeDiscount",
+    "original_delivery_charge",
+    "originalDeliveryCharge",
+    "regular_delivery_charge",
+    "regularDeliveryCharge",
+    "base_delivery_charge",
+    "baseDeliveryCharge",
+    "list_delivery_charge",
+    "listDeliveryCharge",
+    "gross_delivery_charge",
+    "grossDeliveryCharge",
+  ]);
+  const netCharge = readAmount([
+    "net_delivery_charge",
+    "netDeliveryCharge",
+    "discounted_delivery_charge",
+    "discountedDeliveryCharge",
+    "final_delivery_charge",
+    "finalDeliveryCharge",
+    "payable_delivery_charge",
+    "payableDeliveryCharge",
+    "delivery_charge_after_discount",
+    "deliveryChargeAfterDiscount",
+  ]);
+  const listedCharge = readAmount([
+    "delivery_charge",
+    "deliveryCharge",
+    "shipping_charge",
+    "shippingCharge",
+    "charge",
+    "amount",
+  ]);
+  const discountKeys = [
+    "delivery_discount",
+    "deliveryDiscount",
+    "delivery_discount_amount",
+    "deliveryDiscountAmount",
+    "discount_amount",
+    "discountAmount",
+  ];
+  if (allowGenericDiscount) discountKeys.push("discount");
+  const reportedDiscount = readAmount(discountKeys);
+
+  if (grossCharge === null && netCharge === null && listedCharge === null) return null;
+
+  const explicitGross = grossCharge;
+  let actualNetCharge = netCharge;
+  let originalCharge = explicitGross;
+  if (actualNetCharge === null && listedCharge !== null) {
+    if (explicitGross !== null && listedCharge < explicitGross) {
+      actualNetCharge = listedCharge;
+    } else {
+      actualNetCharge = Math.max(0, listedCharge - (reportedDiscount || 0));
+      if (originalCharge === null) originalCharge = listedCharge;
+    }
+  }
+  if (originalCharge === null) {
+    originalCharge = actualNetCharge + (reportedDiscount || 0);
+  }
+  const discountAmount = reportedDiscount === null
+    ? Number(Math.max(0, originalCharge - actualNetCharge).toFixed(2))
+    : reportedDiscount;
+  if (discountAmount > originalCharge || actualNetCharge > originalCharge) return null;
+
+  return {
+    chargeBeforeDiscount: Number(originalCharge.toFixed(2)),
+    discountAmount: Number(discountAmount.toFixed(2)),
+    actualCharge: Number(actualNetCharge.toFixed(2)),
+  };
+};
+
 export const getNcmResponseRejection = (payload) => {
   const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
   if (data?.success === false) return String(data.detail || data.message || data.error || "NCM rejected the request");
@@ -49,11 +179,9 @@ const requestNcmOnce = async (path, { method = "GET", query, body } = {}) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const payloadForLog = body ? JSON.parse(JSON.stringify(body)) : null;
     logger.info("NCM request started", {
       method,
-      url: sanitizeUrl(url.toString()),
-      requestBody: payloadForLog,
+      path: url.pathname,
     });
 
     const response = await fetch(url, {
@@ -83,32 +211,25 @@ const requestNcmOnce = async (path, { method = "GET", query, body } = {}) => {
 
       logger.error("NCM request failed", {
         method,
-        url: sanitizeUrl(url.toString()),
+        path: url.pathname,
         httpStatus: response.status,
-        requestBody: payloadForLog,
-        responseBody: data,
       });
       throw error;
     }
 
     logger.info("NCM request succeeded", {
       method,
-      url: sanitizeUrl(url.toString()),
+      path: url.pathname,
       httpStatus: response.status,
-      requestBody: payloadForLog,
-      responseBody: data,
     });
 
     return { data, httpStatus: response.status, url: sanitizeUrl(url.toString()) };
   } catch (error) {
     logger.error("NCM request exception", {
       method,
-      url: sanitizeUrl(url.toString()),
-      requestBody: body ? JSON.parse(JSON.stringify(body)) : null,
+      path: url.pathname,
       errorName: error.name,
       errorCode: error.code,
-      errorMessage: error.message,
-      errorResponse: error.response || null,
     });
     if (error.name === "AbortError") {
       const timeoutError = new Error("NCM request timed out");
@@ -135,6 +256,7 @@ const requestNcm = async (path, options = {}) => {
       return { ...result, attemptHistory };
     } catch (error) {
       const isServerFailure = Number(error.httpStatus) >= 500 && Number(error.httpStatus) < 600;
+      const isReadOnlyRequest = String(options.method || "GET").toUpperCase() === "GET";
       attemptHistory.push({
         attemptNumber,
         httpStatus: error.httpStatus || null,
@@ -144,7 +266,12 @@ const requestNcm = async (path, options = {}) => {
         response: error.response || null,
       });
       error.attemptHistory = attemptHistory;
-      if (!isServerFailure || attemptNumber === maximumAttempts) throw error;
+      if (!isReadOnlyRequest || !isServerFailure || attemptNumber === maximumAttempts) {
+        if (!isReadOnlyRequest && (!error.httpStatus || isServerFailure)) {
+          error.outcomeUnknown = true;
+        }
+        throw error;
+      }
       const delayMs = delayBaseMs * (2 ** (attemptNumber - 1));
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
@@ -154,6 +281,7 @@ const requestNcm = async (path, options = {}) => {
 
 export const getBranches = () => requestNcm("/api/v2/branches");
 export const getAssignedBranches = () => requestNcm("/api/v2/vendor/assigned-branches");
+export const getVendorStaffs = (query) => requestNcm("/api/v2/vendor/staffs", { query });
 
 export const getNcmBranchRows = (response) => {
   const payload = response?.data ?? response;
@@ -189,6 +317,8 @@ export const getShippingRate = ({ creation, destination, type }) =>
     query: { creation, destination, type: shippingRateTypeForNcm(type) },
   });
 export const createOrder = (payload) => requestNcm("/api/v1/order/create", { method: "POST", body: payload });
+export const createOrderOnce = (payload) =>
+  requestNcmOnce("/api/v1/order/create", { method: "POST", body: payload });
 export const getOrder = (orderId) => requestNcm("/api/v1/order", { query: { id: orderId } });
 export const getOrderStatus = (orderId) =>
   requestNcm("/api/v1/order/status", { query: { id: orderId } });
@@ -201,6 +331,8 @@ export const createOrderComment = ({ orderid, comments }) =>
   requestNcm("/api/v1/comment", { method: "POST", body: { orderid, comments } });
 export const requestOrderReturn = ({ pk, comment }) =>
   requestNcm("/api/v2/vendor/order/return", { method: "POST", body: { pk, comment } });
+export const requestOrderReturnOnce = ({ pk, comment }) =>
+  requestNcmOnce("/api/v2/vendor/order/return", { method: "POST", body: { pk, comment } });
 export const createExchangeOrder = ({ pk }) =>
   requestNcm("/api/v2/vendor/order/exchange-create", { method: "POST", body: { pk } });
 export const redirectOrder = (payload) =>
@@ -213,11 +345,13 @@ export const testWebhook = ({ webhook_url }) =>
   requestNcm("/api/v2/vendor/webhook/test", { method: "POST", body: { webhook_url } });
 export const createVendorTicket = (payload) =>
   requestNcm("/api/v2/vendor/ticket/create/new", { method: "POST", body: payload });
-export const createCodTransferTicket = ({ bankName, bankAccountName, bankAccountNumber }) =>
-  requestNcm("/api/v2/vendor/ticket/cod/create", {
+export const createCodTransferTicket = (bankDetails) => {
+  const payload = validateCodTransferBankDetails(bankDetails);
+  return requestNcm("/api/v2/vendor/ticket/cod/create", {
     method: "POST",
-    body: { bankName, bankAccountName, bankAccountNumber },
+    body: payload,
   });
+};
 export const closeVendorTicket = (ticketId) =>
   requestNcm(`/api/v2/vendor/ticket/close/${ticketId}`, { method: "POST", body: { pk: ticketId } });
 export const getTicketDetail = (ticketId) => requestNcm(`/api/v1/tickets/${ticketId}/detail`);

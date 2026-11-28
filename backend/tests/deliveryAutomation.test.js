@@ -1,23 +1,93 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createCodTransferTicket, createExchangeOrder, createOrder, extractNcmCharge, extractNcmDeliveryPricing, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm, validateCodTransferBankDetails } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
   buildDeliveryInput,
+  buildNcmOrderPayload,
   deliveryTypeForNcm,
   generateVendorReference,
   getCarrierBookingAssignmentStatus,
+  isDeliveryOrderOwner,
+  normalizeDeliveryOrderAmounts,
+  normalizePackageWeight,
   normalizeDeliveryStatus,
   parseBoolean,
   webhookIdentifiers,
+  validateNcmWebhookPayload,
+  sanitizeNcmWebhookPayload,
   statusEventKey,
+  validateNcmDeliveryPackageDetails,
 } from "../services/deliveryService.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 
 const restoreEnv = (name, value) => {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 };
+
+test("NCM COD bank details validate text names and digit-only account numbers", () => {
+  assert.deepEqual(validateCodTransferBankDetails({
+    bankName: "  Nepal Bank Ltd. ",
+    bankAccountName: "राम प्रसाद शर्मा",
+    bankAccountNumber: "001234567",
+  }), {
+    bankName: "Nepal Bank Ltd.",
+    bankAccountName: "राम प्रसाद शर्मा",
+    bankAccountNumber: "001234567",
+  });
+
+  for (const bankDetails of [
+    { bankName: "Bank 1", bankAccountName: "Account Holder", bankAccountNumber: "12345" },
+    { bankName: "Bank Name", bankAccountName: "Holder 2", bankAccountNumber: "12345" },
+    { bankName: "Bank Name", bankAccountName: "Account Holder", bankAccountNumber: "12-345" },
+    { bankName: "Bank Name", bankAccountName: "Account Holder", bankAccountNumber: "1e10" },
+  ]) {
+    assert.throws(
+      () => validateCodTransferBankDetails(bankDetails),
+      (error) => error.code === "INVALID_COD_BANK_DETAILS" && error.statusCode === 400,
+    );
+  }
+});
+
+test("NCM COD transfer ticket follows the documented endpoint and JSON field names", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  let request;
+
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ message: "COD ticket created", ticket: 124 }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await createCodTransferTicket({
+      bankName: "Nepal Bank Limited",
+      bankAccountName: "John Doe",
+      bankAccountNumber: "001234567",
+    });
+    assert.equal(request.url, "https://ncm.test/api/v2/vendor/ticket/cod/create");
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.Authorization, "Token test-server-token");
+    assert.deepEqual(JSON.parse(request.options.body), {
+      bankName: "Nepal Bank Limited",
+      bankAccountName: "John Doe",
+      bankAccountNumber: "001234567",
+    });
+    assert.equal(result.data.ticket, 124);
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
 
 test("NCM client sends server-side token and JSON payload", async () => {
   const originalFetch = global.fetch;
@@ -73,15 +143,38 @@ test("delivery mapping and event keys are deterministic", () => {
   assert.equal(statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }), statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }));
 });
 
-test("NCM vendor reference stays short and deterministic", () => {
-  const orderId = "4db7dcc1-dbf3-46eb-8c6c-73fec88611fc";
-  const assignmentId = "50cfd6db-49c5-4781-8acb-8411b4cb3e12";
-  const reference = generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } });
+test("delivery ownership uses distributor assignment for auto-allocated orders", () => {
+  const distributorId = "distributor-1";
+  const order = { distributorId: null, manufacturerId: null };
+  const assignment = { distributorId, manufacturerId: null };
 
-  assert.equal(reference.startsWith("NCM"), true);
-  assert.ok(reference.length <= 15, `Vendor reference is too long: ${reference.length} chars`);
-  assert.equal(generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } }), reference);
-  assert.notEqual(reference, `ORDER-${orderId}-V${assignmentId}`);
+  assert.equal(isDeliveryOrderOwner({ order, assignment, distributorId }), true);
+  assert.equal(isDeliveryOrderOwner({
+    order: { ...order, distributorId: "distributor-2" },
+    assignment,
+    distributorId,
+  }), false);
+  assert.equal(isDeliveryOrderOwner({
+    order,
+    assignment: { distributorId: "distributor-2", manufacturerId: null },
+    distributorId,
+  }), false);
+});
+
+test("NCM vendor reference matches the customer-facing order reference", () => {
+  const orderReference = "E6A2E77B53A78";
+  assert.equal(generateVendorReference({ order: { orderReference } }), orderReference);
+  assert.throws(() => generateVendorReference({ order: { id: "internal-order-id" } }), /Order reference is required/);
+});
+
+test("new orders receive a unique carrier-compatible customer reference", () => {
+  const first = createOrderIdentity();
+  const second = createOrderIdentity();
+
+  assert.match(first.orderReference, /^[A-F0-9]{15}$/);
+  assert.equal(first.orderReference.length, 15);
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(first.orderReference, second.orderReference);
 });
 
 test("NCM status mapping updates assignment state for manufacturer dashboards", () => {
@@ -96,15 +189,72 @@ test("NCM webhook variations normalize and resolve all supported identifiers", (
   assert.equal(normalizeDeliveryStatus("order_arrived").assignmentStatus, "arrived_at_destination");
   assert.equal(normalizeDeliveryStatus("pickup_completed").assignmentStatus, "picked_up");
   assert.equal(normalizeDeliveryStatus("delivery_completed").assignmentStatus, "delivered");
+  assert.equal(normalizeDeliveryStatus("Delivered").deliveryState, "DELIVERED");
+  assert.equal(normalizeDeliveryStatus("", "delivery_completed").deliveryState, "DELIVERED");
+  assert.equal(normalizeDeliveryStatus("not delivered").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("undelivered").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("delivery incomplete").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("Not delivered", "delivery_completed").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("Delivered", "order_return").deliveryState, "NEEDS_RECONCILIATION");
   assert.deepEqual(
     webhookIdentifiers({ order_id: 4935, vref_id: "NCM9E9A907A74CF", orderId: "internal-order" }),
     ["4935", "internal-order", "NCM9E9A907A74CF"]
   );
 });
 
+test("NCM webhook payload validation bounds bulk IDs and ignores malformed identifiers", () => {
+  const single = validateNcmWebhookPayload({
+    order_id: "123456",
+    status: "Delivered",
+    timestamp: "2024-01-15T10:30:00Z",
+    event: "delivery_completed",
+  });
+  assert.equal(single.valid, true);
+  assert.deepEqual(single.identifiers, ["123456"]);
+  assert.equal(single.invalidIdentifierCount, 0);
+
+  const bulk = validateNcmWebhookPayload({
+    order_ids: ["123456", { unexpected: true }, 123457],
+    status: "Dispatched",
+    event: "order_dispatched",
+  });
+  assert.equal(bulk.valid, true);
+  assert.deepEqual(bulk.identifiers, ["123456", "123457"]);
+  assert.equal(bulk.invalidIdentifierCount, 1);
+
+  const oversized = validateNcmWebhookPayload({
+    order_ids: Array.from({ length: 101 }, (_, index) => String(index + 1)),
+    status: "Dispatched",
+  });
+  assert.equal(oversized.valid, false);
+  assert.equal(oversized.statusCode, 413);
+});
+
+test("NCM webhook payload validation rejects non-string status and event fields", () => {
+  assert.equal(validateNcmWebhookPayload({ order_id: "123", status: 1 }).valid, false);
+  assert.equal(validateNcmWebhookPayload({ order_ids: "123", status: "Delivered" }).valid, false);
+  assert.equal(validateNcmWebhookPayload({ order_id: "123" }).valid, false);
+  assert.deepEqual(webhookIdentifiers({ order_id: { id: "123" }, order_ids: [123] }), ["123"]);
+});
+
+test("stored NCM webhook payloads redact authentication fields", () => {
+  assert.deepEqual(sanitizeNcmWebhookPayload({
+    order_id: "123",
+    status: "Delivered",
+    token: "do-not-store",
+    metadata: { authorization: "do-not-store-either" },
+  }), {
+    order_id: "123",
+    status: "Delivered",
+    token: "[REDACTED]",
+    metadata: { authorization: "[REDACTED]" },
+  });
+});
+
 test("delivery payload auto-fills packaging metadata and keeps it editable", () => {
   const order = {
     id: "ord_123",
+    orderReference: "ORD123456789ABC",
     amount: 1500,
     address: JSON.stringify({
       city: "Kathmandu",
@@ -117,6 +267,7 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
       {
         name: "Cotton Shirt",
         productType: "Apparel",
+        category: ["Men", "Women", "Kids"],
         description: "Premium cotton shirt",
         quantity: 1,
       },
@@ -142,10 +293,53 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
   });
 
   assert.equal(input.productType, "Shirt");
-  assert.match(input.packageDescription, /Shirt/i);
-  assert.match(input.packageDescription, /Premium cotton shirt/i);
-  assert.match(input.packageDescription, /Box/i);
+  assert.equal(input.packageDescription, "Premium cotton shirt | Standard");
+  assert.equal(input.packageType, "Box");
   assert.equal(input.instruction, "Handle with care and leave at the gate");
+});
+
+test("NCM package description includes dimensions and quality packaging notes", () => {
+  const input = buildDeliveryInput({
+    order: {
+      id: "ord_dimensions",
+      orderReference: "ORDDIMS12345678",
+      amount: 1500,
+      address: JSON.stringify({ city: "Kathmandu", phone: "9800000000", name: "Ram Shrestha", street: "Boudha" }),
+      items: JSON.stringify([{ name: "Cotton Shirt" }]),
+    },
+    assignment: { id: "assign_dimensions" },
+    manufacturer: { id: "hub_1", ncmPickupBranch: "KTM" },
+    packagingMeta: {
+      packageDimensions: "30 x 20 x 5 cm",
+      packagingNotes: "Ironed and wrapped in waterproof polybag",
+    },
+  });
+
+  assert.match(input.packageDescription, /Dimensions: 30 x 20 x 5 cm/);
+  assert.match(input.packageDescription, /Ironed and wrapped in waterproof polybag/);
+  assert.equal(normalizePackageWeight("0.8 kg"), 0.8);
+  assert.equal(normalizePackageWeight("invalid"), null);
+});
+
+test("NCM package name is limited to the carrier's 50-character maximum", () => {
+  assert.equal(normalizeNcmPackageName("Carton"), "Carton");
+  assert.equal(normalizeNcmPackageName("  "), "Box");
+  assert.equal(normalizeNcmPackageName("Package type ".repeat(6)).length, 50);
+});
+
+test("NCM delivery package fields are rejected when they exceed the 50-character limit", () => {
+  assert.equal(validateNcmDeliveryPackageDetails({
+    productDescription: "A".repeat(50),
+    packageType: "B".repeat(50),
+  }), "B".repeat(50));
+  assert.throws(() => validateNcmDeliveryPackageDetails({
+    productDescription: "A".repeat(51),
+    packageType: "Box",
+  }), (error) => error.code === "NCM_PACKAGE_DESCRIPTION_TOO_LONG");
+  assert.throws(() => validateNcmDeliveryPackageDetails({
+    productDescription: "Clothing item",
+    packageType: "Package ".repeat(7),
+  }), (error) => error.code === "NCM_PACKAGE_NAME_TOO_LONG");
 });
 
 test("packaging fragile values preserve explicit false", () => {
@@ -165,6 +359,77 @@ test("carrier booking failures do not advance assignment to ready_for_pickup", (
   assert.equal(getCarrierBookingAssignmentStatus({ success: true, currentStatus: "package_details_complete" }), "ready_for_pickup");
   assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "package_details_complete" }), "package_details_complete");
   assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "ready_for_pickup" }), "ready_for_pickup");
+});
+
+test("NCM booking keeps the system COD final and excludes the admin-paid delivery fee", () => {
+  const payload = buildNcmOrderPayload({
+    input: {
+      name: "Customer",
+      phone: "9800000000",
+      address: {},
+      codAmount: 1469,
+      customerAddress: "Janakpur",
+      vendorReference: "NCM123",
+      deliveryType: "Door2Door",
+      packageDescription: "Jeans | Jeans | Box | Fragile",
+      packageType: "Box",
+      isFragile: true,
+    },
+    delivery: { packageWeight: 0.87 },
+    origin: "SANKHU",
+    destination: "JANAKPUR",
+  });
+
+  assert.equal(payload.cod_charge, "1469");
+  assert.equal(payload.fbranch, "SANKHU");
+  assert.equal(payload.branch, "JANAKPUR");
+  assert.equal(payload.package, "Jeans | Jeans | Box | Fragile");
+  assert.equal(payload.package_type, "Box");
+  assert.equal(payload.handling, "Fragile");
+
+  const nonFragilePayload = buildNcmOrderPayload({
+    input: {
+      name: "Customer",
+      phone: "9800000000",
+      address: {},
+      codAmount: 1469,
+      customerAddress: "Janakpur",
+      vendorReference: "NCM124",
+      deliveryType: "Door2Door",
+      packageDescription: "Jeans | Jeans | Box | Standard",
+      packageType: "Box",
+      isFragile: false,
+    },
+    delivery: { packageWeight: 0.87 },
+    origin: "SANKHU",
+    destination: "JANAKPUR",
+  });
+  assert.equal(nonFragilePayload.package_type, "Box");
+  assert.equal(nonFragilePayload.handling, "Non-Fragile");
+});
+
+test("delivery database amounts normalize serialized price strings to Prisma Float values", () => {
+  assert.deepEqual(normalizeDeliveryOrderAmounts({
+    itemAmount: "1640",
+    codAmount: "1640",
+  }), {
+    itemAmount: 1640,
+    codAmount: 1640,
+  });
+  assert.deepEqual(normalizeDeliveryOrderAmounts({
+    itemAmount: "1640.25",
+    codAmount: "1640.25",
+  }), {
+    itemAmount: 1640.25,
+    codAmount: 1640.25,
+  });
+
+  for (const invalidAmount of ["", "NaN", "Infinity", "-1", "1,640"]) {
+    assert.throws(
+      () => normalizeDeliveryOrderAmounts({ itemAmount: invalidAmount, codAmount: "0" }),
+      (error) => error.code === "DELIVERY_AMOUNT_INVALID",
+    );
+  }
 });
 
 test("shipping-rate client normalizes legacy delivery type values", async () => {
@@ -220,6 +485,35 @@ test("NCM exchange client uses the documented vendor exchange endpoint and origi
   }
 });
 
+test("NCM return client uses the documented vendor return endpoint and payload without retrying", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  let request;
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ order: 747, vendor_return: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await requestOrderReturnOnce({ pk: 747, comment: "Return requested" });
+    assert.equal(result.data.vendor_return, true);
+    assert.equal(request.url, "https://ncm.test/api/v2/vendor/order/return");
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.Authorization, "Token test-server-token");
+    assert.deepEqual(JSON.parse(request.options.body), { pk: 747, comment: "Return requested" });
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
+
 test("NCM errors preserve partner response detail and carrier charges normalize", () => {
   assert.equal(
     getNcmErrorMessage({ message: "NCM request failed with HTTP 400", response: { detail: "Invalid vendor order" } }),
@@ -227,6 +521,28 @@ test("NCM errors preserve partner response detail and carrier charges normalize"
   );
   assert.equal(extractNcmCharge({ data: { delivery_charge: "145.50" } }), 145.5);
   assert.equal(extractNcmCharge({ data: { delivery_charge: "unknown" } }), null);
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "199.00", delivery_discount: "39.80" },
+  }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "159.20", original_delivery_charge: "199.00", discount_amount: "39.80" },
+  }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "199.00", discount: "39.80" },
+  }, { allowGenericDiscount: true }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.equal(extractNcmDeliveryPricing({ data: { delivery_charge: "unknown" } }), null);
   assert.equal(getNcmResponseRejection({ success: false, detail: "Order is not eligible for return" }), "Order is not eligible for return");
   assert.equal(getNcmResponseRejection({ order: 4041, vendor_return: false, message: "Return was not marked" }), "Return was not marked");
   assert.equal(getNcmResponseRejection({ Message: "Exchange orders created" }), null);
@@ -253,6 +569,35 @@ test("NCM client retries bounded 5xx responses and returns attempt history", asy
     assert.equal(calls, 2);
     assert.equal(result.data.ok, true);
     assert.deepEqual(result.attemptHistory.map((attempt) => attempt.result), ["SERVER_ERROR", "SUCCESS"]);
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+    restoreEnv("NCM_HTTP_RETRY_DELAY_MS", originalRetryDelay);
+  }
+});
+
+test("NCM client does not retry a mutating POST after an ambiguous 5xx response", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  const originalRetryDelay = process.env.NCM_HTTP_RETRY_DELAY_MS;
+  let calls = 0;
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  process.env.NCM_HTTP_RETRY_DELAY_MS = "0";
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: "temporary outage" }), { status: 503 });
+  };
+
+  try {
+    await assert.rejects(() => createOrder({ name: "Test Customer" }), (error) => {
+      assert.match(error.message, /HTTP 503/);
+      assert.equal(error.outcomeUnknown, true);
+      return true;
+    });
+    assert.equal(calls, 1);
   } finally {
     global.fetch = originalFetch;
     restoreEnv("NCM_API_TOKEN", originalToken);

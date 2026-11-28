@@ -1,0 +1,820 @@
+import {
+  getDistributorFinancialStatement,
+  resolveDistributorSettlementReconciliation,
+  initiateAdminDistributorSettlement,
+  confirmAdminDistributorSettlement,
+  failAdminDistributorSettlement,
+} from "../services/distributorFinanceService.js";
+import {
+  recordDistributorRateCard,
+  getDistributorRateCards,
+} from "../services/distributorRateCardService.js";
+import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "../services/auditService.js";
+import { getDistributorBonusPlans, saveDistributorBonusPlan } from "../services/distributorBonusService.js";
+import {
+  getDistributorCashPosition,
+  getDistributorCashPositions,
+  listDistributorRemittances,
+  listDistributorSettlementOffsets,
+  getDistributorUnifiedSettlementPosition,
+  listDistributorBalanceSettlements,
+  listDistributorSettlementRequestTokens,
+  createDistributorSettlementRequestToken,
+  submitDistributorSettlementRequestEvidence as submitSettlementRequestEvidence,
+  reviewDistributorSettlementRequestToken,
+  acknowledgeDistributorSettlementPayout,
+  reviewDistributorRemittance,
+} from "../services/distributorCashSettlementService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
+
+/**
+ * GET /api/distributor/finance/statement
+ * Detailed financial dashboard showing payables/receivables, itemized transactions,
+ * gross earnings, incentives, discounts/charges, and VAT breakdown (With VAT or Without VAT).
+ */
+export const getDistributorStatement = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({
+        success: false,
+        message: "An approved distributor profile is required.",
+      });
+    }
+
+    const withVatParam = req.query.withVat;
+    if (withVatParam !== undefined && !["true", "false", true, false].includes(withVatParam)) {
+      return res.status(400).json({
+        success: false,
+        message: "withVat must be true or false.",
+        code: "INVALID_VAT_MODE",
+      });
+    }
+    const withVat = withVatParam === undefined ? true : withVatParam === true || withVatParam === "true";
+    const { startDate, endDate } = req.query;
+
+    const statement = await getDistributorFinancialStatement({
+      distributorId,
+      withVat,
+      startDate,
+      endDate,
+    });
+
+    return res.status(200).json(statement);
+  } catch (error) {
+    console.error("getDistributorStatement error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to load financial statement.",
+      code: error.code || "FINANCIAL_STATEMENT_ERROR",
+    });
+  }
+};
+
+export const getDistributorCashRemittances = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    }
+    const [position, settlementPosition, remittances, offsets, settlements, settlementRequests] = await Promise.all([
+      getDistributorCashPosition({ distributorId }),
+      getDistributorUnifiedSettlementPosition({ distributorId }),
+      listDistributorRemittances({ distributorId, take: req.query.limit || 50, cursor: req.query.cursor || null }),
+      listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+      listDistributorBalanceSettlements({ distributorId, take: req.query.limit || 50 }),
+      listDistributorSettlementRequestTokens({ distributorId, take: req.query.limit || 50 }),
+    ]);
+    return res.status(200).json({ success: true, position, settlementPosition, remittances, offsets, settlements, settlementRequests });
+  } catch (error) {
+    console.error("getDistributorCashRemittances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to load distributor COD remittances.",
+      code: error.code || "DISTRIBUTOR_CASH_POSITION_ERROR",
+    });
+  }
+};
+
+export const getAdminDistributorCashRemittances = async (req, res) => {
+  try {
+    const distributorId = req.params.id;
+    const [position, settlementPosition, remittances, offsets, settlements, settlementRequests] = await Promise.all([
+      getDistributorCashPosition({ distributorId }),
+      getDistributorUnifiedSettlementPosition({ distributorId }),
+      listDistributorRemittances({
+        distributorId,
+        take: req.query.limit || 50,
+        cursor: req.query.cursor || null,
+      }),
+      listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+      listDistributorBalanceSettlements({ distributorId, take: req.query.limit || 50 }),
+      listDistributorSettlementRequestTokens({ distributorId, take: req.query.limit || 50 }),
+    ]);
+    return res.status(200).json({ success: true, position, settlementPosition, remittances, offsets, settlements, settlementRequests });
+  } catch (error) {
+    console.error("getAdminDistributorCashRemittances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to load distributor COD remittances.",
+      code: error.code || "DISTRIBUTOR_CASH_POSITION_ERROR",
+    });
+  }
+};
+
+export const settleAdminDistributorBalances = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON settlement body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await createDistributorSettlementRequestToken({
+      distributorId: req.params.id,
+      requestedAmount: req.body.requestedAmount,
+      setoffAgreementReference: req.body.setoffAgreementReference || null,
+      setoffConfirmed: req.body.setoffConfirmed === true,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
+      notes: req.body.notes || null,
+      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    console.error("settleAdminDistributorBalances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to create distributor settlement request.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_ERROR",
+    });
+  }
+};
+
+export const submitDistributorSettlementRequestEvidence = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/distributor_settlement_requests");
+    const result = await submitSettlementRequestEvidence({
+      distributorId,
+      requestId: req.params.requestId,
+      transferReference: req.body?.transferReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      distributorAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    console.error("submitDistributorSettlementRequestEvidence error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to submit settlement transfer evidence.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_EVIDENCE_ERROR",
+    });
+  }
+};
+
+export const reviewAdminDistributorSettlementRequest = async (req, res) => {
+  try {
+    const result = await reviewDistributorSettlementRequestToken({
+      distributorId: req.params.id,
+      requestId: req.params.requestId,
+      decision: req.body?.decision,
+      actualReceivedAmount: req.body?.actualReceivedAmount,
+      financialAccountId: req.body?.financialAccountId || null,
+      reviewNotes: req.body?.reviewNotes || null,
+      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("reviewAdminDistributorSettlementRequest error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to review distributor settlement evidence.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_REVIEW_ERROR",
+    });
+  }
+};
+
+export const recordAdminDistributorSettlementPayout = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/distributor_settlement_payouts");
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_SETTLEMENT_PAYOUT",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.params.id,
+        requestId: req.params.requestId,
+        transferReference: req.body?.transferReference,
+        evidenceUrl: uploadedEvidence.secure_url,
+        evidenceDigest: req.body?.evidenceDigest,
+        financialAccountId: req.body?.financialAccountId || null,
+        reason: req.body?.reason,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor settlement payout request already exists." : "Distributor settlement payout submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    console.error("recordAdminDistributorSettlementPayout error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to record distributor payout.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_PAYOUT_ERROR",
+    });
+  }
+};
+
+export const acknowledgeDistributorSettlementRequest = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    const result = await acknowledgeDistributorSettlementPayout({
+      distributorId,
+      requestId: req.params.requestId,
+      distributorAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("acknowledgeDistributorSettlementRequest error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to acknowledge distributor payout.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_ACK_ERROR",
+    });
+  }
+};
+
+export const approveDistributorRefundNetting = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON netting approval body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_REFUND_NETTING",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.params.id,
+        amount: req.body.amount,
+        reason: req.body.notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor refund netting request already exists." : "Distributor refund netting submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    console.error("approveDistributorRefundNetting error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to approve distributor refund netting.",
+      code: error.code || "DISTRIBUTOR_NETTING_ERROR",
+    });
+  }
+};
+
+export const reviewDistributorCashRemittance = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON remittance review body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await reviewDistributorRemittance({
+      distributorId: req.params.id,
+      batchId: req.params.batchId,
+      decision: req.body.decision,
+      financialAccountId: req.body.financialAccountId || null,
+      reviewNotes: req.body.reviewNotes || null,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("reviewDistributorCashRemittance error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to review distributor COD remittance.",
+      code: error.code || "DISTRIBUTOR_REMITTANCE_REVIEW_ERROR",
+    });
+  }
+};
+
+/**
+ * PATCH /api/admin/distributor-finance/settle
+ * Admin executes settlement (applying negotiated commissions, bonuses, discounts, and charges).
+ */
+export const adminExecuteSettlement = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "A JSON settlement payment body is required.",
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
+    const settlementId = req.params.id || req.body.settlementId || req.body.id || null;
+    const {
+      action = "INITIATE",
+      amount,
+      financialAccountId,
+      externalPaymentReference,
+      bankEvidenceReference,
+      failureReason,
+      adminNotes,
+      notes,
+    } = req.body;
+
+    const adminAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const normalizedAction = String(action).trim().toUpperCase();
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || null;
+    let result;
+    if (normalizedAction === "INITIATE") {
+      result = await initiateAdminDistributorSettlement({
+        settlementId,
+        amount,
+        financialAccountId,
+        externalPaymentReference,
+        adminNotes: adminNotes || notes,
+        idempotencyKey,
+        adminAccountId,
+      });
+    } else if (normalizedAction === "CONFIRM") {
+      result = await confirmAdminDistributorSettlement({
+        payoutId: req.body.payoutId,
+        bankEvidenceReference,
+        adminAccountId,
+      });
+    } else if (normalizedAction === "FAIL") {
+      result = await failAdminDistributorSettlement({
+        payoutId: req.body.payoutId,
+        failureReason,
+        adminAccountId,
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Payout action must be INITIATE, CONFIRM, or FAIL.",
+        code: "INVALID_PAYOUT_ACTION",
+      });
+    }
+
+    return res.status(normalizedAction === "INITIATE" && !result.isReplay ? 201 : 200).json(result);
+  } catch (error) {
+    console.error("adminExecuteSettlement error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to execute distributor settlement.",
+      code: error.code || "ADMIN_SETTLEMENT_ERROR",
+    });
+  }
+};
+
+export const adminResolveSettlementReconciliation = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "A JSON reconciliation decision body is required.",
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
+    const result = await resolveDistributorSettlementReconciliation({
+      settlementId: req.params.id,
+      decision: req.body.decision,
+      earningDocumentIds: req.body.earningDocumentIds,
+      reviewNotes: req.body.reviewNotes,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("adminResolveSettlementReconciliation error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to resolve distributor settlement reconciliation.",
+      code: error.code || "SETTLEMENT_RECONCILIATION_ERROR",
+    });
+  }
+};
+
+// GET /api/admin/distributor-finance/settlements lists distributor settlement requests for Admin.
+export const listAdminDistributorSettlements = async (req, res) => {
+  try {
+    const { distributorId, status, page = 1, limit = 20 } = req.query;
+    if (
+      (distributorId !== undefined && (typeof distributorId !== "string" || !distributorId.trim() || distributorId.length > 191)) ||
+      !/^\d+$/.test(String(page)) ||
+      !/^\d+$/.test(String(limit))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Distributor, page, or limit filter is invalid.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
+    const numPage = Number(page);
+    const numLimit = Number(limit);
+    if (numPage < 1 || numLimit < 1 || numLimit > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Page must be positive and limit must be between 1 and 100.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
+    const allowedStatuses = ["PENDING", "PARTIALLY_PAID", "SETTLED", "REJECTED", "all"];
+    if (status !== undefined && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Settlement status filter is invalid.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
+    const skip = (numPage - 1) * numLimit;
+
+    const where = {};
+    if (distributorId) where.distributorId = distributorId;
+    if (status && status !== "all") where.status = status;
+
+    const [settlements, total] = await Promise.all([
+      prisma.distributorSettlementRequest.findMany({
+        where,
+        orderBy: { requestedAt: "desc" },
+        skip,
+        take: numLimit,
+        include: {
+          distributor: { select: { id: true, name: true, city: true, phone: true } },
+        },
+      }),
+      prisma.distributorSettlementRequest.count({ where }),
+    ]);
+    const distributorIds = [...new Set(settlements.map((settlement) => settlement.distributorId))];
+    const [cashPositions, earningDocuments, openRequests] = await Promise.all([
+      getDistributorCashPositions({ distributorIds }),
+      prisma.accountingDocument.findMany({
+        where: {
+          side: "PAYABLE",
+          sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          party: { partyType: "DISTRIBUTOR", sourceEntityId: { in: distributorIds } },
+        },
+        select: {
+          id: true,
+          sourceId: true,
+          sourceType: true,
+          documentNumber: true,
+          remainingAmount: true,
+          party: { select: { sourceEntityId: true } },
+        },
+      }),
+      prisma.distributorSettlementRequest.findMany({
+        where: {
+          distributorId: { in: distributorIds },
+          status: { in: ["PENDING", "PARTIALLY_PAID"] },
+        },
+        select: { id: true, distributorId: true, metadata: true },
+      }),
+    ]);
+    const reservedDocumentsByDistributor = new Map();
+    for (const request of openRequests) {
+      const documentIds = Array.isArray(request.metadata?.earningDocumentIds)
+        ? request.metadata.earningDocumentIds
+        : [];
+      if (!reservedDocumentsByDistributor.has(request.distributorId)) {
+        reservedDocumentsByDistributor.set(request.distributorId, new Set());
+      }
+      for (const documentId of documentIds) {
+        reservedDocumentsByDistributor.get(request.distributorId).add(documentId);
+      }
+    }
+    const settlementsWithCashWarnings = settlements.map((settlement) => {
+      const position = cashPositions.get(settlement.distributorId);
+      const snapshotEarningIds = new Set(
+        (Array.isArray(settlement.metadata?.statementSnapshot?.lineItems)
+          ? settlement.metadata.statementSnapshot.lineItems
+          : [])
+          .map((item) => item.earningId)
+          .filter(Boolean)
+      );
+      const reservedDocumentIds = reservedDocumentsByDistributor.get(settlement.distributorId) || new Set();
+      const reconciliationCandidates = settlement.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED"
+        ? earningDocuments
+            .filter((document) =>
+              document.party.sourceEntityId === settlement.distributorId &&
+              !reservedDocumentIds.has(document.id) &&
+              (snapshotEarningIds.size === 0 || snapshotEarningIds.has(document.sourceId))
+            )
+            .map(({ id, sourceId, sourceType, documentNumber, remainingAmount }) => ({
+              id,
+              sourceId,
+              sourceType,
+              documentNumber,
+              remainingAmount,
+            }))
+        : [];
+      return {
+        ...settlement,
+        reconciliationCandidates,
+        codExposureWarning: Number(position?.outstandingReceivable || 0) > 0
+          ? {
+              code: "UNREMITTED_COD_OUTSTANDING",
+              outstandingReceivable: position.outstandingReceivable,
+              pendingRemittance: position.pendingRemittance,
+              availableToRemit: position.availableToRemit,
+              message: "Outstanding COD is tracked separately and is not netted from distributor service earnings.",
+            }
+          : null,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      settlements: settlementsWithCashWarnings,
+      pagination: {
+        page: numPage,
+        limit: numLimit,
+        total,
+        pages: Math.ceil(total / numLimit),
+      },
+    });
+  } catch (error) {
+    console.error("listAdminDistributorSettlements error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to list distributor settlements.",
+    });
+  }
+};
+
+/**
+ * POST /api/admin/distributor-rates
+ * Record approved distributor delivery, stock-transfer, return, and sales-compensation rates.
+ */
+export const adminRecordDistributorRates = async (req, res) => {
+  try {
+    const {
+      distributorId,
+      productId,
+      deliveryCharge,
+      returnCharge,
+      stockTransferCharge,
+      ncmTransferCharge,
+      counterSaleCharge,
+      commissionRate,
+      bonusRate,
+      incentiveRate,
+      vatRate,
+      vatInclusive,
+      status,
+      effectiveFrom,
+      effectiveUntil,
+      notes,
+    } = req.body;
+
+    if (!distributorId) {
+      return res.status(400).json({
+        success: false,
+        message: "Distributor ID is required.",
+      });
+    }
+
+    const proposedByAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const result = await recordDistributorRateCard({
+      distributorId,
+      productId,
+      deliveryCharge,
+      returnCharge,
+      stockTransferCharge: stockTransferCharge ?? ncmTransferCharge,
+      counterSaleCharge,
+      commissionRate,
+      bonusRate,
+      incentiveRate,
+      vatRate,
+      vatInclusive,
+      status: status || "APPROVED",
+      proposedByRole: "ADMIN",
+      proposedByAccountId,
+      reviewedByAccountId: proposedByAccountId,
+      effectiveFrom,
+      effectiveUntil,
+      notes,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Distributor rate card recorded and approved successfully.",
+      rateCard: result,
+    });
+  } catch (error) {
+    console.error("adminRecordDistributorRates error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to record distributor rates.",
+      code: error.code || "RATE_CARD_ERROR",
+    });
+  }
+};
+
+export const adminSaveDistributorBonusPlan = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const plan = await saveDistributorBonusPlan({
+      distributorId: req.body?.distributorId,
+      tiers: req.body?.tiers,
+      effectiveFrom: req.body?.effectiveFrom || new Date(),
+      notes: req.body?.notes,
+      createdBy: actorId,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(201).json({ success: true, message: "Monthly delivery bonus plan saved.", plan });
+  } catch (error) {
+    console.error("adminSaveDistributorBonusPlan error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to save distributor bonus plan.",
+      code: error.code || "DISTRIBUTOR_BONUS_PLAN_ERROR",
+    });
+  }
+};
+
+export const listAdminDistributorBonusPlans = async (req, res) => {
+  try {
+    const plans = await getDistributorBonusPlans({ distributorId: req.query.distributorId || null });
+    return res.status(200).json({ success: true, plans });
+  } catch (error) {
+    console.error("listAdminDistributorBonusPlans error:", error);
+    return res.status(500).json({ success: false, message: error.message || "Failed to list distributor bonus plans." });
+  }
+};
+
+/**
+ * GET /api/admin/distributor-rates or GET /api/distributor/rates
+ * List negotiated rate cards.
+ */
+export const listDistributorRates = async (req, res) => {
+  try {
+    const distributorId = req.query.distributorId || req.distributorId || req.auth?.distributorId;
+    const { productId, status } = req.query;
+
+    const rateCards = await getDistributorRateCards({
+      distributorId,
+      productId,
+      status,
+    });
+
+    return res.status(200).json({
+      success: true,
+      rateCards,
+    });
+  } catch (error) {
+    console.error("listDistributorRates error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to list rate cards.",
+    });
+  }
+};
+
+export const adminUpdateDistributorRateCard = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const { prior, revised } = await prisma.$transaction(async (tx) => {
+      const current = await tx.distributorDeliveryChargeNegotiation.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!current) throw Object.assign(new Error("Distributor rate card not found."), { statusCode: 404, code: "RATE_CARD_NOT_FOUND" });
+      if (!["APPROVED", "PENDING"].includes(current.status)) {
+        throw Object.assign(new Error("Only pending or approved rate cards can be revised."), { statusCode: 409, code: "RATE_CARD_NOT_REVISIONABLE" });
+      }
+      const next = await recordDistributorRateCard({
+        distributorId: current.distributorId,
+        productId: current.productId,
+        deliveryCharge: req.body.deliveryCharge ?? current.deliveryCharge,
+        returnCharge: req.body.returnCharge ?? current.returnCharge,
+        stockTransferCharge: req.body.stockTransferCharge ?? req.body.ncmTransferCharge ?? current.stockTransferCharge,
+        counterSaleCharge: req.body.counterSaleCharge ?? current.counterSaleCharge,
+        commissionRate: req.body.commissionRate ?? current.commissionRate,
+        bonusRate: req.body.bonusRate ?? current.bonusRate,
+        incentiveRate: req.body.incentiveRate ?? current.incentiveRate,
+        vatRate: req.body.vatRate ?? current.vatRate,
+        vatInclusive: req.body.vatInclusive ?? current.vatInclusive,
+        status: "APPROVED",
+        proposedByRole: "ADMIN",
+        proposedByAccountId: actorId,
+        reviewedByAccountId: actorId,
+        effectiveFrom: req.body.effectiveFrom || new Date(),
+        effectiveUntil: req.body.effectiveUntil ?? null,
+        notes: req.body.notes || `Revised from rate card ${current.id}`,
+        client: tx,
+      });
+      await recordSystemAudit(
+        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "DISTRIBUTOR_RATE_CARD_REVISED",
+          entityType: "DistributorDeliveryChargeNegotiation",
+          entityId: next.id,
+          beforeState: {
+            id: current.id,
+            deliveryCharge: String(current.deliveryCharge),
+            stockTransferCharge: String(current.stockTransferCharge || 0),
+            counterSaleCharge: String(current.counterSaleCharge || 0),
+            status: current.status,
+          },
+          afterState: {
+            id: next.id,
+            deliveryCharge: String(next.deliveryCharge),
+            stockTransferCharge: String(next.stockTransferCharge || 0),
+            counterSaleCharge: String(next.counterSaleCharge || 0),
+            supersedesRateCardId: current.id,
+          },
+        },
+        { client: tx },
+      );
+      return { prior: current, revised: next };
+    });
+    return res.status(201).json({ success: true, message: "A new immutable rate-card version was created.", rateCard: revised, supersedesRateCardId: prior.id });
+  } catch (error) {
+    console.error("adminUpdateDistributorRateCard error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to revise distributor rate card.",
+      code: error.code || "RATE_CARD_ERROR",
+    });
+  }
+};
+
+export const adminExpireDistributorRateCard = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const now = new Date();
+    const { updated } = await prisma.$transaction(async (tx) => {
+      const rateCard = await tx.distributorDeliveryChargeNegotiation.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!rateCard) throw Object.assign(new Error("Distributor rate card not found."), { statusCode: 404, code: "RATE_CARD_NOT_FOUND" });
+      if (!["APPROVED", "PENDING"].includes(rateCard.status)) {
+        throw Object.assign(new Error("This rate card is already closed."), { statusCode: 409, code: "RATE_CARD_ALREADY_CLOSED" });
+      }
+      const future = rateCard.effectiveFrom && rateCard.effectiveFrom > now;
+      const closed = await tx.distributorDeliveryChargeNegotiation.update({
+        where: { id: rateCard.id },
+        data: rateCard.status === "PENDING" || future
+          ? { status: "EXPIRED", reviewedByAccountId: actorId, reviewedAt: now }
+          : { effectiveUntil: rateCard.effectiveUntil && rateCard.effectiveUntil < now ? rateCard.effectiveUntil : now },
+      });
+      await recordSystemAudit(
+        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "DISTRIBUTOR_RATE_CARD_EXPIRED",
+          entityType: "DistributorDeliveryChargeNegotiation",
+          entityId: rateCard.id,
+          beforeState: { status: rateCard.status, effectiveUntil: rateCard.effectiveUntil },
+          afterState: { status: closed.status, effectiveUntil: closed.effectiveUntil },
+        },
+        { client: tx },
+      );
+      return { updated: closed };
+    });
+    return res.status(200).json({ success: true, message: "Rate card was closed without deleting its financial history.", rateCard: updated });
+  } catch (error) {
+    console.error("adminExpireDistributorRateCard error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to close distributor rate card.",
+      code: error.code || "RATE_CARD_ERROR",
+    });
+  }
+};

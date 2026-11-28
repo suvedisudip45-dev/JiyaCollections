@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { Check, MapPinned, Percent, RefreshCw, Save, Search, Tag } from "lucide-react";
@@ -12,11 +12,12 @@ const LocationPricing = ({ token }) => {
   const { can } = usePermissions();
   const canManageCoverage = can("manufacturer:admin_update");
   const canManageDiscounts = can("product:update");
-  const [activeTab, setActiveTab] = useState(canManageCoverage ? "coverage" : "discounts");
+  const [activeTab, setActiveTab] = useState(canManageDiscounts ? "discounts" : "coverage");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [locations, setLocations] = useState([]);
   const [manufacturers, setManufacturers] = useState([]);
+  const [distributors, setDistributors] = useState([]);
   const [mappings, setMappings] = useState([]);
   const [products, setProducts] = useState([]);
   const [discounts, setDiscounts] = useState([]);
@@ -24,7 +25,7 @@ const LocationPricing = ({ token }) => {
   const [selectedPairs, setSelectedPairs] = useState(new Set());
   const [selectedProvince, setSelectedProvince] = useState("");
   const [districtSearch, setDistrictSearch] = useState("");
-  const [discountForm, setDiscountForm] = useState({ productId: "", province: "", district: "", discountPercentage: "", isActive: true });
+  const [discountForm, setDiscountForm] = useState({ productId: "", distributorId: "", province: "", district: "", discountPercentage: "", isActive: true });
   const [editingDiscountId, setEditingDiscountId] = useState("");
 
   const provinces = useMemo(() => locations.filter((location) => location.type === "PROVINCE"), [locations]);
@@ -56,6 +57,7 @@ const LocationPricing = ({ token }) => {
         if (discountResult) {
           setDiscounts(discountResult.value.data.discounts || []);
           setProducts(discountResult.value.data.products || []);
+          setDistributors(discountResult.value.data.distributors || []);
           if (!canManageCoverage) setLocations(discountResult.value.data.locations || []);
         }
       }
@@ -112,11 +114,13 @@ const LocationPricing = ({ token }) => {
     setSaving(true);
     try {
       const response = await axios.post(`${backendUrl}/api/admin/location-discounts`, {
+        ...(editingDiscountId ? { id: editingDiscountId } : {}),
         ...discountForm,
+        distributorId: discountForm.distributorId || null,
         discountPercentage: Number(discountForm.discountPercentage),
       }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to save location discount");
-      setDiscountForm({ productId: "", province: "", district: "", discountPercentage: "", isActive: true });
+      setDiscountForm({ productId: "", distributorId: "", province: "", district: "", discountPercentage: "", isActive: true });
       setEditingDiscountId("");
       await fetchData();
       toast.success("Location discount saved.");
@@ -131,6 +135,7 @@ const LocationPricing = ({ token }) => {
     setEditingDiscountId(discount.id);
     setDiscountForm({
       productId: discount.productId,
+      distributorId: discount.distributorId || null,
       province: discount.province,
       district: discount.district,
       discountPercentage: String(discount.discountPercentage),
@@ -142,7 +147,9 @@ const LocationPricing = ({ token }) => {
   const toggleDiscount = async (discount) => {
     try {
       const response = await axios.post(`${backendUrl}/api/admin/location-discounts`, {
+        id: discount.id,
         productId: discount.productId,
+        distributorId: discount.distributorId || "",
         province: discount.province,
         district: discount.district,
         discountPercentage: Number(discount.discountPercentage),
@@ -158,6 +165,10 @@ const LocationPricing = ({ token }) => {
 
   const discountProvinces = provinces.length ? provinces : locations.filter((location) => location.type === "PROVINCE");
   const discountDistricts = locations.filter((location) => location.type === "DISTRICT" && location.province === discountForm.province);
+  const selectedProduct = products.find((product) => (product.id || product._id) === discountForm.productId);
+  const discountPreviewPrice = selectedProduct && Number.isFinite(Number(discountForm.discountPercentage))
+    ? Math.round(Number(selectedProduct.price) * (1 - Number(discountForm.discountPercentage) / 100))
+    : null;
 
   return (
     <div className="space-y-6 pb-10">
@@ -165,7 +176,7 @@ const LocationPricing = ({ token }) => {
         <div>
           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-700">Commerce rules</p>
           <h1 className="mt-1 text-2xl font-black text-slate-950">Location pricing</h1>
-          <p className="mt-1 max-w-2xl text-sm text-slate-600">Discount previews use local stock. Checkout verifies one mapped hub can fulfill the complete cart before locking a price.</p>
+          <p className="mt-1 max-w-2xl text-sm text-slate-600">Set a product discount for a customer district and the distributor expected to fulfill the order. Manufacturer coverage does not affect these prices.</p>
         </div>
         <button type="button" onClick={fetchData} className="inline-flex items-center gap-2 self-start border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 sm:self-auto">
           <RefreshCw size={14} /> Refresh
@@ -173,15 +184,15 @@ const LocationPricing = ({ token }) => {
       </header>
 
       <div className="flex gap-2 border-b border-slate-200">
-        {canManageCoverage && <button type="button" onClick={() => setActiveTab("coverage")} className={`border-b-2 px-3 py-2 text-sm font-semibold ${activeTab === "coverage" ? "border-emerald-700 text-emerald-800" : "border-transparent text-slate-500"}`}><MapPinned size={15} className="mr-2 inline" />Manufacturer coverage</button>}
-        {canManageDiscounts && <button type="button" onClick={() => setActiveTab("discounts")} className={`border-b-2 px-3 py-2 text-sm font-semibold ${activeTab === "discounts" ? "border-emerald-700 text-emerald-800" : "border-transparent text-slate-500"}`}><Percent size={15} className="mr-2 inline" />Product discounts</button>}
+        {canManageCoverage && <button type="button" onClick={() => setActiveTab("coverage")} className={`border-b-2 px-3 py-2 text-sm font-semibold ${activeTab === "coverage" ? "border-emerald-700 text-emerald-800" : "border-transparent text-slate-500"}`}><MapPinned size={15} className="mr-2 inline" />Manufacturer districts</button>}
+        {canManageDiscounts && <button type="button" onClick={() => setActiveTab("discounts")} className={`border-b-2 px-3 py-2 text-sm font-semibold ${activeTab === "discounts" ? "border-emerald-700 text-emerald-800" : "border-transparent text-slate-500"}`}><Percent size={15} className="mr-2 inline" />Place-wise pricing</button>}
       </div>
 
       {loading ? <div className="py-16 text-center text-sm text-slate-500">Loading location rules…</div> : activeTab === "coverage" && canManageCoverage ? (
         <div className="grid gap-6 xl:grid-cols-[320px_1fr]">
           <section className="border border-slate-200 bg-white p-5">
             <h2 className="text-sm font-bold text-slate-900">Assign service districts</h2>
-            <p className="mt-1 text-xs leading-relaxed text-slate-500">A manufacturer becomes price-eligible only when active, contracted, and holding enough unreserved variant stock.</p>
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">Manufacturer service districts are managed separately and do not determine customer product prices.</p>
             <label className="mt-5 block text-xs font-semibold text-slate-700">Manufacturer
               <select value={selectedManufacturerId} onChange={(event) => setSelectedManufacturerId(event.target.value)} className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2.5 text-sm">
                 <option value="">Select manufacturer</option>
@@ -218,10 +229,11 @@ const LocationPricing = ({ token }) => {
       ) : (
         <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
           <section className="border border-slate-200 bg-white p-5">
-            <h2 className="text-sm font-bold text-slate-900">{editingDiscountId ? "Edit location discount" : "Set a product discount"}</h2>
+            <h2 className="text-sm font-bold text-slate-900">{editingDiscountId ? "Edit place-wise price rule" : "Set a place-wise product price"}</h2>
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">The rule applies only when checkout selects this distributor for the customer district and confirms distributor stock. Manufacturer coverage is not checked.</p>
             <form onSubmit={saveDiscount} className="mt-4 space-y-4">
               <label className="block text-xs font-semibold text-slate-700">Province
-                <select required value={discountForm.province} onChange={(event) => setDiscountForm({ ...discountForm, province: event.target.value, district: "" })} className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2.5 text-sm">
+                <select required value={discountForm.province} onChange={(event) => setDiscountForm({ ...discountForm, province: event.target.value, district: "", distributorId: "" })} className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2.5 text-sm">
                   <option value="">Select province</option>{discountProvinces.map((province) => <option key={province.code} value={province.name}>{province.name}</option>)}
                 </select>
               </label>
@@ -230,30 +242,40 @@ const LocationPricing = ({ token }) => {
                   <option value="">Select district</option>{discountDistricts.map((district) => <option key={district.code} value={district.name}>{district.name}</option>)}
                 </select>
               </label>
+              <label className="block text-xs font-semibold text-slate-700">Expected fulfillment distributor
+                <select required={!editingDiscountId || Boolean(discountForm.distributorId)} value={discountForm.distributorId} onChange={(event) => setDiscountForm({ ...discountForm, distributorId: event.target.value })} className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2.5 text-sm">
+                  <option value="">All distributors (legacy rule)</option>{distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name} · {distributor.district || distributor.city || "Location not set"}</option>)}
+                </select>
+                <span className="mt-1 block text-[10px] font-normal text-slate-500">New rules require a specific active distributor.</span>
+              </label>
               <label className="block text-xs font-semibold text-slate-700">Product
                 <select required value={discountForm.productId} onChange={(event) => setDiscountForm({ ...discountForm, productId: event.target.value })} className="mt-1.5 w-full border border-slate-300 bg-white px-3 py-2.5 text-sm">
                   <option value="">Select product</option>{products.map((product) => <option key={product.id || product._id} value={product.id || product._id}>{product.name} · {currency}{Number(product.price).toLocaleString()}</option>)}
                 </select>
               </label>
-              <label className="block text-xs font-semibold text-slate-700">Location discount (%)
+              <label className="block text-xs font-semibold text-slate-700">District discount (%)
                 <span className="relative mt-1.5 block"><input required type="number" min="0" max="100" step="0.01" value={discountForm.discountPercentage} onChange={(event) => setDiscountForm({ ...discountForm, discountPercentage: event.target.value })} className="w-full border border-slate-300 px-3 py-2.5 pr-10 text-sm" placeholder="0.00" /><Percent size={15} className="absolute right-3 top-3 text-slate-400" /></span>
               </label>
+              {discountPreviewPrice !== null && selectedProduct && <div className="border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-900"><span className="font-semibold">Price preview:</span> {currency}{Number(selectedProduct.price).toLocaleString()} → <strong>{currency}{discountPreviewPrice.toLocaleString()}</strong> per unit</div>}
               <label className="flex items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={discountForm.isActive} onChange={(event) => setDiscountForm({ ...discountForm, isActive: event.target.checked })} className="accent-emerald-700" />Rule active</label>
               <div className="flex gap-2">
                 <button disabled={saving} className="inline-flex flex-1 items-center justify-center gap-2 bg-slate-950 px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-50"><Save size={15} />{saving ? "Saving…" : editingDiscountId ? "Update rule" : "Save rule"}</button>
-                {editingDiscountId && <button type="button" onClick={() => { setEditingDiscountId(""); setDiscountForm({ productId: "", province: "", district: "", discountPercentage: "", isActive: true }); }} className="border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700">Cancel</button>}
+                {editingDiscountId && <button type="button" onClick={() => { setEditingDiscountId(""); setDiscountForm({ productId: "", distributorId: "", province: "", district: "", discountPercentage: "", isActive: true }); }} className="border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700">Cancel</button>}
               </div>
             </form>
           </section>
 
           <section className="border border-slate-200 bg-white">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Place-wise product rules</h2><p className="mt-0.5 text-xs text-slate-500">A rule is used only when a mapped hub has the full cart's requested stock.</p></div><span className="text-xs font-semibold text-slate-500">{discounts.length} rules</span></div>
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4"><div><h2 className="text-sm font-bold text-slate-900">Place-wise product rules</h2><p className="mt-0.5 text-xs text-slate-500">Matched by customer district, product, and selected distributor.</p></div><span className="text-xs font-semibold text-slate-500">{discounts.length} rules</span></div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Location</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Discount</th><th className="px-4 py-3">State</th><th className="px-4 py-3 text-right">Actions</th></tr></thead>
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Customer location</th><th className="px-4 py-3">Distributor</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Discount / price</th><th className="px-4 py-3">State</th><th className="px-4 py-3 text-right">Actions</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {discounts.map((discount) => <tr key={discount.id} className="hover:bg-slate-50/60"><td className="px-4 py-3 text-slate-700">{discount.district}<span className="block text-[10px] text-slate-400">{discount.province}</span></td><td className="px-4 py-3 font-semibold text-slate-900">{discount.product?.name || discount.productId}</td><td className="px-4 py-3 font-bold text-emerald-800">{parsePercentage(discount.discountPercentage)}%</td><td className="px-4 py-3"><span className={`inline-flex items-center gap-1 ${discount.isActive ? "text-emerald-700" : "text-slate-400"}`}>{discount.isActive ? <Check size={13} /> : <Tag size={13} />}{discount.isActive ? "Active" : "Paused"}</span></td><td className="px-4 py-3 text-right"><button type="button" onClick={() => editDiscount(discount)} className="px-2 py-1 font-semibold text-slate-700 hover:text-emerald-800">Edit</button><button type="button" onClick={() => toggleDiscount(discount)} className="px-2 py-1 font-semibold text-slate-700 hover:text-rose-700">{discount.isActive ? "Disable" : "Enable"}</button></td></tr>)}
-                  {!discounts.length && <tr><td colSpan="5" className="px-4 py-12 text-center text-slate-400">No location discount rules yet.</td></tr>}
+                  {discounts.map((discount) => {
+                    const effectivePrice = Number(discount.product?.price || 0) * (1 - Number(discount.discountPercentage || 0) / 100);
+                    return <tr key={discount.id} className="hover:bg-slate-50/60"><td className="px-4 py-3 text-slate-700">{discount.district}<span className="block text-[10px] text-slate-400">{discount.province}</span></td><td className="px-4 py-3 font-semibold text-slate-900">{discount.distributor?.name || "All distributors (legacy)"}</td><td className="px-4 py-3 font-semibold text-slate-900">{discount.product?.name || discount.productId}</td><td className="px-4 py-3"><span className="font-bold text-emerald-800">{parsePercentage(discount.discountPercentage)}%</span><span className="block text-[10px] text-slate-500">{currency}{effectivePrice.toLocaleString(undefined, { maximumFractionDigits: 0 })} / unit</span></td><td className="px-4 py-3"><span className={`inline-flex items-center gap-1 ${discount.isActive ? "text-emerald-700" : "text-slate-400"}`}>{discount.isActive ? <Check size={13} /> : <Tag size={13} />}{discount.isActive ? "Active" : "Paused"}</span></td><td className="px-4 py-3 text-right"><button type="button" onClick={() => editDiscount(discount)} className="px-2 py-1 font-semibold text-slate-700 hover:text-emerald-800">Edit</button><button type="button" onClick={() => toggleDiscount(discount)} className="px-2 py-1 font-semibold text-slate-700 hover:text-rose-700">{discount.isActive ? "Disable" : "Enable"}</button></td></tr>;
+                  })}
+                  {!discounts.length && <tr><td colSpan="6" className="px-4 py-12 text-center text-slate-400">No location discount rules yet.</td></tr>}
                 </tbody>
               </table>
             </div>

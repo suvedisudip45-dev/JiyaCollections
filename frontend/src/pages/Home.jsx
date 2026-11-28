@@ -4,7 +4,6 @@ import Hero from "../components/Hero";
 import FestiveOfferSection from "../components/FestiveOfferSection";
 import CategoryShowcase from "../components/CategoryShowcase";
 import OurPolicy from "../components/OurPolicy";
-import NewsletterBox from "../components/NewsletterBox";
 import ProductRail from "../components/ProductRail";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
@@ -75,13 +74,13 @@ const Home = () => {
       <Hero />
 
       {/* --- ATTRACTIVE CATEGORY SHOWCASE TILES (STREETWEAR EDITORIAL) --- */}
-      <section className="mx-auto max-w-[1440px] px-4 py-8 sm:px-6 sm:py-12">
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+      <section className="storefront-section py-6 sm:py-8 lg:py-12">
+        <div className="grid grid-cols-1 gap-4 sm:gap-5 md:grid-cols-3">
           {categoryTiles.map((tile) => (
             <Link
               key={tile.label}
               to={tile.query ? `/shop?category=${tile.query}` : "/shop"}
-              className="group relative flex h-[280px] sm:h-[340px] md:h-[400px] flex-col justify-between overflow-hidden rounded-2xl p-6 shadow-md transition-all duration-300 hover:shadow-2xl"
+              className="group relative flex h-[260px] flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-md transition-all duration-300 hover:shadow-2xl sm:h-[340px] sm:p-6 md:h-[360px] lg:h-[400px]"
             >
               {/* Background Image with Zoom */}
               <img
@@ -115,7 +114,7 @@ const Home = () => {
                   {tile.subtitle}
                 </p>
                 <div className="pt-2">
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-widest text-amber-400 group-hover:text-white transition-colors underline">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-widest text-[var(--accent)] transition-colors underline group-hover:text-white">
                     Explore Drops →
                   </span>
                 </div>
@@ -142,7 +141,6 @@ const Home = () => {
       />
       <CategoryShowcase />
       <OurPolicy />
-      <NewsletterBox />
     </div>
   );
 };

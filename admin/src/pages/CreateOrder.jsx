@@ -4,10 +4,10 @@ import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
-import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import { Link, useNavigate } from "react-router-dom";
+import { sanitizeInput } from "../utils/sanitize";
 
 const SOCIAL_CHANNELS = [
   { id: "Instagram", name: "Instagram", icon: "📷", color: "from-pink-500 to-purple-600", text: "text-pink-600", bg: "bg-pink-50 border-pink-200" },
@@ -18,15 +18,8 @@ const SOCIAL_CHANNELS = [
   { id: "Direct", name: "Phone / Direct", icon: "📞", color: "from-amber-500 to-orange-600", text: "text-amber-600", bg: "bg-amber-50 border-amber-200" },
 ];
 
-const PAYMENT_METHODS = [
-  { id: "COD", label: "Cash on Delivery (COD)", desc: "Payment collected at delivery" },
-  { id: "Bank Transfer / QR", label: "Bank Transfer / QR", desc: "Fonepay / Mobile Banking" },
-  { id: "eSewa", label: "eSewa Wallet", desc: "Paid through eSewa" },
-  { id: "Khalti", label: "Khalti Wallet", desc: "Paid through Khalti" },
-  { id: "Cash", label: "Direct Cash", desc: "Direct payment received" },
-];
-
 const CreateOrder = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const navigate = useNavigate();
 
   // Client Details state
@@ -36,14 +29,12 @@ const CreateOrder = ({ token }) => {
     firstName: "",
     lastName: "",
     phone: "",
-    socialCode: "",
     email: "",
     gender: "PREFER_NOT_TO_SAY",
     province: "Bagmati Province",
     district: "Kathmandu",
     city: "Kathmandu",
     ncmBranch: "Kathmandu",
-    ncmCoveredArea: "",
     landmark: "",
     street: "",
     state: "Bagmati Province",
@@ -53,20 +44,28 @@ const CreateOrder = ({ token }) => {
   });
 
   const [ncmBranches, setNcmBranches] = useState([]);
-  const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
-  const [loadingCoveredAreas, setLoadingCoveredAreas] = useState(false);
+  const googleMapsQuery = [
+    client.street,
+    client.landmark,
+    client.city || client.ncmBranch,
+    client.district,
+    client.province,
+    "Nepal",
+  ].filter(Boolean).join(", ");
+  const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleMapsQuery)}`;
 
   // Selected Order Items: list of { productId, name, image, size, color, quantity, originalUnitPrice, discountPercentage, purchasedUnitPrice, stockAvailable }
   const [selectedItems, setSelectedItems] = useState([]);
 
   // Financials & Payment state
   const [discountAmount, setDiscountAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("COD");
-  const [isPaid, setIsPaid] = useState(false);
+  const paymentMethod = "COD";
   const [initialStatus, setInitialStatus] = useState("Order Placed");
   const [customDeliveryFee, setCustomDeliveryFee] = useState("");
   const [useCustomShipping, setUseCustomShipping] = useState(false);
+  const [deliveryType, setDeliveryType] = useState("Door2Door");
+  const [shippingQuoteResult, setShippingQuoteResult] = useState({ key: null, status: "idle", quote: null, error: "" });
 
   // Available Products & Categories
   const [allProducts, setAllProducts] = useState([]);
@@ -90,10 +89,9 @@ const CreateOrder = ({ token }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdOrderForPrint, setCreatedOrderForPrint] = useState(null);
   const [isPrintingModalActive, setIsPrintingModalActive] = useState(false);
-  const [existingCustomer, setExistingCustomer] = useState(null);
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [customerLookupMessage, setCustomerLookupMessage] = useState("");
-  const [customerVerificationState, setCustomerVerificationState] = useState("IDLE");
+  const [customerLookupError, setCustomerLookupError] = useState(false);
 
   // Load Shipping Config, Products & Categories
   useEffect(() => {
@@ -136,6 +134,7 @@ const CreateOrder = ({ token }) => {
       setLoadingProducts(true);
       const res = await axios.get(`${backendUrl}/api/product/list`, {
         headers: { token },
+        params: { limit: 50 },
       });
       if (res.data.success) {
         const prods = res.data.products || [];
@@ -171,25 +170,24 @@ const CreateOrder = ({ token }) => {
     const { name } = e.target;
     const value = name === "phone"
       ? e.target.value.replace(/\D/g, "").slice(0, 10)
+      : name === "street"
+        ? sanitizeInput(e.target.value, { stripAllHtml: true }).slice(0, 255)
       : e.target.value;
     setClient((prev) => {
       const updated = { ...prev, [name]: value };
 
       if (name === "phone") {
-        updated.socialCode = "";
-        setExistingCustomer(null);
         setCustomerLookupMessage("");
-        setCustomerVerificationState("IDLE");
+        setCustomerLookupError(false);
       }
 
       if (name === "province") {
-        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+        const nextDistrict = getDistrictsForProvince(locationLookups, value)[0] || "";
         updated.province = value;
         updated.state = value;
         updated.district = nextDistrict;
         updated.city = nextDistrict;
         updated.ncmBranch = nextDistrict;
-        updated.ncmCoveredArea = "";
         updated.zipcode = "";
       }
 
@@ -197,31 +195,23 @@ const CreateOrder = ({ token }) => {
         updated.district = value;
         updated.city = value;
         updated.ncmBranch = value;
-        updated.ncmCoveredArea = "";
       }
 
       if (name === "city") {
         updated.city = value;
         updated.ncmBranch = value;
-        const found = NEPAL_CITIES.find(
-          (c) => c.name.toLowerCase() === value.trim().toLowerCase()
+        const found = locationLookups?.branches?.find(
+          (branch) => branch.name.toLowerCase() === value.trim().toLowerCase()
         );
         if (found) {
           updated.state = found.province;
           updated.province = found.province;
-          updated.zipcode = found.zipcode;
         }
       }
 
       if (name === "ncmBranch") {
         updated.ncmBranch = value;
         updated.city = value;
-        updated.ncmCoveredArea = "";
-      }
-
-      if (name === "ncmCoveredArea") {
-        updated.ncmCoveredArea = value;
-        updated.street = value;
       }
 
       return updated;
@@ -232,83 +222,23 @@ const CreateOrder = ({ token }) => {
     if (!phoneValue.trim()) return;
     setCustomerLookupLoading(true);
     setCustomerLookupMessage("");
+    setCustomerLookupError(false);
     try {
       const response = await axios.get(`${backendUrl}/api/order/admin-customer`, {
         params: { phone: phoneValue.trim() },
         headers: { token },
       });
       if (!response.data.success) {
-        setExistingCustomer(null);
-        setCustomerVerificationState("ERROR");
+        setCustomerLookupError(true);
         setCustomerLookupMessage(response.data.message || "Unable to check this contact number.");
       } else if (response.data.found) {
-        setExistingCustomer(response.data.customer);
-        setCustomerVerificationState("CODE_REQUIRED");
-        setCustomerLookupMessage("Existing customer found. Enter the social code to verify this order.");
+        setCustomerLookupMessage("Existing customer found. Enter the details for this order below.");
       } else {
-        setExistingCustomer(null);
-        setCustomerVerificationState("NEW_CUSTOMER");
         setCustomerLookupMessage("New contact number. Continue entering the customer details.");
       }
     } catch (error) {
-      setExistingCustomer(null);
-      setCustomerVerificationState("ERROR");
+      setCustomerLookupError(true);
       setCustomerLookupMessage(error.response?.data?.message || "Unable to check this contact number.");
-    } finally {
-      setCustomerLookupLoading(false);
-    }
-  };
-
-  const applyCustomerSnapshot = (customer) => {
-    if (!customer) return;
-    const address = customer.address || {};
-    setClient((prev) => ({
-      ...prev,
-      firstName: customer.firstName || prev.firstName,
-      lastName: customer.lastName || prev.lastName,
-      email: customer.email || prev.email,
-      gender: customer.gender || prev.gender,
-      phone: customer.phone || prev.phone,
-      province: address.province || prev.province,
-      district: address.district || prev.district,
-      city: address.city || prev.city,
-      ncmBranch: address.ncmBranch || prev.ncmBranch,
-      ncmCoveredArea: address.ncmCoveredArea || prev.ncmCoveredArea,
-      orderNotes: address.deliveryInstruction || address.orderNotes || prev.orderNotes,
-      state: address.state || prev.state,
-      zipcode: address.zipcode || prev.zipcode,
-      country: address.country || prev.country,
-      street: address.street || prev.street,
-      landmark: address.landmark || prev.landmark,
-    }));
-  };
-
-  const verifyCustomerCode = async (codeValue = client.socialCode) => {
-    if (!existingCustomer || !codeValue.trim()) return;
-    setCustomerLookupLoading(true);
-    try {
-      const response = await axios.post(`${backendUrl}/api/order/admin-customer/verify`, {
-        phone: client.phone,
-        code: codeValue.trim(),
-      }, { headers: { token } });
-
-      if (!response.data.success) {
-        setCustomerVerificationState("ERROR");
-        setCustomerLookupMessage(response.data.message || "Unable to verify this social code.");
-        return;
-      }
-
-      setCustomerVerificationState(response.data.verified ? "VERIFIED" : "UNVERIFIED");
-      if (response.data.verified) {
-        setCustomerLookupMessage("Verified customer. Loyalty and gift benefits remain active.");
-      } else {
-        toast.error("Social code did not match this contact number. Loyalty and gift benefits are disabled for this order.");
-        setCustomerLookupMessage("Social code did not match this contact number. Customer data loaded for dispatch only.");
-      }
-      applyCustomerSnapshot(response.data.customer);
-    } catch (error) {
-      setCustomerVerificationState("ERROR");
-      setCustomerLookupMessage(error.response?.data?.message || "Unable to verify this social code.");
     } finally {
       setCustomerLookupLoading(false);
     }
@@ -324,14 +254,6 @@ const CreateOrder = ({ token }) => {
 
     return () => clearTimeout(lookupTimer);
   }, [client.phone]);
-
-  useEffect(() => {
-    if (existingCustomer && client.socialCode.trim().length >= 8) {
-      const verifyTimer = setTimeout(() => verifyCustomerCode(client.socialCode), 300);
-      return () => clearTimeout(verifyTimer);
-    }
-    return undefined;
-  }, [client.socialCode, existingCustomer]);
 
   useEffect(() => {
     const fetchNcmBranches = async () => {
@@ -355,16 +277,13 @@ const CreateOrder = ({ token }) => {
               ...prev,
               ncmBranch: selectedBranch,
               city: selectedBranch || prev.city,
-              ncmCoveredArea: selectedBranch === prev.ncmBranch ? prev.ncmCoveredArea : "",
             };
           });
         } else {
           setNcmBranches([]);
-          setCoveredAreas([]);
         }
       } catch (error) {
         setNcmBranches([]);
-        setCoveredAreas([]);
         console.error("Failed to load NCM branches for admin order:", error);
       } finally {
         setLoadingNcmBranches(false);
@@ -374,42 +293,6 @@ const CreateOrder = ({ token }) => {
     fetchNcmBranches();
   }, [backendUrl, client.province, client.district]);
 
-  useEffect(() => {
-    const fetchCoveredAreas = async () => {
-      if (!client.ncmBranch) {
-        setCoveredAreas([]);
-        return;
-      }
-
-      setLoadingCoveredAreas(true);
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: {
-            branch: client.ncmBranch,
-            province: client.province,
-            district: client.district,
-          },
-        });
-        const areas = response.data.success ? response.data.coveredAreas || [] : [];
-        setCoveredAreas(areas);
-        const normalizeArea = (value) => String(value || "").trim().toLowerCase();
-        const previousArea = normalizeArea(client.ncmCoveredArea || client.street);
-        const matchedArea = areas.find((area) => normalizeArea(area) === previousArea);
-        if (matchedArea || areas.length === 1) {
-          const selectedArea = matchedArea || areas[0];
-          setClient((prev) => ({ ...prev, ncmCoveredArea: selectedArea, street: selectedArea }));
-        }
-      } catch (error) {
-        setCoveredAreas([]);
-        console.error("Failed to load NCM covered locations:", error);
-      } finally {
-        setLoadingCoveredAreas(false);
-      }
-    };
-
-    fetchCoveredAreas();
-  }, [backendUrl, client.ncmBranch, client.province, client.district]);
-
   // Calculate items subtotal
   const itemsSubtotal = useMemo(() => {
     return selectedItems.reduce(
@@ -418,8 +301,59 @@ const CreateOrder = ({ token }) => {
     );
   }, [selectedItems]);
 
+  const shippingQuoteItems = useMemo(() => selectedItems.map((item) => ({
+    productId: item.productId || item._id || item.id,
+    size: item.size || "",
+    color: item.color || "",
+    quantity: Number(item.quantity || 1),
+  })), [selectedItems]);
+  const shippingQuoteKey = JSON.stringify({
+    district: client.district,
+    province: client.province,
+    ncmBranch: client.city || client.ncmBranch,
+    items: shippingQuoteItems,
+    deliveryType,
+  });
+  const hasCurrentShippingQuote = shippingQuoteResult.key === shippingQuoteKey && shippingQuoteResult.status === "ready";
+
+  useEffect(() => {
+    if (!client.district || !client.province || shippingQuoteItems.length === 0) {
+      setShippingQuoteResult({ key: shippingQuoteKey, status: "idle", quote: null, error: "" });
+      return undefined;
+    }
+    let cancelled = false;
+    setShippingQuoteResult({ key: shippingQuoteKey, status: "loading", quote: null, error: "" });
+    axios.post(`${backendUrl}/api/shipping/calculate`, {
+      district: client.district,
+      province: client.province,
+      ncmBranch: client.city || client.ncmBranch,
+      subtotal: itemsSubtotal,
+      items: shippingQuoteItems,
+      deliveryType,
+    }).then((response) => {
+      const quote = response.data;
+      if (!quote?.success || !Number.isFinite(Number(quote.fee)) || Number(quote.fee) < 0) {
+        throw new Error(quote?.message || "Unable to calculate delivery for this address.");
+      }
+      if (!cancelled) {
+        setShippingQuoteResult({ key: shippingQuoteKey, status: "ready", quote, error: "" });
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "error",
+          quote: null,
+          error: error.response?.data?.message || error.message || "Unable to calculate delivery for this address.",
+        });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [backendUrl, client.city, client.district, client.ncmBranch, client.province, deliveryType, itemsSubtotal, shippingQuoteItems, shippingQuoteKey]);
+
   // Dynamic Shipping Fee according to shipment rates (ShippingConfig)
   const calculatedShippingFee = useMemo(() => {
+    if (hasCurrentShippingQuote) return Number(shippingQuoteResult.quote.fee);
     if (!shippingConfig) return 50;
     const destCity = (client.city || "").trim().toLowerCase();
     const baseCity = (shippingConfig.baseCity || "Kathmandu").trim().toLowerCase();
@@ -432,7 +366,7 @@ const CreateOrder = ({ token }) => {
       return Number(shippingConfig.sameCityFee ?? 50);
     }
     return Number(shippingConfig.differentCityFee ?? 120);
-  }, [shippingConfig, client.city, itemsSubtotal]);
+  }, [hasCurrentShippingQuote, shippingQuoteResult.quote, shippingConfig, client.city, itemsSubtotal]);
 
   // Resolved Shipping Fee (auto vs custom override)
   const activeShippingFee = useMemo(() => {
@@ -744,12 +678,32 @@ const CreateOrder = ({ token }) => {
       toast.error("Please specify the delivery City.");
       return;
     }
+    const street = sanitizeInput(client.street, { stripAllHtml: true });
+    if (!street) {
+      toast.error("Please enter the customer's street address or neighborhood.");
+      return;
+    }
+    if (street.length > 255) {
+      toast.error("Street address must be 255 characters or fewer.");
+      return;
+    }
     if (!client.landmark.trim()) {
       toast.error("Please enter a Nearest Landmark / Nearby Location for accurate courier delivery.");
       return;
     }
     if (selectedItems.length === 0) {
       toast.error("Please select at least one product before placing the order.");
+      return;
+    }
+
+    if (deliveryType === "Door2Branch" && !hasCurrentShippingQuote) {
+      toast.error("Wait for the delivery quote to confirm door-to-hub availability and price.");
+      return;
+    }
+
+    const currentQuoteFailed = shippingQuoteResult.key === shippingQuoteKey && shippingQuoteResult.status === "error";
+    if (!useCustomShipping && !hasCurrentShippingQuote && !currentQuoteFailed) {
+      toast.error("Wait for the delivery quote to confirm the delivery charge before creating the order.");
       return;
     }
 
@@ -768,17 +722,22 @@ const CreateOrder = ({ token }) => {
           district: client.district || client.city || "Kathmandu",
           city: client.city || client.ncmBranch || client.district || "Kathmandu",
           ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
-          ncmCoveredArea: client.ncmCoveredArea || "",
           deliveryInstruction: client.orderNotes.trim(),
           landmark: client.landmark.trim(),
-          street: client.street.trim(),
+          street,
           state: client.state || client.province || "Bagmati Province",
+          deliveryType: hasCurrentShippingQuote
+            ? shippingQuoteResult.quote.deliveryType || "Door2Door"
+            : "Door2Door",
         },
         items: selectedItems,
-        discount: activeDiscount,
-        deliveryFee: activeShippingFee,
+        discount: discountAmount === "" ? "0" : discountAmount,
+        ...((useCustomShipping && customDeliveryFee !== "") && { deliveryFee: customDeliveryFee }),
+        deliveryType: hasCurrentShippingQuote
+          ? shippingQuoteResult.quote.deliveryType || "Door2Door"
+          : "Door2Door",
         paymentMethod,
-        payment: isPaid,
+        payment: false,
         status: initialStatus,
       };
 
@@ -787,7 +746,12 @@ const CreateOrder = ({ token }) => {
       });
 
       if (res.data.success) {
-        toast.success(`Order created successfully! (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+        const orderMessage = res.data.message || "Order created successfully.";
+        if (res.data.allocation?.status === "PENDING_ASSIGNMENT") {
+          toast.warning(`${orderMessage} (ID: #${res.data.order.orderReference})`);
+        } else {
+          toast.success(`${orderMessage} (ID: #${res.data.order.orderReference})`);
+        }
         
         // Store created order object for immediate printing modal
         setCreatedOrderForPrint(res.data.order);
@@ -810,14 +774,12 @@ const CreateOrder = ({ token }) => {
       firstName: "",
       lastName: "",
         phone: "",
-        socialCode: "",
       email: "",
       gender: "PREFER_NOT_TO_SAY",
       province: "Bagmati Province",
       district: "Kathmandu",
       city: "Kathmandu",
       ncmBranch: "Kathmandu",
-      ncmCoveredArea: "",
       landmark: "",
       street: "",
       state: "Bagmati Province",
@@ -827,17 +789,14 @@ const CreateOrder = ({ token }) => {
     });
     setSelectedItems([]);
     setDiscountAmount("");
-    setPaymentMethod("COD");
-    setIsPaid(false);
     setInitialStatus("Order Placed");
     setCustomDeliveryFee("");
     setUseCustomShipping(false);
     setCreatedOrderForPrint(null);
     setIsPrintingModalActive(false);
-    setExistingCustomer(null);
     setCustomerLookupLoading(false);
     setCustomerLookupMessage("");
-    setCustomerVerificationState("IDLE");
+    setCustomerLookupError(false);
   };
 
   return (
@@ -850,7 +809,7 @@ const CreateOrder = ({ token }) => {
               📦
             </span>
             <div>
-              <h2 className="text-2xl font-bold text-gray-800 tracking-tight">
+              <h2 className="font-display text-2xl font-bold tracking-tight text-ink-primary">
                 Add Social Media & Direct Order
               </h2>
               <p className="text-xs text-gray-500 mt-0.5">
@@ -886,10 +845,10 @@ const CreateOrder = ({ token }) => {
         {/* ================= LEFT COLUMN: CLIENT & SOCIAL DETAILS (5 cols) ================= */}
         <div className="lg:col-span-5 space-y-6">
           {/* Contact Verification Step */}
-          <div className="bg-white rounded-2xl p-5 border border-indigo-200 shadow-xs space-y-3">
+          <div className="space-y-3 rounded-2xl border border-brand-200 bg-white p-5 shadow-card">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center text-[10px]">1</span>
+              <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand-700">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px]">1</span>
                 Contact Verification
               </h3>
               <span className="text-[10px] text-gray-500">Required before details</span>
@@ -916,32 +875,11 @@ const CreateOrder = ({ token }) => {
               </div>
               {customerLookupLoading && <p className="mt-1 text-[10px] text-gray-500">Checking previous purchases...</p>}
               {!customerLookupLoading && customerLookupMessage && (
-                <p role="status" className={`mt-1 text-[10px] ${customerVerificationState === "VERIFIED" ? "text-emerald-700" : customerVerificationState === "UNVERIFIED" ? "text-amber-700" : customerVerificationState === "ERROR" ? "text-rose-700" : "text-gray-600"}`}>
+                <p role="status" className={`mt-1 text-[10px] ${customerLookupError ? "text-rose-700" : "text-gray-600"}`}>
                   {customerLookupMessage}
                 </p>
               )}
             </div>
-            {existingCustomer && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Step 2: Customer Code</span>
-                  <span className="text-[10px] text-amber-800">{existingCustomer.name || "Existing customer"}</span>
-                </div>
-                <input
-                  type="text"
-                  name="socialCode"
-                  required
-                  maxLength={8}
-                  autoComplete="off"
-                  placeholder="Ask the customer for their social code"
-                  value={client.socialCode}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-white border border-amber-300 rounded-lg focus:border-amber-500 focus:outline-none uppercase"
-                />
-                {customerVerificationState === "VERIFIED" && <p className="text-[10px] font-semibold text-emerald-700">Verified. Loyalty and gifts are eligible.</p>}
-                {customerVerificationState === "UNVERIFIED" && <p className="text-[10px] font-semibold text-amber-800">Data loaded for dispatch only. Loyalty and gifts are disabled.</p>}
-              </div>
-            )}
           </div>
 
           {/* Social Channel Selector Card */}
@@ -960,7 +898,7 @@ const CreateOrder = ({ token }) => {
                     onClick={() => setClient((prev) => ({ ...prev, source: ch.id }))}
                     className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-semibold transition-all ${
                       isSelected
-                        ? `${ch.bg} ${ch.text} ring-2 ring-indigo-500/40 shadow-xs scale-[1.02]`
+                        ? `${ch.bg} ${ch.text} ring-2 ring-brand-500/40 shadow-xs scale-[1.02]`
                         : "bg-gray-50/70 border-gray-200 text-gray-600 hover:bg-gray-100"
                     }`}
                   >
@@ -991,7 +929,7 @@ const CreateOrder = ({ token }) => {
           </div>
 
           {/* Client Identity & Contact Card */}
-          <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
+          <div className="space-y-4 rounded-2xl border border-brand-200 bg-white p-5 shadow-card lg:sticky lg:top-20">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
               <span>3</span> Customer Details
             </h3>
@@ -1073,6 +1011,7 @@ const CreateOrder = ({ token }) => {
                 For 4x6 Dispatch Slip
               </span>
             </div>
+            {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1083,9 +1022,10 @@ const CreateOrder = ({ token }) => {
                   name="province"
                   value={client.province}
                   onChange={handleClientChange}
+                  disabled={!locationLookups}
                   className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
                 >
-                  {NEPAL_PROVINCES.map((province) => (
+                  {(locationLookups?.provinces || []).map((province) => (
                     <option key={province} value={province}>{province}</option>
                   ))}
                 </select>
@@ -1099,9 +1039,10 @@ const CreateOrder = ({ token }) => {
                   name="district"
                   value={client.district}
                   onChange={handleClientChange}
+                  disabled={!locationLookups}
                   className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
                 >
-                  {(NEPAL_DISTRICTS_BY_PROVINCE[client.province] || []).map((district) => (
+                  {getDistrictsForProvince(locationLookups, client.province).map((district) => (
                     <option key={district} value={district}>{district}</option>
                   ))}
                 </select>
@@ -1132,33 +1073,30 @@ const CreateOrder = ({ token }) => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                NCM Covered Location / Pickup Area <span className="text-rose-500">*</span>
-              </label>
-              <select
-                name="ncmCoveredArea"
-                value={client.ncmCoveredArea}
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider">
+                  Customer Street Address / Neighborhood <span className="text-rose-500">*</span>
+                </label>
+                <a
+                  href={googleMapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 underline"
+                >
+                  Open in Google Maps
+                </a>
+              </div>
+              <input
+                type="text"
+                name="street"
+                value={client.street}
                 onChange={handleClientChange}
                 required
-                disabled={loadingCoveredAreas || coveredAreas.length === 0}
-                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800 disabled:opacity-50"
-              >
-                {loadingCoveredAreas ? (
-                  <option value="">Loading covered locations...</option>
-                ) : coveredAreas.length === 0 ? (
-                  <option value="">No covered location available for this branch</option>
-                ) : (
-                  <>
-                    <option value="">Select covered location</option>
-                    {coveredAreas.map((area) => (
-                      <option key={area} value={area}>{area}</option>
-                    ))}
-                  </>
-                )}
-              </select>
-              <p className="mt-1 text-[10px] text-gray-500">
-                Select the NCM-covered area that matches the customer&apos;s delivery location.
-              </p>
+                maxLength={255}
+                autoComplete="street-address"
+                placeholder="Enter the customer's street, neighborhood, or tole"
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+              />
             </div>
 
             {/* Landmark (CRITICAL for courier delivery) */}
@@ -1463,6 +1401,38 @@ const CreateOrder = ({ token }) => {
                   </button>
                 </div>
 
+                {hasCurrentShippingQuote && shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                  <fieldset className="space-y-2 rounded-lg border border-indigo-200 bg-white p-2.5">
+                    <legend className="px-1 text-[10px] font-bold uppercase text-indigo-900">Delivery method</legend>
+                    {(shippingQuoteResult.quote.deliveryOptions || []).map((option) => (
+                      <label key={option.type} className="flex cursor-pointer items-center gap-2 rounded-md border border-gray-200 p-2 text-[11px]">
+                        <input
+                          type="radio"
+                          name="adminDeliveryType"
+                          value={option.type}
+                          checked={deliveryType === option.type}
+                          onChange={() => setDeliveryType(option.type)}
+                          className="accent-indigo-700"
+                        />
+                        <span className="flex-1 font-semibold text-gray-800">
+                          {option.label}
+                          <span className="mt-0.5 block text-[10px] font-normal text-gray-500">
+                            {option.type === "Door2Branch"
+                              ? "Customer collects from the NCM destination branch."
+                              : "NCM delivers to the customer's address."}
+                          </span>
+                        </span>
+                        <span className="font-bold text-indigo-900">
+                          {Number(option.fee) === 0 ? "FREE" : `${currency} ${Number(option.fee).toLocaleString()}`}
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+                {hasCurrentShippingQuote && !shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                  <p className="text-[10px] text-indigo-700">The selected distributor serves this same district, so only door-to-door delivery is offered.</p>
+                )}
+
                 {!useCustomShipping ? (
                   <div>
                     <p className="text-xs font-bold text-indigo-950 flex items-center gap-1">
@@ -1521,53 +1491,24 @@ const CreateOrder = ({ token }) => {
               </div>
             </div>
 
-            {/* Payment Method & Payment Status */}
+            {/* Tender method and receipt status */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-gray-100">
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Payment Method
+                  Tender Method
                 </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-gray-50/60 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
-                >
-                  {PAYMENT_METHODS.map((pm) => (
-                    <option key={pm.id} value={pm.id}>
-                      {pm.label}
-                    </option>
-                  ))}
-                </select>
+                <p className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-700">
+                  Cash on Delivery (COD)
+                </p>
               </div>
 
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
                   Payment Status
                 </label>
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsPaid(false)}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all ${
-                      !isPaid
-                        ? "bg-amber-100 text-amber-900 border-amber-300 shadow-2xs"
-                        : "bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100"
-                    }`}
-                  >
-                    Pending (COD)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsPaid(true)}
-                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all ${
-                      isPaid
-                        ? "bg-emerald-600 text-white border-emerald-700 shadow-2xs"
-                        : "bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100"
-                    }`}
-                  >
-                    ✓ Paid / Received
-                  </button>
-                </div>
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Receipt not recorded. Tender selection does not confirm funds received.
+                </p>
               </div>
             </div>
 
@@ -1944,7 +1885,7 @@ const CreateOrder = ({ token }) => {
               Order Placed Successfully!
             </h3>
             <p className="text-xs text-gray-500 mt-1">
-              Order <strong className="text-gray-800">#{createdOrderForPrint._id?.slice(-8).toUpperCase()}</strong> has been recorded in the database.
+              Order <strong className="text-gray-800">#{createdOrderForPrint.orderReference}</strong> has been recorded in the database.
             </p>
 
             <div className="my-4 p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs text-left space-y-1">

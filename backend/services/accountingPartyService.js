@@ -2,6 +2,7 @@ import { prisma } from "../config/db.js";
 
 const PARTY_TYPES = new Set([
   "CUSTOMER",
+  "DISTRIBUTOR",
   "MANUFACTURER",
   "MARKETING_PARTNER",
   "CARRIER",

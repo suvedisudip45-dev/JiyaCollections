@@ -1,9 +1,18 @@
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import {
+  authenticate,
+  authorize,
+  authorizeAny,
+  setFulfillmentContext,
+} from "../middleware/unifiedAuth.js";
 import express from "express";
+import { secureEvidenceUpload } from "../middleware/secureUpload.js";
 import {
   getCustomerReturns,
   createSupplierReturn,
   getSupplierReturns,
+  getSupplierReturnApplicableBills,
+  applySupplierReturnCredit,
+  getSupplierReturnReconciliation,
 } from "../controllers/returnsController.js";
 import {
   adminCompleteReturnRefund,
@@ -11,11 +20,15 @@ import {
   adminDecideReturnRequest,
   adminInspectReturn,
   adminListReturnRequests,
+  adminReconcileCustomerReturnNcmStatus,
   adminRetryReturnSubmission,
   adminResolveUnknownReturn,
+  adminReviewDistributorCustomerRefund,
+  adminSettleDistributorRefundPayable,
   customerCreateReturnRequest,
   customerListReturnRequests,
   manufacturerListReturnRequests,
+  distributorSubmitCustomerRefund,
 } from "../controllers/customerReturnWorkflowController.js";
 import {
   adminDecideExchangeRequest,
@@ -27,12 +40,30 @@ import {
   adminRetryExchangeSubmission,
   customerCreateExchangeRequest,
   customerListExchangeRequests,
+  distributorProcessExchangeRequest,
+  distributorListExchangeRequests,
+  distributorSubmitExchangePaymentEvidence,
+  adminReviewExchangePaymentEvidence,
 } from "../controllers/orderExchangeController.js";
 
 const returnsRouter = express.Router();
 
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only administrators can access supplier-return accounting controls.",
+    });
+  }
+  return next();
+};
+
 returnsRouter.post("/exchange/customer", authenticate, authorize("exchange:customer_request"), customerCreateExchangeRequest);
 returnsRouter.get("/exchange/customer", authenticate, authorize("exchange:customer_read"), customerListExchangeRequests);
+returnsRouter.get("/exchange/distributor", authenticate, authorize("distributor:delivery_return"), setFulfillmentContext, distributorListExchangeRequests);
+returnsRouter.post("/exchange/distributor/:id/process", authenticate, authorize("distributor:delivery_return"), setFulfillmentContext, distributorProcessExchangeRequest);
+returnsRouter.post("/exchange/distributor/:id/payment-evidence", authenticate, authorize("distributor:delivery_return"), setFulfillmentContext, ...secureEvidenceUpload("evidence"), distributorSubmitExchangePaymentEvidence);
 returnsRouter.get("/exchange/admin", authenticate, authorize("exchange:admin_read"), adminListExchangeRequests);
 returnsRouter.post("/exchange/admin", authenticate, authorize("exchange:admin_create"), adminCreateExchangeRequest);
 returnsRouter.post("/exchange/admin/:id/decision", authenticate, authorize("exchange:admin_review"), adminDecideExchangeRequest);
@@ -40,22 +71,37 @@ returnsRouter.post("/exchange/admin/:id/retry-ncm", authenticate, authorize("exc
 returnsRouter.post("/exchange/admin/:id/reconcile", authenticate, authorize("exchange:admin_reconcile"), adminReconcileExchange);
 returnsRouter.post("/exchange/admin/:id/inspection", authenticate, authorize("exchange:admin_review"), adminRecordExchangeInspection);
 returnsRouter.post("/exchange/admin/:id/resolve-ncm", authenticate, authorize("exchange:admin_review"), adminResolveUnknownExchange);
+returnsRouter.post("/exchange/admin/:id/payment-review", authenticate, authorize("exchange:admin_review"), adminReviewExchangePaymentEvidence);
 
 // Customer Returns (RMA)
 returnsRouter.post("/customer/request", authenticate, authorize("returns:customer_create"), customerCreateReturnRequest);
 returnsRouter.get("/customer/requests", authenticate, authorize("returns:customer_read"), customerListReturnRequests);
-returnsRouter.get("/customer/manufacturer", authenticate, authorize("manufacturer:delivery_return"), setManufacturerContext, manufacturerListReturnRequests);
+returnsRouter.get("/customer/manufacturer", authenticate, authorizeAny("distributor:delivery_return", "manufacturer:delivery_return", "returns:customer_read", "returns:admin_read"), setFulfillmentContext, manufacturerListReturnRequests);
+returnsRouter.post(
+  "/customer/distributor/:id/refund-payment",
+  authenticate,
+  authorize("distributor:delivery_return"),
+  setFulfillmentContext,
+  ...secureEvidenceUpload("evidence"),
+  distributorSubmitCustomerRefund,
+);
 returnsRouter.get("/customer/list", authenticate, authorize("returns:admin_read"), getCustomerReturns);
 returnsRouter.post("/customer/create", authenticate, authorize("returns:admin_create"), adminCreateReturnRequest);
 returnsRouter.get("/customer/admin/requests", authenticate, authorize("returns:admin_read"), adminListReturnRequests);
 returnsRouter.post("/customer/admin/:id/decision", authenticate, authorize("returns:admin_review"), adminDecideReturnRequest);
+returnsRouter.post("/customer/admin/:id/reconcile-ncm", authenticate, authorize("returns:admin_review"), adminReconcileCustomerReturnNcmStatus);
 returnsRouter.post("/customer/admin/:id/retry-ncm", authenticate, authorize("returns:admin_review"), adminRetryReturnSubmission);
 returnsRouter.post("/customer/admin/:id/resolve-ncm", authenticate, authorize("returns:admin_review"), adminResolveUnknownReturn);
 returnsRouter.post("/customer/admin/:id/inspection", authenticate, authorize("returns:admin_inspect"), adminInspectReturn);
 returnsRouter.post("/customer/admin/:id/refunded", authenticate, authorize("returns:admin_refund"), adminCompleteReturnRefund);
+returnsRouter.post("/customer/admin/:id/distributor-refund-review", authenticate, authorize("returns:admin_refund"), adminReviewDistributorCustomerRefund);
+returnsRouter.post("/customer/admin/distributor-refunds/:documentId/settle", authenticate, authorize("returns:admin_refund"), adminSettleDistributorRefundPayable);
 
 // Supplier Returns (Debit Notes)
 returnsRouter.post("/supplier/create", authenticate, authorize("returns:supplier_create"), createSupplierReturn);
 returnsRouter.get("/supplier/list", authenticate, authorize("returns:supplier_read"), getSupplierReturns);
+returnsRouter.get("/supplier/reconciliation", authenticate, requireAdminRole, authorize("finance:payables_read"), getSupplierReturnReconciliation);
+returnsRouter.get("/supplier/:id/applicable-bills", authenticate, requireAdminRole, authorize("finance:payable_settle"), getSupplierReturnApplicableBills);
+returnsRouter.post("/supplier/:id/apply-credit", authenticate, requireAdminRole, authorize("finance:payable_settle"), applySupplierReturnCredit);
 
 export default returnsRouter;

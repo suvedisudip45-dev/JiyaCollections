@@ -19,6 +19,7 @@ const PHYSICAL_STATUSES = [
   { id: "AVAILABLE", label: "Available" },
   { id: "ATTACHED", label: "Attached to Garment" },
   { id: "CANCELLED", label: "Cancelled" },
+  { id: "EXPIRED", label: "Expired" },
 ];
 
 const CardListPage = () => {
@@ -232,7 +233,7 @@ const CardListPage = () => {
 
                       {/* Physical Status */}
                       <td className="py-3.5 px-4" data-label="Physical Status">
-                        <Badge status={card.physicalStatus} />
+                        <Badge status={card.dashboardCategory || card.physicalStatus} />
                       </td>
 
                       {/* Customer Status */}

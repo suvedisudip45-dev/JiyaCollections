@@ -1,9 +1,19 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap");
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Space+Grotesk:wght@500;600;700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --admin-ink: #0f172a;
+  --admin-muted: #64748b;
+  --admin-line: #e2e8f0;
+  --admin-canvas: #f8fafc;
+  --admin-accent: #0d7a68;
+  --admin-accent-dark: #0b6657;
+  --admin-accent-tint: #effcf9;
+}
 
 * {
   font-family: "Outfit", sans-serif;
@@ -16,16 +26,6 @@
 
 .audit-history-heading {
   font-family: "Space Grotesk", sans-serif;
-}
-
-:root {
-  color-scheme: light;
-  --admin-ink: #172321;
-  --admin-muted: #6b7975;
-  --admin-line: #dfe7e3;
-  --admin-canvas: #f3f6f4;
-  --admin-accent: #147d6d;
-  --admin-accent-dark: #0d574e;
 }
 
 body {
@@ -42,62 +42,100 @@ textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
+button,
+a {
+  transition-duration: 150ms;
+}
+
 select,
 input,
 textarea {
-  border: 1px solid #c2c2c2;
-  outline-color: #147d6d;
-  border-radius: 4px;
+  border: 1px solid var(--admin-line);
+  outline-color: var(--admin-accent);
+  border-radius: 0.5rem;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--admin-accent);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--admin-accent);
+  outline-offset: 2px;
 }
 
 .active {
-  background-color: #e7f2ef;
-  border-color: #8ccabd;
+  background-color: var(--admin-accent-tint);
+  border-color: #b3e3d7;
 }
 
-/* Keep legacy screens within the same quiet operations palette. */
-.admin-shell .bg-indigo-50,
-.admin-shell .bg-violet-50,
-.admin-shell .bg-purple-50,
-.admin-shell .bg-blue-50,
-.admin-shell .bg-cyan-50 {
-  background-color: #e7f2ef;
+.admin-shell {
+  background-color: var(--admin-canvas);
+  color: var(--admin-ink);
 }
 
-.admin-shell .text-indigo-600,
-.admin-shell .text-indigo-700,
-.admin-shell .text-indigo-800,
-.admin-shell .text-violet-600,
-.admin-shell .text-violet-700,
-.admin-shell .text-purple-600,
-.admin-shell .text-purple-700,
-.admin-shell .text-blue-600,
-.admin-shell .text-blue-700,
-.admin-shell .text-cyan-600,
-.admin-shell .text-cyan-700 {
-  color: #147d6d;
+.admin-shell .font-mono,
+.admin-shell [class*="font-mono"] {
+  font-variant-numeric: tabular-nums;
 }
 
-.admin-shell .border-indigo-200,
-.admin-shell .border-violet-200,
-.admin-shell .border-purple-200,
-.admin-shell .border-blue-200,
-.admin-shell .border-cyan-200 {
-  border-color: #b8dcd4;
+.admin-shell table thead th {
+  white-space: nowrap;
 }
 
-.admin-shell .bg-indigo-600,
-.admin-shell .bg-violet-600,
-.admin-shell .bg-purple-600,
-.admin-shell .bg-blue-600,
-.admin-shell .bg-cyan-600 {
-  background-color: #147d6d;
+.admin-shell .bg-white[class*="rounded-2xl"] {
+  border-color: var(--admin-line);
+  box-shadow: 0 1px 3px 0 rgb(15 23 42 / 0.04), 0 1px 2px -1px rgb(15 23 42 / 0.04);
 }
 
-.admin-shell .hover\:bg-indigo-700:hover,
-.admin-shell .hover\:bg-violet-700:hover,
-.admin-shell .hover\:bg-purple-700:hover,
-.admin-shell .hover\:bg-blue-700:hover,
-.admin-shell .hover\:bg-cyan-700:hover {
-  background-color: #0d574e;
+.admin-shell button.bg-slate-900,
+.admin-shell button.bg-slate-800 {
+  background-color: var(--admin-accent);
+}
+
+.admin-shell button.hover\:bg-slate-800:hover,
+.admin-shell button.hover\:bg-slate-700:hover {
+  background-color: var(--admin-accent-dark);
+}
+
+.admin-shell button.bg-indigo-600,
+.admin-shell a.bg-indigo-600,
+.admin-shell button.bg-blue-600,
+.admin-shell a.bg-blue-600 {
+  background-color: var(--admin-accent);
+}
+
+.admin-shell button.hover\:bg-indigo-700:hover,
+.admin-shell a.hover\:bg-indigo-700:hover,
+.admin-shell button.hover\:bg-blue-700:hover,
+.admin-shell a.hover\:bg-blue-700:hover {
+  background-color: var(--admin-accent-dark);
+}
+
+.admin-shell button.text-indigo-600,
+.admin-shell button.text-indigo-700,
+.admin-shell a.text-indigo-600,
+.admin-shell a.text-indigo-700 {
+  color: var(--admin-accent);
+}
+
+.admin-shell button.border-indigo-200,
+.admin-shell a.border-indigo-200 {
+  border-color: #b3e3d7;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

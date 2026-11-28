@@ -144,8 +144,14 @@ export const getProfile = async (req, res) => {
 // GET /partner/campaigns
 export const listCampaigns = async (req, res) => {
   try {
-    const campaigns = await getPartnerCampaigns({ partnerId: req.partnerId, status: req.query.status });
-    return res.json({ success: true, campaigns });
+    const result = await getPartnerCampaigns({
+      partnerId: req.partnerId,
+      status: req.query.status,
+      page: req.query.page,
+      limit: req.query.limit,
+      search: String(req.query.search || "").trim() || undefined,
+    });
+    return res.json(Array.isArray(result) ? { success: true, campaigns: result } : { success: true, ...result });
   } catch (error) { return sendError(res, error); }
 };
 

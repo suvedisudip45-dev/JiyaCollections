@@ -1,9 +1,11 @@
-import React, { useContext, useEffect, useState, useRef } from "react";
+import { useContext, useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
+import axios from "axios";
 import { ShopContext } from "../context/ShopContext";
 import { assets } from "../assets/assets";
 import RelatedProducts from "../components/RelatedProducts";
 import ReviewSection from "../components/ReviewSection";
+import StructuredDescriptionContent from "../components/StructuredDescriptionContent";
 import { toast } from "react-toastify";
 import {
   Heart,
@@ -43,12 +45,96 @@ const getColorImage = (product, selectedColor) => {
   return colorImages.find((entry) => String(entry?.color || "").trim().toLowerCase() === key)?.image || "";
 };
 
+const getDescriptionSummary = (section) => {
+  if (typeof section === "string") return section;
+  if (!section || typeof section !== "object" || !Array.isArray(section.blocks)) return "";
+
+  return section.blocks.flatMap((block) => {
+    if (block?.type === "paragraph" && typeof block.text === "string") return [block.text];
+    if (block?.type === "list" && Array.isArray(block.items)) return block.items.filter((item) => typeof item === "string");
+    if (block?.type === "table" && Array.isArray(block.rows)) {
+      return block.rows.map((row) => Array.isArray(row) ? row.filter(Boolean).join(" · ") : "");
+    }
+    return [];
+  }).filter(Boolean).join(" ");
+};
+
+const getProductBio = (description) => {
+  if (typeof description !== "string" || !description.trim().startsWith("{")) {
+    return description || "";
+  }
+
+  try {
+    const parsed = JSON.parse(description);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return getDescriptionSummary(parsed.about);
+    }
+    return typeof parsed === "string" ? parsed : "";
+  } catch {
+    return description;
+  }
+};
+
+const getProductSizeChart = (description) => {
+  let parsed = description;
+  if (typeof description === "string") {
+    try {
+      parsed = JSON.parse(description);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const chart = parsed.sizeChart;
+  if (
+    chart
+    && Array.isArray(chart.headers)
+    && chart.headers.length >= 2
+    && Array.isArray(chart.rows)
+    && chart.rows.length > 0
+  ) {
+    return {
+      title: chart.title || "Garment Sizing Guide",
+      subtitle: chart.subtitle || "",
+      headers: chart.headers.map((header) => String(header ?? "")),
+      rows: chart.rows.map((row) => chart.headers.map((_, index) => String(row?.[index] ?? ""))),
+      fitTip: chart.fitTip || "",
+    };
+  }
+
+  const legacyBlocks = Array.isArray(parsed.sizeFit?.blocks) ? parsed.sizeFit.blocks : [];
+  const legacyTable = legacyBlocks.find((block) =>
+    block?.type === "table" && Array.isArray(block.headers) && Array.isArray(block.rows)
+  );
+  const fitTip = legacyBlocks.flatMap((block) => (
+    block?.type === "paragraph" ? [block.text] :
+      block?.type === "list" && Array.isArray(block.items) ? block.items : []
+  )).filter((text) => typeof text === "string" && text).join("\n");
+
+  if (
+    !legacyTable
+    || legacyTable.headers.length < 2
+    || legacyTable.rows.length === 0
+  ) return null;
+  return {
+    title: "Garment Sizing Guide",
+    subtitle: "",
+    headers: legacyTable ? legacyTable.headers.map((header) => String(header ?? "")) : [],
+    rows: legacyTable
+      ? legacyTable.rows.map((row) => legacyTable.headers.map((_, index) => String(row?.[index] ?? "")))
+      : [],
+    fitTip,
+  };
+};
+
 const Product = () => {
   const { productId } = useParams();
-  const { products, currency, addToCart, wishlist, toggleWishlist, navigate, priceLocation, resolveLocationPrices } =
+  const { products, backendUrl, currency, addToCart, wishlist, toggleWishlist, navigate, priceLocation, resolveLocationPrices } =
     useContext(ShopContext);
 
   const [productData, setProductData] = useState(false);
+  const [productLoadError, setProductLoadError] = useState("");
   const [image, setImage] = useState("");
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [size, setSize] = useState("");
@@ -75,49 +161,66 @@ const Product = () => {
   const touchStartY = useRef(0);
   const isDragging = useRef(false);
 
-  const fetchProductData = () => {
+  const initializeProductData = (matched) => {
+    setProductLoadError("");
+    setProductData(matched);
+    const imageList = [...new Set(parseJsonArray(matched.image).filter(Boolean))];
+    let initialImg = imageList[0] || "";
+    let initialSize = matched.sizes && matched.sizes.length > 0 ? matched.sizes[0] : "";
+    let initialColor = "";
+
+    const parsedVariants = parseJsonArray(matched.variants);
+    const featuredVariant = parsedVariants.find((variant) => variant.isFeatured && variant.image);
+    if (featuredVariant) {
+      initialImg = featuredVariant.image;
+      if (featuredVariant.size) initialSize = featuredVariant.size;
+      if (featuredVariant.color) initialColor = featuredVariant.color;
+    } else if (matched.colors && matched.colors.length > 0) {
+      const firstColor = typeof matched.colors[0] === "object"
+        ? matched.colors[0].name
+        : matched.colors[0];
+      initialColor = firstColor;
+      initialImg = getColorImage(matched, firstColor) || initialImg;
+    }
+
+    setImage(initialImg);
+    const foundIndex = imageList.indexOf(initialImg);
+    setActiveImageIndex(foundIndex >= 0 ? foundIndex : 0);
+    setSize(initialSize);
+    setColor(initialColor);
+    setQuantity(1);
+  };
+
+  useEffect(() => {
+    let active = true;
     const matched = products.find(
       (item) => item._id === productId || item.id === productId
     );
     if (matched) {
-      setProductData(matched);
-
-      const imageList = [...new Set(parseJsonArray(matched.image).filter(Boolean))];
-      let initialImg = imageList[0] || "";
-      let initialSize = matched.sizes && matched.sizes.length > 0 ? matched.sizes[0] : "";
-      let initialColor = "";
-
-      // Parse variants
-      const parsedVariants = parseJsonArray(matched.variants);
-
-      // If there's a featured variant with an image, select it first
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        initialImg = featVar.image;
-        if (featVar.size) initialSize = featVar.size;
-        if (featVar.color) initialColor = featVar.color;
-      } else if (matched.colors && matched.colors.length > 0) {
-        const firstCol =
-          typeof matched.colors[0] === "object"
-            ? matched.colors[0].name
-            : matched.colors[0];
-        initialColor = firstCol;
-        initialImg = getColorImage(matched, firstCol) || initialImg;
-      }
-
-      setImage(initialImg);
-      const foundIdx = imageList.indexOf(initialImg);
-      setActiveImageIndex(foundIdx >= 0 ? foundIdx : 0);
-      setSize(initialSize);
-      setColor(initialColor);
-      setQuantity(1);
+      initializeProductData(matched);
+    } else {
+      setProductData(false);
+      setProductLoadError("");
+      axios.post(`${backendUrl}/api/product/single`, {
+        productId,
+        province: priceLocation?.province || "",
+        district: priceLocation?.district || "",
+      }).then((response) => {
+        if (!response.data?.success || !response.data?.product) {
+          throw new Error(response.data?.message || "Product not found.");
+        }
+        if (active) initializeProductData(response.data.product);
+      }).catch((error) => {
+        if (active) {
+          setProductLoadError(error.response?.data?.message || error.message || "Unable to load this product.");
+        }
+      });
     }
-  };
-
-  useEffect(() => {
-    fetchProductData();
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [productId, products]);
+    return () => {
+      active = false;
+    };
+  }, [productId, products, backendUrl, priceLocation?.province, priceLocation?.district]);
 
   const locationPriceKey = JSON.stringify({
     productId: productData?._id || productData?.id || "",
@@ -126,6 +229,7 @@ const Product = () => {
     quantity,
     province: priceLocation?.province || "",
     district: priceLocation?.district || "",
+    ncmBranch: priceLocation?.ncmBranch || "",
   });
 
   useEffect(() => {
@@ -141,7 +245,7 @@ const Product = () => {
       items: [{ productId: currentProductId, size, color, quantity }],
       province: priceLocation.province,
       district: priceLocation.district,
-      eligibilityMode: "PER_ITEM",
+      ncmBranch: priceLocation.ncmBranch || "",
     }).then((result) => {
       if (active) {
         setVariantPriceQuote({ key: locationPriceKey, ...result.items[0] });
@@ -154,7 +258,7 @@ const Product = () => {
       }
     });
     return () => { active = false; };
-  }, [locationPriceKey, productData?._id, productData?.id, priceLocation?.province, priceLocation?.district]);
+  }, [locationPriceKey, productData?._id, productData?.id, priceLocation?.province, priceLocation?.district, priceLocation?.ncmBranch]);
 
   // Observer for sticky bottom bar
   useEffect(() => {
@@ -349,10 +453,21 @@ const Product = () => {
   if (!productData) {
     return (
       <div className="min-h-[60vh] flex flex-col justify-center items-center gap-3">
-        <div className="w-10 h-10 border-3 border-black border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
-          Loading garment details...
-        </p>
+        {productLoadError ? (
+          <>
+            <p className="text-sm font-semibold text-gray-700">{productLoadError}</p>
+            <Link to="/shop" className="text-xs font-bold uppercase tracking-widest text-gray-500 underline">
+              Return to shop
+            </Link>
+          </>
+        ) : (
+          <>
+            <div className="w-10 h-10 border-3 border-black border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
+              Loading garment details...
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -405,6 +520,8 @@ const Product = () => {
     !isOutOfStock && currentVariantStock > 0 && currentVariantStock <= 5;
 
   const imageList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
+  const sizeChart = getProductSizeChart(productData.description);
+  const productBio = getProductBio(productData.description);
 
   const currentActiveImage = image || imageList[0];
   const currentVariantPrice = variantPriceQuote?.key === locationPriceKey ? variantPriceQuote : null;
@@ -437,32 +554,6 @@ const Product = () => {
         >
           Shop
         </Link>
-        {productData.category && (
-          <>
-            <span className="text-gray-300">/</span>
-            <Link
-              to={`/shop?category=${encodeURIComponent(
-                productData.category
-              )}`}
-              className="hover:text-black transition-colors font-medium"
-            >
-              {productData.category}
-            </Link>
-          </>
-        )}
-        {productData.subCategory && (
-          <>
-            <span className="text-gray-300">/</span>
-            <Link
-              to={`/shop?subCategory=${encodeURIComponent(
-                productData.subCategory
-              )}`}
-              className="hover:text-black transition-colors font-medium"
-            >
-              {productData.subCategory}
-            </Link>
-          </>
-        )}
         <span className="text-gray-300">/</span>
         <span className="text-gray-900 font-semibold truncate max-w-[200px] sm:max-w-xs">
           {productData.name}
@@ -796,7 +887,7 @@ const Product = () => {
         <div className="lg:col-span-5 flex flex-col space-y-6 lg:sticky lg:top-24">
           {/* Header & Title */}
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               {productData.category && (
                 <span className="text-[11px] font-bold uppercase tracking-widest text-[#d85b3f] bg-[#d85b3f]/10 px-2.5 py-0.5 rounded-md">
                   {productData.category}
@@ -807,11 +898,23 @@ const Product = () => {
                   {productData.subCategory}
                 </span>
               )}
+              {Boolean(productData.isUnisex || productData.unisex) && (
+                <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2.5 py-0.5 rounded-md flex items-center gap-1">
+                  <span>Unisex</span>
+                  <span>⚧</span>
+                </span>
+              )}
             </div>
 
             <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-snug">
               {productData.name}
             </h1>
+
+            {productData.nepaliName && (
+              <p className="text-sm font-medium text-stone-500 mt-0.5">
+                {productData.nepaliName}
+              </p>
+            )}
 
             {/* Rating Summary & Quick Review Link */}
             <div className="flex items-center gap-2 mt-2.5">
@@ -857,17 +960,13 @@ const Product = () => {
                 </>
               )}
             </div>
-            <p className="text-[11px] text-gray-500 mt-2 flex items-center gap-1.5">
-              <Check size={13} className="text-emerald-600" />
-              <span>Inclusive of all taxes. Fast cash on delivery available.</span>
-            </p>
             {priceLocation && variantPriceStatus === "error" && <p className="mt-2 text-[11px] text-amber-700">Location price preview is unavailable; checkout will verify the final price.</p>}
           </div>
 
           {/* Short Bio */}
-          {productData.description && (
+          {productBio && (
             <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
-              {productData.description}
+              {productBio}
             </p>
           )}
 
@@ -958,14 +1057,16 @@ const Product = () => {
                     {size || "Select size"}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsSizeGuideOpen(true)}
-                  className="text-xs font-semibold text-gray-700 hover:text-black flex items-center gap-1 underline underline-offset-4 cursor-pointer"
-                >
-                  <Ruler size={13} />
-                  <span>Size Chart</span>
-                </button>
+                {sizeChart && (
+                  <button
+                    type="button"
+                    onClick={() => setIsSizeGuideOpen(true)}
+                    className="text-xs font-semibold text-gray-700 hover:text-black flex items-center gap-1 underline underline-offset-4 cursor-pointer"
+                  >
+                    <Ruler size={13} />
+                    <span>Size Chart</span>
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-4 sm:grid-cols-6 gap-2.5">
@@ -1084,8 +1185,8 @@ const Product = () => {
                   isOutOfStock
                     ? "bg-stone-200 text-gray-400 cursor-not-allowed shadow-none border border-stone-300"
                     : isAddedAnimation
-                    ? "bg-emerald-600 text-white shadow-emerald-200 scale-102"
-                    : "bg-black text-white hover:bg-neutral-800 hover:shadow-xl"
+                      ? "bg-status-success-text text-white shadow-sm"
+                      : "bg-[var(--ink)] text-white hover:bg-[var(--accent)] hover:shadow-lift"
                 }`}
               >
                 {isAddedAnimation ? (
@@ -1183,75 +1284,103 @@ const Product = () => {
         </div>
 
         {activeTab === "description" && (
-          <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
-            <h3 className="text-lg font-bold text-gray-900">
-              About {productData.name}
-            </h3>
-            <p className="text-base text-gray-700 leading-relaxed max-w-3xl">
-              {productData.description ||
-                "A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."}
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
-              <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                <Layers className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                <div>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                    Tailored Construction
-                  </h4>
-                  <p className="text-xs text-gray-600 mt-1 leading-normal">
-                    Precision high-density stitching with reinforced seams designed to maintain fit after multiple wash cycles.
-                  </p>
+          (() => {
+            let descriptionSections = { about: productData.description || "" };
+            if (typeof productData.description === "string" && productData.description.trim().startsWith("{")) {
+              try {
+                descriptionSections = JSON.parse(productData.description);
+              } catch {
+                // Preserve the original description if legacy JSON is malformed.
+              }
+            }
+
+            return (
+              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+                <h3 className="text-lg font-bold text-gray-900">
+                  About {productData.name}
+                </h3>
+                <StructuredDescriptionContent
+                  content={descriptionSections.about}
+                  fallback="A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
+                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
+                    <Layers className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
+                    <div>
+                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                        Tailored Construction
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1 leading-normal">
+                        Precision high-density stitching with reinforced seams designed to maintain fit after multiple wash cycles.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
+                    <Sparkles className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
+                    <div>
+                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                        Authentic Color Fastness
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1 leading-normal">
+                        Specially dyed using eco-conscious pigments for rich saturation and minimal fading.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                <Sparkles className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                <div>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                    Authentic Color Fastness
-                  </h4>
-                  <p className="text-xs text-gray-600 mt-1 leading-normal">
-                    Specially dyed using eco-conscious pigments for rich saturation and minimal fading.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+            );
+          })()
         )}
 
         {activeTab === "details" && (
-          <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🧵 Fabric & Material
-                </h4>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🧼 Wash & Garment Care
-                </h4>
-                <ul className="text-xs text-gray-600 space-y-1 list-disc list-inside">
-                  <li>Machine wash cold with like colors</li>
-                  <li>Do not bleach or dry clean</li>
-                  <li>Tumble dry low or hang in shade</li>
-                  <li>Iron inside-out on low heat</li>
-                </ul>
-              </div>
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🚚 Delivery & Cash on Delivery
-                </h4>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  Dispatched from Kathmandu within 24 hours. Inside Valley delivered in 1-2 days; all other major districts within 3-4 days. Cash on delivery accepted.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
+          (() => {
+            let customFabricCare = "";
+            if (typeof productData.description === "string" && productData.description.trim().startsWith("{")) {
+              try {
+                const parsed = JSON.parse(productData.description);
+                customFabricCare = parsed.fabricCare || "";
+              } catch {
+                // Keep the default fabric description for malformed legacy JSON.
+              }
+            }
 
+            return (
+              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🧵 Fabric &amp; Material
+                    </h4>
+                    <StructuredDescriptionContent
+                      content={customFabricCare}
+                      fallback="100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🧼 Wash &amp; Garment Care
+                    </h4>
+                    <ul className="text-xs text-gray-600 space-y-1 list-disc list-inside">
+                      <li>Machine wash cold with like colors</li>
+                      <li>Do not bleach or dry clean</li>
+                      <li>Tumble dry low or hang in shade</li>
+                      <li>Iron inside-out on low heat</li>
+                    </ul>
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🚚 Delivery &amp; Cash on Delivery
+                    </h4>
+                    <p className="text-xs text-gray-600 leading-relaxed">
+                      Dispatched from Kathmandu within 24 hours. Inside Valley delivered in 1-2 days; all other major districts within 3-4 days. Cash on delivery accepted.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        )}
         {activeTab === "reviews" && (
           <div className="bg-white border border-t-0 border-stone-200 p-4 sm:p-8 rounded-b-3xl">
             <ReviewSection
@@ -1273,7 +1402,7 @@ const Product = () => {
 
       {/* ================= STICKY MOBILE BOTTOM BAR ================= */}
       {showStickyBar && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 px-4 py-3 shadow-2xl flex items-center justify-between gap-3 animate-slide-up lg:hidden">
+        <div className="product-sticky-bar fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--paper)]/95 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-floating-bar backdrop-blur-md animate-slide-up lg:hidden">
           <div className="flex items-center gap-2.5 min-w-0">
             <img
               src={currentActiveImage}
@@ -1302,10 +1431,10 @@ const Product = () => {
             type="button"
             disabled={isOutOfStock}
             onClick={handleAddToCart}
-            className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shrink-0 transition-all cursor-pointer ${
+            className={`flex min-h-11 shrink-0 items-center gap-1.5 px-5 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
               isOutOfStock
-                ? "bg-stone-200 text-gray-400"
-                : "bg-black text-white hover:bg-neutral-800 shadow-md"
+                ? "cursor-not-allowed bg-stone-200 text-gray-500"
+                : "bg-[var(--ink)] text-white hover:bg-[var(--accent)]"
             }`}
           >
             <ShoppingBag size={14} />
@@ -1315,7 +1444,7 @@ const Product = () => {
       )}
 
       {/* ================= SIZE GUIDE MODAL ================= */}
-      {isSizeGuideOpen && (
+      {isSizeGuideOpen && sizeChart && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl relative border border-stone-200 animate-scale-up">
             <button
@@ -1329,64 +1458,44 @@ const Product = () => {
             <div className="flex items-center gap-2 mb-1 text-gray-900">
               <Ruler size={20} className="text-[#d85b3f]" />
               <h3 className="text-lg font-black uppercase tracking-tight">
-                Garment Sizing Guide
+                {sizeChart.title}
               </h3>
             </div>
-            <p className="text-xs text-gray-500 mb-6">
-              All garment measurements are in inches. Standard relaxed fit.
-            </p>
+            {sizeChart.subtitle && (
+              <p className="text-xs text-gray-500 mb-6 whitespace-pre-line">{sizeChart.subtitle}</p>
+            )}
 
-            <div className="overflow-x-auto rounded-xl border border-stone-200 mb-6">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-stone-100 text-gray-900 font-bold border-b border-stone-200">
-                  <tr>
-                    <th className="py-2.5 px-3">Size</th>
-                    <th className="py-2.5 px-3">Chest (in)</th>
-                    <th className="py-2.5 px-3">Length (in)</th>
-                    <th className="py-2.5 px-3">Shoulder (in)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-100 text-gray-700">
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">S</td>
-                    <td className="py-2 px-3">38 - 40</td>
-                    <td className="py-2 px-3">27</td>
-                    <td className="py-2 px-3">18</td>
-                  </tr>
-                  <tr className="bg-stone-50/50">
-                    <td className="py-2 px-3 font-bold text-gray-900">M</td>
-                    <td className="py-2 px-3">40 - 42</td>
-                    <td className="py-2 px-3">28</td>
-                    <td className="py-2 px-3">19</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">L</td>
-                    <td className="py-2 px-3">42 - 44</td>
-                    <td className="py-2 px-3">29</td>
-                    <td className="py-2 px-3">20</td>
-                  </tr>
-                  <tr className="bg-stone-50/50">
-                    <td className="py-2 px-3 font-bold text-gray-900">XL</td>
-                    <td className="py-2 px-3">44 - 46</td>
-                    <td className="py-2 px-3">30</td>
-                    <td className="py-2 px-3">21</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">XXL</td>
-                    <td className="py-2 px-3">46 - 48</td>
-                    <td className="py-2 px-3">31</td>
-                    <td className="py-2 px-3">22</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {sizeChart.headers.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-stone-200 mb-6">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-100 text-gray-900 font-bold border-b border-stone-200">
+                    <tr>
+                      {sizeChart.headers.map((header, index) => (
+                        <th key={`${header}-${index}`} className="py-2.5 px-3 whitespace-nowrap">{header}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100 text-gray-700">
+                    {sizeChart.rows.map((row, rowIndex) => (
+                      <tr key={rowIndex} className={rowIndex % 2 ? "bg-stone-50/50" : ""}>
+                        {sizeChart.headers.map((_, columnIndex) => (
+                          <td key={columnIndex} className={`py-2 px-3 ${columnIndex === 0 ? "font-bold text-gray-900" : ""}`}>
+                            {row[columnIndex] || "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-            <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200/80 text-xs text-gray-600 flex items-start gap-2.5">
-              <Info size={16} className="text-[#d85b3f] shrink-0 mt-0.5" />
-              <p>
-                <strong>Fit Tip:</strong> For an oversized streetwear fit, choose your normal size. For a regular fitted look, consider sizing down one size.
-              </p>
-            </div>
+            {sizeChart.fitTip && (
+              <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200/80 text-xs text-gray-600 flex items-start gap-2.5">
+                <Info size={16} className="text-[#d85b3f] shrink-0 mt-0.5" />
+                <p className="whitespace-pre-line"><strong>Fit Tip:</strong> {sizeChart.fitTip}</p>
+              </div>
+            )}
           </div>
         </div>
       )}

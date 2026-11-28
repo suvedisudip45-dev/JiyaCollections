@@ -30,6 +30,11 @@ import {
   updateMarketingPartnerUser,
   updateRole,
 } from "../controllers/accessManagementController.js";
+import {
+  createDriverWorkspaceAccount,
+  getDriverProvisioningDistributors,
+  getUnlinkedDrivers,
+} from "../controllers/adminDriverAccessController.js";
 
 const accessManagementRouter = express.Router();
 const protectedBy = (...permissions) => [authenticate, requireRole("ADMIN"), authorize(permissions)];
@@ -56,6 +61,10 @@ accessManagementRouter.get("/users/marketing-partners/:accountId", ...protectedB
 accessManagementRouter.patch("/users/marketing-partners/:accountId", ...protectedBy("access:marketing_users_update"), updateMarketingPartnerUser);
 accessManagementRouter.patch("/users/marketing-partners/:accountId/status", ...protectedBy("access:marketing_users_deactivate"), setMarketingPartnerUserStatus);
 
+accessManagementRouter.get("/driver-provisioning/distributors", ...protectedBy("access:driver_users_manage"), getDriverProvisioningDistributors);
+accessManagementRouter.get("/driver-provisioning/drivers", ...protectedBy("access:driver_users_manage"), getUnlinkedDrivers);
+accessManagementRouter.post("/driver-provisioning/accounts", ...protectedBy("access:driver_users_manage"), createDriverWorkspaceAccount);
+
 accessManagementRouter.get("/roles", ...protectedBy("access:roles_read"), listRoles);
 accessManagementRouter.post("/roles", ...protectedBy("access:roles_create"), createRole);
 accessManagementRouter.get("/roles/:roleId", ...protectedBy("access:roles_read"), getRole);
@@ -63,7 +72,7 @@ accessManagementRouter.patch("/roles/:roleId", ...protectedBy("access:roles_upda
 accessManagementRouter.patch("/roles/:roleId/status", ...protectedBy("access:roles_deactivate"), setRoleStatus);
 accessManagementRouter.put("/roles/:roleId/permissions", ...protectedBy("access:roles_assign_permissions"), assignPermissions);
 accessManagementRouter.get("/permissions", ...protectedBy("access:permissions_read"), getPermissions);
-accessManagementRouter.get("/audit-logs/export", ...protectedBy("access:audit_read"), downloadAuditLogs);
+accessManagementRouter.get("/audit-logs/export", ...protectedBy("access:audit_export"), downloadAuditLogs);
 accessManagementRouter.get("/audit-logs", ...protectedBy("access:audit_read"), getAuditLogs);
 
 export default accessManagementRouter;

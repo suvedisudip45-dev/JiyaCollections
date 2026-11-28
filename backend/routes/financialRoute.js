@@ -17,6 +17,7 @@ import {
   recordInvestorFinancing,
   recordLiabilityRepayment,
   getPayablesAndReceivables,
+  getFinancialPayouts,
   createPayable,
   createReceivable,
   settlePayable,
@@ -35,7 +36,47 @@ import {
   getCashTransactions,
   collectReceivable,
 } from "../controllers/treasuryAccountingController.js";
+import { getCustomerReceiptReconciliationReport } from "../controllers/customerReceiptReconciliationController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
+import {
+  cancelTaxRegistrationVersionAdmin,
+  cancelVatRateVersionAdmin,
+  createTaxRegistrationVersionAdmin,
+  createVatRateVersionAdmin,
+  getSellerTaxProfileAdmin,
+  getTaxRegistrationVersionsAdmin,
+  getVatRateVersions,
+  updateSellerTaxProfileAdmin,
+} from "../controllers/vatRateController.js";
+import {
+  amendVatReturnAdmin,
+  createVatFilingDraftAdmin,
+  createVatFilingPaymentAdmin,
+  fileVatReturnAdmin,
+  getVatAssessmentAdjustmentAccountsAdmin,
+  getVatFilingRecordsAdmin,
+} from "../controllers/vatFilingController.js";
+import {
+  getSalesInvoicesAdmin,
+  recordPaperSalesInvoiceAdmin,
+} from "../controllers/salesInvoiceController.js";
+import {
+  cancelCorporateTaxPolicyVersionAdmin,
+  createCorporateTaxPolicyVersionAdmin,
+  getCorporateTaxPolicyVersionsAdmin,
+} from "../controllers/corporateTaxPolicyController.js";
+import {
+  allocatePaperBillRangeAdmin,
+  createPaperBillBookAdmin,
+  getPaperBillControlDataAdmin,
+  getPaperBillOrderReportAdmin,
+  returnPaperBillRangeAdmin,
+} from "../controllers/paperBillController.js";
+import {
+  listNepaliCalendarYears,
+  saveNepaliCalendarYearAdmin,
+} from "../controllers/nepaliCalendarController.js";
+import { authorizeAny } from "../middleware/authorize.js";
 
 const financialRouter = express.Router();
 
@@ -56,6 +97,24 @@ const setFinancialManufacturerContext = (req, res, next) => {
 
 // Executive Analytics & Overview
 financialRouter.get("/dashboard", authenticate, authorize("finance:dashboard_read"), getFinancialAnalyticsDashboard);
+financialRouter.get(
+  "/nepali-calendar/years",
+  authenticate,
+  authorizeAny(
+    "finance:dashboard_read",
+    "finance:statements_read",
+    "finance:tax_report_read",
+    "finance:tax_configure",
+    "accounting:fiscal_years_read",
+    "accounting:journal_read",
+    "accounting:journal_create",
+    "accounting:ledger_read",
+    "accounting:trial_balance_read",
+  ),
+  listNepaliCalendarYears,
+);
+financialRouter.post("/nepali-calendar/years", authenticate, authorize("finance:tax_configure"), saveNepaliCalendarYearAdmin);
+financialRouter.put("/nepali-calendar/years/:year", authenticate, authorize("finance:tax_configure"), saveNepaliCalendarYearAdmin);
 financialRouter.get("/manufacturer-summary", authenticate, authorize("finance:manufacturer_summary"), setFinancialManufacturerContext, getManufacturerFinancialSummary);
 
 // Treasury & Liquid Cash & Expenses
@@ -89,6 +148,13 @@ financialRouter.post("/repay-liability", authenticate, authorize("finance:liabil
 
 // Accounts Payable & Receivable (Liabilities & Settlements)
 financialRouter.get("/payables-receivables", authenticate, authorize("finance:payables_read"), getPayablesAndReceivables);
+financialRouter.get("/payouts", authenticate, authorize("finance:payables_read"), getFinancialPayouts);
+financialRouter.get(
+  "/receipt-reconciliation",
+  authenticate,
+  authorize("finance:treasury_read"),
+  getCustomerReceiptReconciliationReport,
+);
 financialRouter.post("/create-payable", authenticate, authorize("finance:payable_create"), createPayable);
 financialRouter.post("/create-receivable", authenticate, authorize("finance:receivable_create"), createReceivable);
 financialRouter.post("/settle-payable", authenticate, authorize("finance:payable_settle"), settlePayable);
@@ -98,6 +164,30 @@ financialRouter.post("/revert-settlement", authenticate, authorize("finance:paya
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);
+financialRouter.get("/corporate-tax-policies", authenticate, authorize("finance:tax_report_read"), getCorporateTaxPolicyVersionsAdmin);
+financialRouter.post("/corporate-tax-policies", authenticate, authorize("finance:tax_configure"), createCorporateTaxPolicyVersionAdmin);
+financialRouter.post("/corporate-tax-policies/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelCorporateTaxPolicyVersionAdmin);
+financialRouter.get("/tax-profile", authenticate, authorize("finance:tax_report_read"), getSellerTaxProfileAdmin);
+financialRouter.patch("/tax-profile", authenticate, authorize("finance:tax_configure"), updateSellerTaxProfileAdmin);
+financialRouter.get("/tax-registration-versions", authenticate, authorize("finance:tax_report_read"), getTaxRegistrationVersionsAdmin);
+financialRouter.post("/tax-registration-versions", authenticate, authorize("finance:tax_configure"), createTaxRegistrationVersionAdmin);
+financialRouter.post("/tax-registration-versions/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelTaxRegistrationVersionAdmin);
+financialRouter.get("/tax-filings", authenticate, authorize("finance:tax_report_read"), getVatFilingRecordsAdmin);
+financialRouter.get("/tax-filings/adjustment-accounts", authenticate, authorize("finance:tax_configure"), getVatAssessmentAdjustmentAccountsAdmin);
+financialRouter.post("/tax-filings", authenticate, authorize("finance:tax_configure"), createVatFilingDraftAdmin);
+financialRouter.post("/tax-filings/:id/file", authenticate, authorize("finance:tax_configure"), fileVatReturnAdmin);
+financialRouter.post("/tax-filings/:id/payments", authenticate, authorize("finance:tax_configure"), createVatFilingPaymentAdmin);
+financialRouter.post("/tax-filings/:id/amendments", authenticate, authorize("finance:tax_configure"), amendVatReturnAdmin);
+financialRouter.get("/sales-invoices", authenticate, authorize("finance:tax_report_read"), getSalesInvoicesAdmin);
+financialRouter.post("/sales-invoices/:id/paper-issue", authenticate, authorize("finance:tax_configure"), recordPaperSalesInvoiceAdmin);
+financialRouter.get("/paper-bill-books", authenticate, authorize("finance:tax_report_read"), getPaperBillControlDataAdmin);
+financialRouter.post("/paper-bill-books", authenticate, authorize("finance:tax_configure"), createPaperBillBookAdmin);
+financialRouter.post("/paper-bill-allocations", authenticate, authorize("finance:tax_configure"), allocatePaperBillRangeAdmin);
+financialRouter.post("/paper-bill-allocations/:id/return", authenticate, authorize("finance:tax_configure"), returnPaperBillRangeAdmin);
+financialRouter.get("/paper-bill-orders", authenticate, authorize("finance:tax_report_read"), getPaperBillOrderReportAdmin);
+financialRouter.get("/vat-rates", authenticate, authorize("finance:tax_report_read"), getVatRateVersions);
+financialRouter.post("/vat-rates", authenticate, authorize("finance:tax_configure"), createVatRateVersionAdmin);
+financialRouter.post("/vat-rates/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelVatRateVersionAdmin);
 
 // Financial Statements
 financialRouter.get("/statements", authenticate, authorize("finance:statements_read"), getFinancialStatements);

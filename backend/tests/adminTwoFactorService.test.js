@@ -33,6 +33,15 @@ const notificationConfig = {
   retry: { maxAttempts: 5 },
 };
 
+const applySelect = (value, select) => {
+  if (Array.isArray(value)) return value.map((item) => applySelect(item, select));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(select).map(([key, selection]) => [
+    key,
+    selection === true ? value[key] : applySelect(value[key], selection.select || {}),
+  ]));
+};
+
 const createHarness = (role = "ADMIN") => {
   const state = {
     account: {
@@ -42,8 +51,15 @@ const createHarness = (role = "ADMIN") => {
       role,
       status: "ACTIVE",
       adminProfile: role === "ADMIN" ? { id: "admin-profile-1" } : null,
+      distributorProfile: role === "DISTRIBUTOR" ? { status: "ACTIVE", isActive: true } : null,
       marketingPartnerProfile: role === "MARKETING_PARTNER" ? { id: "marketing-profile-1" } : null,
       manufacturerProfile: role === "MANUFACTURER" ? { id: "manufacturer-profile-1" } : null,
+      deliveryDriverProfile: role === "DRIVER" ? {
+        id: "driver-profile-1",
+        accountId: `${role.toLowerCase()}-account-1`,
+        status: "ACTIVE",
+        distributor: { id: "distributor-1", status: "ACTIVE", isActive: true },
+      } : null,
     },
     challenge: null,
     notification: null,
@@ -73,10 +89,20 @@ const createHarness = (role = "ADMIN") => {
 
   const client = {
     authAccount: {
-      findUnique: async () => state.account,
+      findUnique: async ({ select }) => applySelect(state.account, select),
+    },
+    deliveryDriver: {
+      findUnique: async ({ where }) => (
+        where.accountId === state.account.id ? state.account.deliveryDriverProfile : null
+      ),
     },
     adminTwoFactorChallenge: {
-      findUnique: async () => state.challenge && ({ ...state.challenge, account: state.account }),
+      findUnique: async ({ include }) => state.challenge && ({
+        ...state.challenge,
+        account: include.account.select
+          ? applySelect(state.account, include.account.select)
+          : state.account,
+      }),
       count: async () => 0,
       create: async ({ data }) => {
         state.challenge = {
@@ -156,8 +182,45 @@ const createChallengeAndSendCode = async (harness, now = new Date(), portal = "A
   return { challengeId: result.challengeId, otp, now: new Date(now.getTime() + 2000) };
 };
 
-test("Marketing Partner and Manufacturer challenges issue only portal-bound MFA sessions", async () => {
-  for (const portal of ["MARKETING_PARTNER", "MANUFACTURER"]) {
+test("MFA challenge selects the profile needed to validate each privileged workspace", async () => {
+  const profileFields = {
+    ADMIN: "adminProfile",
+    MARKETING_PARTNER: "marketingPartnerProfile",
+    MANUFACTURER: "manufacturerProfile",
+    DISTRIBUTOR: "distributorProfile",
+  };
+
+  for (const [portal, profileField] of Object.entries(profileFields)) {
+    const harness = createHarness(portal);
+    let selectedAccountFields;
+    harness.client.authAccount.findUnique = async ({ select }) => {
+      selectedAccountFields = select;
+      return applySelect(harness.state.account, select);
+    };
+
+    await createPortalTwoFactorChallenge({
+      accountId: harness.state.account.id,
+      portal,
+    }, { client: harness.client, notificationConfig, env: environment });
+
+    assert.ok(selectedAccountFields[profileField], `${portal} profile must be selected`);
+  }
+
+  const driverHarness = createHarness("DRIVER");
+  let hydratedDriverAccountId;
+  driverHarness.client.deliveryDriver.findUnique = async ({ where }) => {
+    hydratedDriverAccountId = where.accountId;
+    return driverHarness.state.account.deliveryDriverProfile;
+  };
+  await createPortalTwoFactorChallenge({
+    accountId: driverHarness.state.account.id,
+    portal: "DRIVER",
+  }, { client: driverHarness.client, notificationConfig, env: environment });
+  assert.equal(hydratedDriverAccountId, driverHarness.state.account.id);
+});
+
+test("Marketing Partner, Manufacturer, and Driver challenges issue only portal-bound MFA sessions", async () => {
+  for (const portal of ["MARKETING_PARTNER", "MANUFACTURER", "DRIVER"]) {
     const harness = createHarness(portal);
     const challenge = await createChallengeAndSendCode(harness, new Date(), portal);
     const result = await verifyPortalTwoFactorCode(challenge, {
@@ -212,6 +275,7 @@ test("OTP challenge limits are per account and allow up to the configured IP lim
 test("MFA policy excludes Customer and rejects cross-portal challenge binding", async () => {
   assert.equal(requiresMfa("CUSTOMER"), false);
   assert.equal(requiresMfa("MARKETING_PARTNER"), true);
+  assert.equal(requiresMfa("DRIVER"), true);
 
   const harness = createHarness("MANUFACTURER");
   const challenge = await createChallengeAndSendCode(harness, new Date(), "MANUFACTURER");
@@ -221,6 +285,20 @@ test("MFA policy excludes Customer and rejects cross-portal challenge binding", 
     env: environment,
     now: challenge.now,
   }), /Invalid or expired/);
+  assert.equal(harness.state.sessions.length, 0);
+});
+
+test("password-recovery challenges cannot be used for portal MFA", async () => {
+  const harness = createHarness("DRIVER");
+  const challenge = await createChallengeAndSendCode(harness, new Date(), "DRIVER");
+  harness.state.challenge.purpose = "PASSWORD_RESET";
+
+  await assert.rejects(() => verifyPortalTwoFactorCode(challenge, {
+    client: harness.client,
+    env: environment,
+    now: challenge.now,
+  }), /Invalid or expired/);
+  assert.equal(harness.state.challenge.status, "PENDING");
   assert.equal(harness.state.sessions.length, 0);
 });
 
@@ -282,7 +360,7 @@ test("fixed OTP is available only through explicit development configuration", a
     "MANUFACTURER",
     developmentEnvironment,
   );
-  assert.notEqual(manufacturerChallenge.otp, "111111");
+  assert.equal(manufacturerChallenge.otp, "111111");
 
   await assert.rejects(() => sendPortalTwoFactorCode({
     challengeId: "123e4567-e89b-12d3-a456-426614174000",
@@ -380,6 +458,7 @@ test("password-only refresh tokens cannot bypass MFA for privileged portals", as
     await assert.rejects(() => rotateRefreshToken({
       refreshToken,
       targetPortal: role,
+      env: { ...process.env, NOTIFICATIONS_ENABLED: "true" },
     }), (error) => error.code === `${role}_MFA_REQUIRED`);
   }
 });

@@ -5,7 +5,6 @@ import Home from "./pages/Home";
 import Collection from "./pages/Collection";
 import ComboBundle from "./pages/ComboBundle";
 import ComboBundleDirectory from "./components/ComboBundleDirectory";
-import CollaborationDirectory from "./components/CollaborationDirectory";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
 import Product from "./pages/Product";
@@ -15,11 +14,11 @@ import PlaceOrder from "./pages/PlaceOrder";
 import Orders from "./pages/Orders";
 import Profile from "./pages/Profile";
 import Navbar from "./components/Navbar";
+import Breadcrumbs from "./components/Breadcrumbs";
 import Footer from "./components/Footer";
 import SearchBar from "./components/SearchBar";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
-import Verify from "./pages/Verify";
 import Wishlist from "./pages/Wishlist";
 import MarketingCards from "./pages/MarketingCards";
 import { ShopContext } from "./context/ShopContext";
@@ -32,20 +31,26 @@ const CustomerOnly = () => {
   return token ? <Outlet /> : <Navigate to="/" replace />;
 };
 
+const FeatureRoute = ({ enabled, children }) => {
+  if (enabled === undefined) return null;
+  return enabled ? children : <Navigate to="/" replace />;
+};
+
 const App = () => {
+  const { platformFeatures } = useContext(ShopContext);
   return (
     <div className="fashion-shell min-h-screen">
       <ToastContainer />
       <Navbar />
       <SearchBar />
-      <main className="storefront-main px-3 sm:px-5 lg:px-8">
+      <main className="storefront-main">
+        <Breadcrumbs />
         <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/shop" element={<Collection />} />
         <Route path="/collection" element={<Navigate to="/shop" replace />} />
         <Route path="/combo-bundles" element={<ComboBundleDirectory />} />
         <Route path="/combo-bundles/:slug" element={<ComboBundle />} />
-        <Route path="/collaborations" element={<CollaborationDirectory />} />
         <Route path="/about" element={<About />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/product/:productId" element={<Product />} />
@@ -55,9 +60,8 @@ const App = () => {
           <Route path="place-order" element={<PlaceOrder />} />
           <Route path="orders" element={<Orders />} />
           <Route path="profile" element={<Profile />} />
-          <Route path="marketing-cards" element={<MarketingCards />} />
+          <Route path="marketing-cards" element={<FeatureRoute enabled={platformFeatures?.marketingCardsEnabled}><MarketingCards /></FeatureRoute>} />
         </Route>
-        <Route path="/verify" element={<Verify />} />
         <Route path="/wishlist" element={<Wishlist />} />
         </Routes>
       </main>

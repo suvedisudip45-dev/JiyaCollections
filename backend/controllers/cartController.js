@@ -49,14 +49,17 @@ const addToCart = async (req, res) => {
     const { userId, itemId, size, color } = req.body;
     const [userData, product] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId } }),
-      prisma.product.findUnique({ where: { id: itemId } }),
+      prisma.product.findUnique({
+        where: { id: itemId },
+        include: { collaborationLink: { select: { id: true } } },
+      }),
     ]);
 
     if (!userData) {
       return res.json({ success: false, message: "User not found" });
     }
-    if (!product) {
-      return res.json({ success: false, message: "Product not found" });
+    if (!product || !product.published || product.deletedAt || product.collaborationLink) {
+      return res.json({ success: false, message: "Product is unavailable for sale." });
     }
 
     const maxStock = getProductAvailableStock(product, size, color);
@@ -106,7 +109,10 @@ const updateCart = async (req, res) => {
     const { userId, itemId, size, color, quantity } = req.body;
     const [userData, product] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId } }),
-      prisma.product.findUnique({ where: { id: itemId } }),
+      prisma.product.findUnique({
+        where: { id: itemId },
+        include: { collaborationLink: { select: { id: true } } },
+      }),
     ]);
 
     if (!userData) {
@@ -126,6 +132,20 @@ const updateCart = async (req, res) => {
         delete cartData[itemId];
       }
     } else {
+      if (!product || !product.published || product.deletedAt || product.collaborationLink) {
+        delete cartData[itemId][variantKey];
+        if (Object.keys(cartData[itemId]).length === 0) {
+          delete cartData[itemId];
+        }
+        await prisma.user.update({
+          where: { id: userId },
+          data: { cartData },
+        });
+        return res.json({
+          success: false,
+          message: "This product is unavailable for sale and was removed from your cart.",
+        });
+      }
       const maxStock = getProductAvailableStock(product, size, color);
       if (maxStock <= 0) {
         delete cartData[itemId][variantKey];
@@ -173,10 +193,33 @@ const getUserCart = async (req, res) => {
   try {
     const { userId } = req.body;
     const userData = await prisma.user.findUnique({ where: { id: userId } });
+
     if (!userData) {
       return res.json({ success: false, message: "User not found" });
     }
-    let cartData = userData.cartData || {};
+    const storedCart = userData.cartData || {};
+    const productIds = Object.keys(storedCart);
+    const products = productIds.length > 0
+      ? await prisma.product.findMany({
+        where: {
+          id: { in: productIds },
+          published: true,
+          deletedAt: null,
+          collaborationLink: null,
+        },
+        select: { id: true },
+      })
+      : [];
+    const availableProductIds = new Set(products.map((product) => product.id));
+    const cartData = Object.fromEntries(
+      Object.entries(storedCart).filter(([productId]) => availableProductIds.has(productId))
+    );
+    if (Object.keys(cartData).length !== productIds.length) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { cartData },
+      });
+    }
 
     res.json({ success: true, cartData });
   } catch (error) {
@@ -220,7 +263,7 @@ const syncCart = async (req, res) => {
       data: { cartData },
     });
 
-    res.json({ success: true, cartData });
+    res.json({ success: true });
   } catch (error) {
     console.error("syncCart error:", error);
     res.json({ success: false, message: error.message });
@@ -228,5 +271,3 @@ const syncCart = async (req, res) => {
 };
 
 export { addToCart, updateCart, getUserCart, syncCart };
-
-

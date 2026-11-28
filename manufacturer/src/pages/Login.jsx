@@ -4,9 +4,10 @@ import CryptoJS from "crypto-js";
 import { toast } from "react-toastify";
 import { ArrowLeft, Factory, Lock, Mail, ArrowRight, Shield, ShieldCheck, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw, MailCheck, RefreshCw, Smartphone } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
-import { NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { storeAuthTokens } from "../auth/tokenStorage";
+import PasswordResetFlow from "../components/PasswordResetFlow";
+import OtpInput from "../components/OtpInput";
 
 const encryptValue = (plaintext) => {
   const key = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_KEY);
@@ -27,6 +28,28 @@ const isValidNepalMobileNumber = (value = "") => {
 
 const defaultRegisterForm = {
   businessName: "",
+  taxIdType: "PAN",
+  taxIdNumber: "",
+  email: "",
+  password: "",
+  phone: "",
+  province: "Bagmati Province",
+  district: "Kathmandu",
+  city: "",
+  street: "",
+  landmark: "",
+  address: "",
+  pickupAddress: "",
+  pickupContactName: "",
+  pickupContactPhone: "",
+  pickupWindow: "",
+  returnInstructions: "",
+  contractStartDate: new Date().toISOString().split("T")[0],
+  contractExpiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+};
+
+const defaultDistributorForm = {
+  name: "",
   email: "",
   password: "",
   phone: "",
@@ -48,7 +71,8 @@ const defaultRegisterForm = {
 const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
 const Login = () => {
-  const { setToken, setManufacturer, backendUrl } = useManufacturer();
+  const { setToken, backendUrl } = useManufacturer();
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -60,11 +84,18 @@ const Login = () => {
   const [resendAvailableAt, setResendAvailableAt] = useState("");
   const [clock, setClock] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [registrationType, setRegistrationType] = useState("MANUFACTURER");
+  const [loginPortal, setLoginPortal] = useState("MANUFACTURER");
+  const [distributorForm, setDistributorForm] = useState(defaultDistributorForm);
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
   const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+  const [distributorNcmBranches, setDistributorNcmBranches] = useState([]);
+  const [distributorCoveredAreas, setDistributorCoveredAreas] = useState([]);
+  const [loadingDistributorBranches, setLoadingDistributorBranches] = useState(false);
 
   useEffect(() => {
     const updateClock = () => setClock(Date.now());
@@ -138,6 +169,65 @@ const Login = () => {
     fetchCoveredAreas();
   }, [backendUrl, registerForm.city, registerForm.district, registerForm.province]);
 
+  useEffect(() => {
+    const fetchDistributorBranches = async () => {
+      if (!distributorForm.province || !distributorForm.district) {
+        setDistributorNcmBranches([]);
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      setLoadingDistributorBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: distributorForm.province, district: distributorForm.district },
+        });
+        const branches = response.data.success ? response.data.branches || [] : [];
+        setDistributorNcmBranches(branches);
+        if (branches.length > 0 && !branches.includes(distributorForm.city)) {
+          setDistributorForm((prev) => ({ ...prev, city: branches[0], street: "" }));
+        } else if (branches.length === 0) {
+          setDistributorForm((prev) => ({ ...prev, city: "", street: "" }));
+        }
+      } catch (error) {
+        setDistributorNcmBranches([]);
+        console.error("Failed to load distributor NCM branches", error);
+      } finally {
+        setLoadingDistributorBranches(false);
+      }
+    };
+
+    fetchDistributorBranches();
+  }, [backendUrl, distributorForm.province, distributorForm.district]);
+
+  useEffect(() => {
+    const fetchDistributorCoveredAreas = async () => {
+      if (!distributorForm.city) {
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: distributorForm.city,
+            district: distributorForm.district,
+            province: distributorForm.province,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setDistributorCoveredAreas(areas);
+        if (areas.length > 0 && !areas.includes(distributorForm.street)) {
+          setDistributorForm((prev) => ({ ...prev, street: areas[0] }));
+        } else if (areas.length === 0) {
+          setDistributorForm((prev) => ({ ...prev, street: "" }));
+        }
+      } catch (error) {
+        setDistributorCoveredAreas([]);
+      }
+    };
+
+    fetchDistributorCoveredAreas();
+  }, [backendUrl, distributorForm.city, distributorForm.district, distributorForm.province]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (loginStep === "credentials" && (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))) {
@@ -154,7 +244,7 @@ const Login = () => {
       if (loginStep === "credentials") {
         const response = await axios.post(`${backendUrl}/api/auth/login`, {
           email: email.trim().toLowerCase(),
-          targetPortal: encryptValue("MANUFACTURER"),
+          targetPortal: encryptValue(loginPortal),
           encryptedPassword: encryptValue(password),
         }, { withCredentials: true });
         if (response.data.requiresTwoFactor) {
@@ -164,7 +254,7 @@ const Login = () => {
         } else if (response.data.success && (response.data.accessToken || response.data.token)) {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
-          toast.success("Welcome back, manufacturer!");
+          toast.success(`Welcome back, ${loginPortal === "DRIVER" ? "driver" : loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid credentials");
         }
@@ -186,7 +276,7 @@ const Login = () => {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
           setOtp("");
-          toast.success("Welcome back, manufacturer!");
+          toast.success(`Welcome back, ${loginPortal === "DRIVER" ? "driver" : loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid or expired verification code.");
         }
@@ -228,6 +318,10 @@ const Login = () => {
     e.preventDefault();
     if (!registerForm.businessName.trim()) {
       toast.error("Please enter a business name");
+      return;
+    }
+    if (!["PAN", "VAT"].includes(registerForm.taxIdType) || !/^\d{9}$/.test(registerForm.taxIdNumber)) {
+      toast.error("Enter a PAN or VAT registration number containing exactly 9 digits.");
       return;
     }
     if (!registerForm.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.email.trim())) {
@@ -289,6 +383,187 @@ const Login = () => {
     }
   };
 
+  const handleDistributorRegister = async (e) => {
+    e.preventDefault();
+    if (
+      !distributorForm.name.trim() ||
+      !distributorForm.province ||
+      !distributorForm.district ||
+      !distributorForm.city ||
+      !distributorForm.street ||
+      !distributorForm.landmark.trim()
+    ) {
+      toast.error("Please complete the business location, NCM branch, covered area, and landmark.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(distributorForm.email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    if (distributorForm.password.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    if (!isValidNepalMobileNumber(distributorForm.phone)) {
+      toast.error("Please enter a valid mobile number starting with 98 or 97.");
+      return;
+    }
+
+    setRegisterLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/distributor/register`, {
+        ...distributorForm,
+        name: distributorForm.name.trim(),
+        email: distributorForm.email.trim().toLowerCase(),
+        phone: distributorForm.phone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+        pickupContactPhone: distributorForm.pickupContactPhone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+        ncmPickupBranch: distributorForm.city,
+        address: distributorForm.address || [
+          distributorForm.street,
+          distributorForm.landmark,
+          distributorForm.city,
+          distributorForm.district,
+          distributorForm.province,
+        ].filter(Boolean).join(", "),
+        pickupAddress: distributorForm.pickupAddress || [
+          distributorForm.street,
+          distributorForm.landmark,
+          distributorForm.city,
+        ].filter(Boolean).join(", "),
+      });
+      toast.success(response.data.message || "Distributor application submitted.");
+      setShowRegister(false);
+      setDistributorForm(defaultDistributorForm);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to submit distributor application.");
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  if (showForgotPassword && !showRegister) {
+    return (
+      <PasswordResetFlow
+        backendUrl={backendUrl}
+        portal={loginPortal}
+        onBack={() => setShowForgotPassword(false)}
+        onComplete={() => {
+          setShowForgotPassword(false);
+          setPassword("");
+          toast.success("Password reset successfully. Sign in with your new password.");
+        }}
+      />
+    );
+  }
+
+  if (showRegister && registrationType === "DISTRIBUTOR") {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 sm:p-6 text-slate-100">
+        <div className="w-full max-w-4xl rounded-3xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-10">
+          <div className="mb-8 flex items-start justify-between gap-4 border-b border-slate-800 pb-6">
+            <div>
+              <h2 className="text-2xl font-black text-white">Register as Distributor</h2>
+              <p className="mt-1 text-sm text-slate-400">Complete the same business, Nepal location, NCM and pickup details used for manufacturer registration. Admin approval is required before portal access.</p>
+            </div>
+            <button type="button" onClick={() => setShowRegister(false)} className="text-sm text-slate-400 hover:text-white">Back to login</button>
+          </div>
+          <form onSubmit={handleDistributorRegister} className="space-y-6 text-sm">
+            <section>
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">1. Business &amp; Authentication Credentials</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block text-xs font-semibold text-slate-300">Business / Contact Name *
+                  <input required value={distributorForm.name} onChange={(event) => setDistributorForm((prev) => ({ ...prev, name: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Official Contact Phone *
+                  <input required type="tel" value={distributorForm.phone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Login Email *
+                  <input required type="email" value={distributorForm.email} onChange={(event) => setDistributorForm((prev) => ({ ...prev, email: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Secure Password *
+                  <input required type="password" minLength={8} value={distributorForm.password} onChange={(event) => setDistributorForm((prev) => ({ ...prev, password: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+            </section>
+
+            <section className="border-t border-slate-800 pt-5">
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">2. Location &amp; Nepal Can Move (NCM) Logistics Integration</h3>
+              {lookupError && <p role="alert" className="mb-3 rounded-lg bg-rose-950 px-3 py-2 text-xs text-rose-200">{lookupError}</p>}
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="block text-xs font-semibold text-slate-300">Province *
+                  <select required value={distributorForm.province} disabled={!locationLookups} onChange={(event) => {
+                    const province = event.target.value;
+                    setDistributorForm((prev) => ({ ...prev, province, district: getDistrictsForProvince(locationLookups, province)[0] || "", city: "", street: "" }));
+                  }} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
+                    {(locationLookups?.provinces || []).map((province) => <option key={province} value={province}>{province}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">District *
+                  <select required value={distributorForm.district} disabled={!locationLookups} onChange={(event) => setDistributorForm((prev) => ({ ...prev, district: event.target.value, city: "", street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
+                    {getDistrictsForProvince(locationLookups, distributorForm.province).map((district) => <option key={district} value={district}>{district}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">NCM Town / Branch *
+                  <select required value={distributorForm.city} disabled={loadingDistributorBranches || distributorNcmBranches.length === 0} onChange={(event) => setDistributorForm((prev) => ({ ...prev, city: event.target.value, street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white disabled:opacity-50">
+                    <option value="">{loadingDistributorBranches ? "Loading branches..." : "Select NCM Branch"}</option>
+                    {distributorNcmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <label className="block text-xs font-semibold text-slate-300">Street / Covered Area *
+                  <select required value={distributorForm.street} disabled={!distributorForm.city || distributorCoveredAreas.length === 0} onChange={(event) => setDistributorForm((prev) => ({ ...prev, street: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white disabled:opacity-50">
+                    <option value="">{distributorForm.city && distributorCoveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select Covered Area"}</option>
+                    {distributorCoveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Nearest Landmark / Unit Details *
+                  <input required value={distributorForm.landmark} onChange={(event) => setDistributorForm((prev) => ({ ...prev, landmark: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Full Business / Warehouse Address
+                  <input value={distributorForm.address} onChange={(event) => setDistributorForm((prev) => ({ ...prev, address: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Warehouse Address (For Courier)
+                  <input value={distributorForm.pickupAddress} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupAddress: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+            </section>
+
+            <section className="border-t border-slate-800 pt-5">
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">3. Dispatch &amp; Handover Details</h3>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="block text-xs font-semibold text-slate-300">Pickup Contact Person
+                  <input value={distributorForm.pickupContactName} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupContactName: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Contact Phone
+                  <input type="tel" value={distributorForm.pickupContactPhone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupContactPhone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Availability Window
+                  <input value={distributorForm.pickupWindow} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupWindow: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+              <label className="mt-4 block text-xs font-semibold text-slate-300">Return &amp; Defect Handling Instructions
+                <textarea rows={2} value={distributorForm.returnInstructions} onChange={(event) => setDistributorForm((prev) => ({ ...prev, returnInstructions: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white" />
+              </label>
+            </section>
+
+            <section className="grid gap-4 border-t border-slate-800 pt-5 sm:grid-cols-2">
+              <label className="block text-xs font-semibold text-slate-300">Contract Start Date
+                <input type="date" value={distributorForm.contractStartDate} onChange={(event) => setDistributorForm((prev) => ({ ...prev, contractStartDate: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+              </label>
+              <label className="block text-xs font-semibold text-slate-300">Contract Expiry Date
+                <input type="date" value={distributorForm.contractExpiryDate} onChange={(event) => setDistributorForm((prev) => ({ ...prev, contractExpiryDate: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+              </label>
+            </section>
+            <button type="submit" disabled={registerLoading || !locationLookups} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
+              {registerLoading ? "Submitting..." : "Submit distributor application"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   if (showRegister) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 sm:p-6 text-slate-100">
@@ -347,6 +622,35 @@ const Login = () => {
                   </div>
 
                   <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Tax Registration Type *</label>
+                    <select
+                      required
+                      value={registerForm.taxIdType}
+                      onChange={(e) => setRegisterForm({ ...registerForm, taxIdType: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                    >
+                      <option value="PAN">PAN registered</option>
+                      <option value="VAT">VAT registered</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">{registerForm.taxIdType || "PAN"} Number (9 digits) *</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      required
+                      maxLength={9}
+                      pattern="[0-9]{9}"
+                      placeholder="123456789"
+                      value={registerForm.taxIdNumber}
+                      onChange={(e) => setRegisterForm({ ...registerForm, taxIdNumber: e.target.value.replace(/\D/g, "").slice(0, 9) })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1.5">Login Email *</label>
                     <input
                       type="email"
@@ -377,6 +681,7 @@ const Login = () => {
                 <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 flex items-center gap-2">
                   <MapPin className="w-4 h-4" /> 2. Location &amp; Nepal Can Move (NCM) Logistics Integration
                 </h3>
+                {lookupError && <p role="alert" className="mb-3 rounded-lg bg-rose-950 px-3 py-2 text-xs text-rose-200">{lookupError}</p>}
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                   <div>
@@ -384,9 +689,10 @@ const Login = () => {
                     <select
                       required
                       value={registerForm.province}
+                      disabled={!locationLookups}
                       onChange={(e) => {
                         const nextProvince = e.target.value;
-                        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[nextProvince]?.[0] || "";
+                        const nextDistrict = getDistrictsForProvince(locationLookups, nextProvince)[0] || "";
                         setRegisterForm({
                           ...registerForm,
                           province: nextProvince,
@@ -397,7 +703,7 @@ const Login = () => {
                       }}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
                     >
-                      {NEPAL_PROVINCES.map((prov) => (
+                      {(locationLookups?.provinces || []).map((prov) => (
                         <option key={prov} value={prov} className="bg-slate-900 text-white">
                           {prov}
                         </option>
@@ -410,6 +716,7 @@ const Login = () => {
                     <select
                       required
                       value={registerForm.district}
+                      disabled={!locationLookups}
                       onChange={(e) => {
                         setRegisterForm({
                           ...registerForm,
@@ -420,7 +727,7 @@ const Login = () => {
                       }}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
                     >
-                      {(NEPAL_DISTRICTS_BY_PROVINCE[registerForm.province] || []).map((dist) => (
+                      {getDistrictsForProvince(locationLookups, registerForm.province).map((dist) => (
                         <option key={dist} value={dist} className="bg-slate-900 text-white">
                           {dist}
                         </option>
@@ -598,7 +905,7 @@ const Login = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={registerLoading}
+                  disabled={registerLoading || !locationLookups}
                   className="px-8 py-3 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer flex items-center gap-2"
                 >
                   {registerLoading ? (
@@ -623,7 +930,7 @@ const Login = () => {
 
   if (loginStep !== "credentials") {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
         <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="w-full max-w-md relative z-10">
@@ -632,7 +939,7 @@ const Login = () => {
               {loginStep === "otp" ? <ShieldCheck className="w-8 h-8" /> : <Factory className="w-8 h-8" />}
             </div>
             <h1 className="text-2xl font-black text-white">{loginStep === "otp" ? "Verify your identity" : "Choose a delivery method"}</h1>
-            <p className="text-sm text-slate-400 mt-2">Manufacturer Hub access verification</p>
+            <p className="text-sm text-slate-400 mt-2">{loginPortal === "DRIVER" ? "Driver workspace access verification" : loginPortal === "DISTRIBUTOR" ? "Distributor Hub access verification" : "Manufacturer Hub access verification"}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
             {loginStep === "method" ? (
@@ -663,18 +970,13 @@ const Login = () => {
                   <p className="text-sm text-slate-400">Code sent to <span className="font-semibold text-slate-200">{method === "SMS" ? challenge?.maskedPhone : challenge?.maskedEmail}</span></p>
                 </div>
                 <div>
-                  <label htmlFor="manufacturer-otp" className="sr-only">One-time verification code</label>
-                  <input
+                  <OtpInput
                     id="manufacturer-otp"
+                    label="One-time verification code"
                     value={otp}
-                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, challenge?.codeLength || 6))}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-4 text-center font-mono text-2xl tracking-[0.45em] text-white outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20"
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={challenge?.codeLength || 6}
+                    onChange={setOtp}
+                    length={challenge?.codeLength || 6}
                     autoFocus
-                    required
                   />
                 </div>
                 <div className="flex items-center justify-between border-y border-slate-800 py-3 text-sm">
@@ -682,7 +984,7 @@ const Login = () => {
                   <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-emerald-300" : "text-rose-300"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
                 </div>
                 <button type="submit" disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-50">
-                  {loading ? "Checking code..." : "Verify and enter Manufacturer Hub"}
+                  {loading ? "Checking code..." : `Verify and enter ${loginPortal === "DRIVER" ? "Driver" : loginPortal === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} Workspace`}
                 </button>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-slate-400">Didn&apos;t receive the code?</span>
@@ -702,7 +1004,7 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
       {/* Background Glow */}
       <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -713,13 +1015,31 @@ const Login = () => {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-4 shadow-lg shadow-emerald-500/5">
             <Factory className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-black text-white tracking-tight">Manufacturer Hub</h1>
-          <p className="text-sm text-slate-400 mt-1">Sign in to manage your order fulfillment pipeline</p>
+          <h1 className="text-2xl font-black text-white tracking-tight">
+            {loginPortal === "DRIVER" ? "Driver Workspace" : loginPortal === "DISTRIBUTOR" ? "Distributor Workspace" : "Manufacturer Hub"}
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            {loginPortal === "DRIVER" ? "Sign in to view and complete assigned deliveries" : `Sign in to manage your ${loginPortal === "DISTRIBUTOR" ? "distribution" : "manufacturing"} operations`}
+          </p>
         </div>
 
         {/* Card */}
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {loginStep === "credentials" && (
+              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Sign in as
+                <select
+                  value={loginPortal}
+                  onChange={(event) => setLoginPortal(event.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-emerald-500"
+                >
+                  <option value="MANUFACTURER">Manufacturer</option>
+                  <option value="DISTRIBUTOR">Distributor</option>
+                  <option value="DRIVER">Delivery Driver</option>
+                </select>
+              </label>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Email Address
@@ -753,6 +1073,15 @@ const Login = () => {
                 />
               </div>
             </div>
+            {loginStep === "credentials" && (
+              <button
+                type="button"
+                onClick={() => setShowForgotPassword(true)}
+                className="text-xs font-semibold text-emerald-400 hover:text-emerald-300"
+              >
+                Forgot password?
+              </button>
+            )}
 
             <button
               type="submit"
@@ -770,21 +1099,33 @@ const Login = () => {
             </button>
           </form>
 
-          <div className="mt-6 pt-6 border-t border-slate-800 text-center">
-            <p className="text-xs text-slate-400 mb-2">Want to partner as an apparel manufacturing hub?</p>
-            <button
-              type="button"
-              onClick={() => setShowRegister(true)}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Register new manufacturer account</span>
-            </button>
-          </div>
+          {loginPortal !== "DRIVER" && (
+            <div className="mt-6 pt-6 border-t border-slate-800 text-center">
+              <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aama Clothings</p>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => { setRegistrationType("MANUFACTURER"); setShowRegister(true); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Register as manufacturer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRegistrationType("DISTRIBUTOR"); setShowRegister(true); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Register as distributor</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-center gap-2 text-slate-500 text-xs">
             <Shield className="w-3.5 h-3.5" />
-            <span>Encrypted &amp; secure partner portal</span>
+            <span>Encrypted &amp; secure {loginPortal === "DRIVER" ? "driver" : "partner"} portal</span>
           </div>
         </div>
       </div>

@@ -6,20 +6,20 @@ import {
   approvePartner,
   attachRandomCardToOrder,
   adminInvalidateCards,
-  bulkUpdateManufacturerCards,
   createCampaign,
-  createPartner,
   deactivateCampaign,
   generateBatch,
   getAdminCardStats,
-  getManufacturerInventory,
   listAdminCards,
   getCardMetrics,
   listCampaigns,
   listPartners,
-  receiveCard,
   getLocationMappingsService,
+  getDistributorInventory,
+  receiveCardAsDistributor,
+  bulkUpdateDistributorCards,
 } from "../services/marketingCardService.js";
+import { getAdminMarketingPartnerDetail } from "../services/marketingPartnerService.js";
 import {
   claimCustomerReward,
   linkCustomerCard,
@@ -50,14 +50,24 @@ export const adminListPartners = async (_req, res) => {
   try { return res.json({ success: true, partners: await listPartners() }); } catch (error) { return sendError(res, error); }
 };
 
-export const adminCreatePartner = async (req, res) => {
+export const adminGetMarketingPartnerDetail = async (req, res) => {
+  const partnerId = String(req.params.partnerId || "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(partnerId)) {
+    return res.status(400).json({ success: false, message: "A valid marketing partner ID is required.", code: "INVALID_INPUT" });
+  }
   try {
-    if (!req.body.name?.trim() || !req.body.code?.trim() || !req.body.email?.trim() || !req.body.password) {
-      return res.status(400).json({ success: false, message: "Partner name, code, email, and initial password are required." });
+    return res.json({ success: true, ...await getAdminMarketingPartnerDetail(partnerId) });
+  } catch (error) {
+    if (error.code === "PARTNER_NOT_FOUND") {
+      return res.status(404).json({ success: false, message: error.message, code: error.code });
     }
-    if (String(req.body.password).length < 8) return res.status(400).json({ success: false, message: "Initial password must be at least 8 characters." });
-    return res.status(201).json({ success: true, partner: await createPartner(req.body) });
-  } catch (error) { return sendError(res, error); }
+    console.error("Failed to load marketing partner analytics:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load marketing partner analytics.",
+      code: "MARKETING_PARTNER_ANALYTICS_FAILED",
+    });
+  }
 };
 
 export const adminApprovePartner = async (req, res) => {
@@ -130,7 +140,7 @@ export const adminGenerateBatch = async (req, res) => {
 export const adminAssignCards = async (req, res) => {
   try {
     const result = await assignCards({ ...req.body, actorId: req.adminId });
-    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the manufacturer.` });
+    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the distributor.` });
   } catch (error) { return sendError(res, error); }
 };
 
@@ -144,8 +154,8 @@ export const adminAssignCardsToOrganization = async (req, res) => {
 
 export const adminListCards = async (req, res) => {
   try {
-    const { partnerId, campaignId, manufacturerId, status, page, pageSize, search } = req.query;
-    const result = await listAdminCards({ partnerId, campaignId, manufacturerId, status, page, pageSize, search });
+    const { partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search } = req.query;
+    const result = await listAdminCards({ partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search });
     return res.json({ success: true, ...result });
   } catch (error) { return sendError(res, error); }
 };
@@ -166,20 +176,49 @@ export const adminInvalidate = async (req, res) => {
   } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerListCards = async (req, res) => {
-  try { return res.json({ success: true, cards: await getManufacturerInventory({ manufacturerId: req.manufacturerId, status: req.query.status }) }); } catch (error) { return sendError(res, error); }
+// ── Distributor Hub card management ──────────────────────────────────────────
+
+export const distributorListCards = async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      cards: await getDistributorInventory({ distributorId: req.distributorId, status: req.query.status }),
+    });
+  } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerReceiveCard = async (req, res) => {
-  try { return res.json({ success: true, card: await receiveCard({ cardId: req.params.cardId, manufacturerId: req.manufacturerId, notes: req.body.notes }) }); } catch (error) { return sendError(res, error); }
+export const distributorAttachCardToOrder = async (req, res) => {
+  try {
+    const card = await attachRandomCardToOrder({
+      orderId: req.params.orderId,
+      distributorId: req.distributorId,
+    });
+    return res.json({ success: true, card });
+  } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerBulkUpdateCards = async (req, res) => {
+export const distributorReceiveCard = async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      card: await receiveCardAsDistributor({ cardId: req.params.cardId, distributorId: req.distributorId, notes: req.body.notes }),
+    });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const distributorBulkUpdateCards = async (req, res) => {
   try {
     const { cardIds, action, notes } = req.body;
-    if (!Array.isArray(cardIds) || cardIds.length === 0) return res.status(400).json({ success: false, message: "cardIds array is required." });
-    if (!action) return res.status(400).json({ success: false, message: "action is required (RECEIVE, DAMAGED, NOT_FOUND)." });
-    const results = await bulkUpdateManufacturerCards({ cardIds, action: String(action).toUpperCase(), manufacturerId: req.manufacturerId, notes });
+    if (!Array.isArray(cardIds) || cardIds.length === 0)
+      return res.status(400).json({ success: false, message: "cardIds array is required." });
+    if (!action)
+      return res.status(400).json({ success: false, message: "action is required (RECEIVE, DAMAGED, NOT_FOUND)." });
+    const results = await bulkUpdateDistributorCards({
+      cardIds,
+      action: String(action).toUpperCase(),
+      distributorId: req.distributorId,
+      notes,
+    });
     const total = results.succeeded.length + results.skipped.length + results.failed.length;
     return res.json({
       success: true,
@@ -188,10 +227,6 @@ export const manufacturerBulkUpdateCards = async (req, res) => {
       message: `${results.succeeded.length} of ${total} card(s) updated successfully.`,
     });
   } catch (error) { return sendError(res, error); }
-};
-
-export const manufacturerAttachCard = async (req, res) => {
-  try { return res.json({ success: true, card: await attachRandomCardToOrder({ orderId: req.params.orderId, manufacturerId: req.manufacturerId }), message: "Marketing card attached to the order." }); } catch (error) { return sendError(res, error); }
 };
 
 export const customerListCards = async (req, res) => {
@@ -205,7 +240,12 @@ export const customerListRewards = async (req, res) => {
 export const customerClaimReward = async (req, res) => {
   try {
     const reward = await claimCustomerReward({ customerId: req.userId, cardId: req.body.cardId });
-    return res.json({ success: true, reward, message: reward.alreadyClaimed ? "This reward is already claimed and ready to use." : "Reward claimed and ready to apply at checkout." });
+    const message = reward.benefitType === "GIFT"
+      ? "Gift reward saved. It will be attached to your next eligible order."
+      : reward.alreadyClaimed
+        ? "This reward is already claimed and ready to use."
+        : "Reward claimed and ready to apply at checkout.";
+    return res.json({ success: true, reward, message });
   } catch (error) { return sendError(res, error); }
 };
 
@@ -239,6 +279,14 @@ export const customerLinkCard = async (req, res) => {
 
 export const customerScanCard = async (req, res) => {
   try { return res.json({ success: true, card: await resolveCustomerQr({ customerId: req.userId, token: req.body.token }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerRevealCard = async (req, res) => {
+  try {
+    const { revealCustomerQr } = await import("../services/marketingCardCustomerService.js");
+    const card = await revealCustomerQr({ customerId: req.userId, cardId: req.params.cardId });
+    return res.json({ success: true, card });
+  } catch (error) { return sendError(res, error); }
 };
 
 export const customerRedeemBenefit = async (req, res) => {

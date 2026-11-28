@@ -10,17 +10,18 @@ const normalizePermission = (permission) => String(permission || "").trim().toLo
 export const resolveAccountPermissions = async (accountId, { client = prisma, cache, principalRole } = {}) => {
   if (!accountId) return new Set();
   const normalizedPrincipalRole = String(principalRole || "").toUpperCase();
+  const cacheKey = `${accountId}:${normalizedPrincipalRole || "*"}`;
 
-  if (cache?.has(accountId)) {
-    return cache.get(accountId);
+  if (cache?.has(cacheKey)) {
+    return cache.get(cacheKey);
   }
   if (client === prisma) {
-    const cached = permissionCache.get(accountId);
+    const cached = permissionCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      cache?.set(accountId, cached.permissions);
+      cache?.set(cacheKey, cached.permissions);
       return cached.permissions;
     }
-    if (cached) permissionCache.delete(accountId);
+    if (cached) permissionCache.delete(cacheKey);
   }
 
   const mappings = await client.rolePermissionMapping.findMany({
@@ -55,13 +56,13 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
       .filter(Boolean)
   );
 
-  cache?.set(accountId, permissions);
+  cache?.set(cacheKey, permissions);
   if (client === prisma) {
     if (permissionCache.size >= PERMISSION_CACHE_MAX_ENTRIES) {
       const firstKey = permissionCache.keys().next().value;
       if (firstKey !== undefined) permissionCache.delete(firstKey);
     }
-    permissionCache.set(accountId, {
+    permissionCache.set(cacheKey, {
       permissions,
       expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS,
     });
@@ -70,8 +71,13 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
 };
 
 export const invalidatePermissionCache = (accountId = null) => {
-  if (accountId) permissionCache.delete(accountId);
-  else permissionCache.clear();
+  if (!accountId) {
+    permissionCache.clear();
+    return;
+  }
+  for (const key of permissionCache.keys()) {
+    if (key.startsWith(`${accountId}:`)) permissionCache.delete(key);
+  }
 };
 
 export const hasPermission = (permissions, requiredPermission) => {
@@ -92,5 +98,18 @@ export const assignAccountRole = async (accountId, roleCode, { client = prisma }
     where: { accountId_roleId: { accountId, roleId: role.id } },
     update: { isActive: true },
     create: { accountId, roleId: role.id, isActive: true },
+  });
+};
+
+export const deactivateAccountRole = async (accountId, roleCode, { client = prisma } = {}) => {
+  const role = await client.role.findUnique({
+    where: { code: String(roleCode).trim().toUpperCase() },
+    select: { id: true },
+  });
+  if (!role) return { count: 0 };
+
+  return client.authAccountRoleMapping.updateMany({
+    where: { accountId, roleId: role.id },
+    data: { isActive: false },
   });
 };

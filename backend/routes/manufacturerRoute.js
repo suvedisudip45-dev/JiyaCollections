@@ -12,23 +12,125 @@ import {
   updateContractStatus,
   uploadContractDoc,
   updateManufacturer,
-  updateCommissionAgreement,
   updatePickupProfile,
   getManufacturerStats,
   getAvailableNcmBranches,
   syncNcmBranches,
 } from "../controllers/manufacturerController.js";
+import { requestManufacturerDistributorAccess } from "../controllers/distributorController.js";
+import { dispatchStockTransferRequest } from "../controllers/stockTransferController.js";
+import {
+  createAdminProductionRequest,
+  submitManufacturerProductionQuote,
+  submitProductionForAdminAcceptance,
+  startProduction,
+  submitPreProductionChecklist,
+} from "../controllers/manufacturerProductionController.js";
+import {
+  createManufacturerSettlementRequest,
+  getManufacturerFinanceDashboard,
+  getManufacturerSettlementRequests,
+} from "../controllers/manufacturerFinanceController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { requireManufacturerTransferSourceLocation } from "../middleware/locationScope.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
 const manufacturerRouter = express.Router();
 const upload = multer({ dest: "uploads/" });
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only administrators can create manufacturer production orders.",
+    });
+  }
+  return next();
+};
 
 // Public
 manufacturerRouter.post("/login", loginRateLimitForPortal("MANUFACTURER"), resetLoginRateLimitOnSuccess, loginManufacturer);
 manufacturerRouter.get("/branches", getAvailableNcmBranches);
 manufacturerRouter.post("/admin/branches/sync", authenticate, authorize("manufacturer:branches_sync"), syncNcmBranches);
 manufacturerRouter.post("/register", publicRegistrationRateLimit, upload.single("contractDoc"), registerManufacturerSelf);
+manufacturerRouter.post(
+  "/apply-distributor",
+  authenticate,
+  authorize("manufacturer:distributor_request"),
+  setManufacturerContext,
+  requestManufacturerDistributorAccess,
+);
+manufacturerRouter.post(
+  "/distributor-access-request",
+  authenticate,
+  authorize("manufacturer:distributor_request"),
+  setManufacturerContext,
+  requestManufacturerDistributorAccess,
+);
+manufacturerRouter.post(
+  "/stock-requests/:id/dispatch",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  requireManufacturerTransferSourceLocation,
+  dispatchStockTransferRequest,
+);
+manufacturerRouter.post(
+  "/production/create",
+  authenticate,
+  requireAdminRole,
+  authorize("manufacturer:production_admin"),
+  createAdminProductionRequest,
+);
+manufacturerRouter.patch(
+  "/production/:id/pre-check",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  submitPreProductionChecklist,
+);
+manufacturerRouter.patch(
+  "/production/:id/quote",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  submitManufacturerProductionQuote,
+);
+manufacturerRouter.post(
+  "/production/:id/start",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  startProduction,
+);
+manufacturerRouter.patch(
+  "/production/:id/post-check",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  submitProductionForAdminAcceptance,
+);
+manufacturerRouter.get(
+  "/finance/dashboard",
+  authenticate,
+  authorize("manufacturer:finance_dashboard"),
+  setManufacturerContext,
+  getManufacturerFinanceDashboard,
+);
+manufacturerRouter.get(
+  "/finance/settlement-requests",
+  authenticate,
+  authorize("manufacturer:finance_dashboard"),
+  setManufacturerContext,
+  getManufacturerSettlementRequests,
+);
+manufacturerRouter.post(
+  "/finance/settlement-request",
+  authenticate,
+  authorize("manufacturer:settlement_request"),
+  setManufacturerContext,
+  createManufacturerSettlementRequest,
+);
 
 // Manufacturer-authenticated
 manufacturerRouter.get("/profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);
@@ -39,10 +141,6 @@ manufacturerRouter.get("/stats", authenticate, authorize("manufacturer:stats_rea
 manufacturerRouter.post("/pickup-profile", authenticate, authorize("manufacturer:pickup_update"), setManufacturerContext, updatePickupProfile);
 manufacturerRouter.put("/pickup-profile", authenticate, authorize("manufacturer:pickup_update"), setManufacturerContext, updatePickupProfile);
 manufacturerRouter.get("/pickup-profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);
-manufacturerRouter.post("/commission", authenticate, authorize("manufacturer:commission_propose"), setManufacturerContext, updateCommissionAgreement);
-manufacturerRouter.put("/commission", authenticate, authorize("manufacturer:commission_propose"), setManufacturerContext, updateCommissionAgreement);
-manufacturerRouter.put("/admin/commission/:id", authenticate, authorize("manufacturer:admin_commission_update"), updateCommissionAgreement);
-
 // Admin-only (support both direct and /admin/ prefixed paths)
 manufacturerRouter.get("/list", authenticate, authorize("manufacturer:admin_list"), listManufacturers);
 manufacturerRouter.get("/admin/list", authenticate, authorize("manufacturer:admin_list"), listManufacturers);

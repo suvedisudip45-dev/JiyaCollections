@@ -9,6 +9,7 @@ import {
   adminListReviews,
   adminDeleteReview,
 } from "../controllers/reviewController.js";
+import { submitDistributorReview } from "../controllers/distributorReviewController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const reviewRouter = express.Router();
@@ -22,6 +23,7 @@ reviewRouter.post("/status/:productId", authenticate, authorize("customer:review
 reviewRouter.post("/like", authenticate, authorize("customer:review_interact"), toggleLikeReview);
 reviewRouter.post("/dislike", authenticate, authorize("customer:review_interact"), toggleDislikeReview);
 reviewRouter.post("/delete", authenticate, authorize("customer:review_delete"), deleteUserReview);
+reviewRouter.post("/distributor/:orderId", authenticate, authorize("customer:review_write"), submitDistributorReview);
 
 // Admin authenticated routes
 reviewRouter.get("/admin/list", authenticate, authorize("review:admin_list"), adminListReviews);

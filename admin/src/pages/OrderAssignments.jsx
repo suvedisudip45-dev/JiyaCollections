@@ -1,126 +1,247 @@
-import React, { useEffect, useState, useCallback } from "react";
+/* eslint-disable react/prop-types */
+import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import {
-  Package,
-  ArrowRight,
-  RefreshCw,
-  Search,
-  Filter,
-  CheckCircle2,
-  Clock,
-  Truck,
-  Building2,
-  X,
-  AlertCircle,
-} from "lucide-react";
+import { Layers, Package, RefreshCw, RotateCw, Search, ShieldCheck, Truck, Weight, X } from "lucide-react";
 import { backendUrl, currency } from "../App";
+import { usePermissions } from "../auth/PermissionsContext";
+import Pagination from "../components/Pagination";
 
-const canAdminReassignAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
-  const normalized = String(status || "").toLowerCase();
+const ASSIGNMENT_PAGE_SIZE = 10;
+const UNASSIGNED_PAGE_SIZE = 10;
 
-  if (hasDeliveryOrder) return false;
+const getAssignmentNotes = (assignment) => {
+  try {
+    return assignment?.notes ? JSON.parse(assignment.notes) : {};
+  } catch {
+    return {};
+  }
+};
 
-  const lockedStatuses = new Set([
-    "accepted",
-    "preparing",
-    "quality_check",
-    "packed",
-    "ready_for_pickup",
-    "picked_up",
-    "out_for_delivery",
-    "in_transit",
-    "arrived_at_destination",
-    "delivered",
-    "return_requested",
-  ]);
-
-  if (lockedStatuses.has(normalized)) return false;
-
-  return ["assigned", "pending_acceptance", "pending_assignment", "rejected"].includes(normalized) || normalized === "";
+const getPendingAgeLabel = (order) => {
+  const createdAt = order?.createdAt || order?.date;
+  const createdAtMs = createdAt ? new Date(createdAt).getTime() : NaN;
+  if (!Number.isFinite(createdAtMs)) return null;
+  const daysPending = Math.floor(Math.max(0, Date.now() - createdAtMs) / 86400000);
+  return `Pending since ${new Date(createdAtMs).toLocaleDateString()} · ${daysPending} day${daysPending === 1 ? "" : "s"} pending`;
 };
 
 const OrderAssignments = ({ token }) => {
+  const { can } = usePermissions();
+  const canRetryAllocation = can("assignment:create");
+  const canControlOrders = can("order:control");
   const [assignments, setAssignments] = useState([]);
-  const [manufacturers, setManufacturers] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
+  const [unassignedOrders, setUnassignedOrders] = useState([]);
+  const [unassignedPage, setUnassignedPage] = useState(1);
+  const [unassignedPagination, setUnassignedPagination] = useState(null);
+  const [unassignedHasMore, setUnassignedHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [retryingOrderId, setRetryingOrderId] = useState("");
+  const [allocationFailures, setAllocationFailures] = useState({});
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-
-  // Re-assign Modal
-  const [reassignModalOpen, setReassignModalOpen] = useState(false);
-  const [selectedAssignment, setSelectedAssignment] = useState(null);
-  const [targetMfgId, setTargetMfgId] = useState("");
-  const [reassignReason, setReassignReason] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [ncmAssignment, setNcmAssignment] = useState(null);
+  const [ncmForm, setNcmForm] = useState({});
+  const [bookingAssignmentId, setBookingAssignmentId] = useState("");
+  const [activeManualOrder, setActiveManualOrder] = useState(null);
+  const [activeManualAssignmentId, setActiveManualAssignmentId] = useState("");
+  const [activeManualDistributorId, setActiveManualDistributorId] = useState("");
+  const [activeDistributors, setActiveDistributors] = useState([]);
+  const [manualDistributorId, setManualDistributorId] = useState("");
+  const [manualAssignmentReason, setManualAssignmentReason] = useState("");
+  const [manualAssignmentBusy, setManualAssignmentBusy] = useState(false);
 
   const fetchAssignmentsData = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [assignRes, mfgRes] = await Promise.all([
+      const [assignRes, unassignedRes] = await Promise.all([
         axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
           headers: { token },
+          params: { page, limit: ASSIGNMENT_PAGE_SIZE, status: statusFilter },
         }),
-        axios.get(`${backendUrl}/api/manufacturer/admin/list`, {
+        axios.get(`${backendUrl}/api/order-assignment/admin/unassigned`, {
           headers: { token },
+          params: { page: unassignedPage, limit: UNASSIGNED_PAGE_SIZE },
         }),
       ]);
 
       if (assignRes.data.success) {
         setAssignments(assignRes.data.assignments || []);
+        setPagination(assignRes.data.pagination || null);
       }
-      if (mfgRes.data.success) {
-        setManufacturers(mfgRes.data.manufacturers || []);
+      if (unassignedRes.data.success) {
+        const orders = unassignedRes.data.orders || [];
+        const nextPagination = unassignedRes.data.pagination || null;
+        setUnassignedOrders(orders);
+        setUnassignedPagination(nextPagination);
+        setUnassignedHasMore(
+          nextPagination
+            ? nextPagination.page < nextPagination.totalPages
+            : orders.length >= UNASSIGNED_PAGE_SIZE,
+        );
+        if (nextPagination?.totalPages && unassignedPage > nextPagination.totalPages) {
+          setUnassignedPage(nextPagination.totalPages);
+        }
       }
-    } catch (err) {
+    } catch {
       toast.error("Failed to load order assignments");
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [page, statusFilter, token, unassignedPage]);
+
+  const retryAllocation = async (orderId) => {
+    setRetryingOrderId(orderId);
+    setAllocationFailures((current) => {
+      const next = { ...current };
+      delete next[orderId];
+      return next;
+    });
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/order-assignment/assign`,
+        { orderId },
+        { headers: { token } },
+      );
+      if (!response.data.success) {
+        setAllocationFailures((current) => ({
+          ...current,
+          [orderId]: {
+            message: response.data.message || "This order could not be assigned.",
+            stockShortages: response.data.stockShortages || [],
+          },
+        }));
+        toast.error(response.data.message || "This order could not be assigned.");
+        return;
+      }
+      setAllocationFailures((current) => {
+        const next = { ...current };
+        delete next[orderId];
+        return next;
+      });
+      toast.success(`Order assigned to ${response.data.distributor || "a distributor"}.`);
+      await fetchAssignmentsData();
+    } catch (requestError) {
+      toast.error(requestError.response?.data?.message || "This order could not be assigned.");
+    } finally {
+      setRetryingOrderId("");
+    }
+  };
+
+  const openManualAssignment = (order) => {
+    setActiveManualOrder(order);
+    setActiveManualAssignmentId("");
+    setActiveManualDistributorId("");
+    setManualDistributorId("");
+    setManualAssignmentReason("");
+  };
+
+  const openManualReassignment = (assignment) => {
+    setActiveManualOrder(assignment.order);
+    setActiveManualAssignmentId(assignment.id);
+    setActiveManualDistributorId(assignment.distributorId);
+    setManualDistributorId("");
+    setManualAssignmentReason("");
+  };
+
+  const submitManualAssignment = async (event) => {
+    event.preventDefault();
+    if (!activeManualOrder || manualAssignmentBusy) return;
+    setManualAssignmentBusy(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/order-assignment/admin/control/${activeManualAssignmentId ? "reassign" : "assign"}`,
+        {
+          ...(activeManualAssignmentId
+            ? { assignmentId: activeManualAssignmentId }
+            : { orderId: activeManualOrder.id }),
+          distributorId: manualDistributorId,
+          reason: manualAssignmentReason.trim(),
+        },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Order assignment failed.");
+      toast.success(response.data.message || "Order assigned.");
+      setActiveManualOrder(null);
+      await fetchAssignmentsData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Order assignment failed.");
+    } finally {
+      setManualAssignmentBusy(false);
+    }
+  };
+
+  const openNcmForm = (assignment) => {
+    const notes = getAssignmentNotes(assignment);
+    const firstItem = assignment.order?.items?.[0] || {};
+    setNcmAssignment(assignment);
+    setNcmForm({
+      productType: notes.productType || firstItem.productType || firstItem.category || firstItem.name || "",
+      productDescription: notes.productDescription || firstItem.description || firstItem.productDescription || firstItem.name || "",
+      packageType: notes.packageType || "Box",
+      deliveryInstruction: notes.deliveryInstruction || assignment.order?.address?.deliveryInstruction || assignment.order?.address?.orderNotes || "",
+      packageWeight: notes.packageWeight || "",
+      packageDimensions: notes.packageDimensions || "",
+      isFragile: Boolean(notes.isFragile),
+      packagingNotes: notes.packagingNotes || "",
+    });
+  };
+
+  const requestNcmDelivery = async (event) => {
+    event.preventDefault();
+    if (!ncmAssignment || bookingAssignmentId) return;
+    setBookingAssignmentId(ncmAssignment.id);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/delivery/admin/assignment/${ncmAssignment.id}/ncm`,
+        ncmForm,
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "NCM booking failed");
+      toast.success(response.data.duplicate ? "NCM delivery is already booked." : "NCM delivery booking submitted.");
+      setNcmAssignment(null);
+      await fetchAssignmentsData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "NCM booking failed");
+    } finally {
+      setBookingAssignmentId("");
+    }
+  };
 
   useEffect(() => {
     fetchAssignmentsData();
   }, [fetchAssignmentsData]);
 
-  const handleManualReassign = async (e) => {
-    e.preventDefault();
-    if (!selectedAssignment || !targetMfgId) return;
-    setSubmitting(true);
-    try {
-      const res = await axios.post(
-        `${backendUrl}/api/order-assignment/admin/manual-assign`,
-        {
-          orderId: selectedAssignment.orderId,
-          manufacturerId: targetMfgId,
-          reason: reassignReason || "Admin manual routing override",
-        },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Order re-allocated successfully!");
-        setReassignModalOpen(false);
-        fetchAssignmentsData();
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to re-assign order");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  useEffect(() => {
+    if (!token || !canControlOrders) return;
+    axios.get(`${backendUrl}/api/order-assignment/admin/control/distributors`, {
+      headers: { token },
+    })
+      .then(({ data }) => {
+        if (!data.success) throw new Error(data.message || "Could not load active distributors.");
+        setActiveDistributors(data.distributors || []);
+      })
+      .catch((error) => {
+        toast.error(error.response?.data?.message || error.message || "Could not load active distributors.");
+      });
+  }, [canControlOrders, token]);
 
   const filtered = assignments.filter((a) => {
-    if (statusFilter !== "all" && a.status !== statusFilter) return false;
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
-      const orderId = (a.order?.id || a.id).toLowerCase();
-      const mfgName = (a.manufacturer?.businessName || "").toLowerCase();
+      const orderIds = `${a.order?.orderReference || ""} ${a.order?.id || a.id}`.toLowerCase();
+      const hubName = (a.distributor?.name || a.manufacturer?.name || a.manufacturer?.businessName || "").toLowerCase();
       const city = (a.order?.address?.city || a.order?.shippingAddress?.city || "").toLowerCase();
-      return orderId.includes(term) || mfgName.includes(term) || city.includes(term);
+      return orderIds.includes(term) || hubName.includes(term) || city.includes(term);
     }
     return true;
   });
+  const manualReassignmentDistributors = activeDistributors.filter((distributor) => (
+    !activeManualAssignmentId || distributor.id !== activeManualDistributorId
+  ));
 
   return (
     <div className="space-y-6">
@@ -131,7 +252,7 @@ const OrderAssignments = ({ token }) => {
             Order Allocation &amp; Routing Engine
           </h1>
           <p className="text-xs text-slate-500">
-            Monitor real-time proximity manufacturer assignments and delivery handoffs across Nepal
+            Monitor distributor allocations and delivery handoffs across Nepal
           </p>
         </div>
 
@@ -150,7 +271,7 @@ const OrderAssignments = ({ token }) => {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Search by order ID, manufacturer, or city..."
+            placeholder="Search by order reference, distributor, or city..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
@@ -169,7 +290,7 @@ const OrderAssignments = ({ token }) => {
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setStatusFilter(tab.id)}
+              onClick={() => { setStatusFilter(tab.id); setPage(1); }}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
                 statusFilter === tab.id
                   ? "bg-slate-900 text-white"
@@ -181,6 +302,122 @@ const OrderAssignments = ({ token }) => {
           ))}
         </div>
       </div>
+
+      <section className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Orders awaiting distributor assignment</h2>
+            <p className="text-xs text-slate-600">Coverage sets routing priority, while available ledger stock is required. Retry after updating coverage or inventory. Older orders remain available on later pages.</p>
+          </div>
+          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+            {unassignedPagination?.total ?? `${unassignedOrders.length} shown`}
+          </span>
+        </div>
+        {loading ? (
+          <p className="py-3 text-center text-xs text-slate-500">Loading pending orders...</p>
+        ) : unassignedOrders.length === 0 ? (
+          <p className="rounded-lg bg-white/70 p-3 text-xs text-slate-500">No customer orders are currently waiting for allocation.</p>
+        ) : (
+          <div className="space-y-2">
+            {unassignedOrders.map((order) => (
+              <div key={order.id} className="rounded-lg bg-white p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-48">
+                    <p className="font-mono text-xs font-bold text-slate-900">#{order.orderReference}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-amber-800">
+                      Awaiting distributor assignment
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      {[order.address?.district, order.address?.province || order.address?.state].filter(Boolean).join(", ") || "Destination not set"}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {order.items?.length || 0} line item{order.items?.length === 1 ? "" : "s"} · {currency}{Number(order.amount || 0).toLocaleString()} · {order.fulfillmentStatus || "pending"}
+                    </p>
+                    {getPendingAgeLabel(order) && (
+                      <p className="text-[11px] text-slate-500">{getPendingAgeLabel(order)}</p>
+                    )}
+                  </div>
+                  {order.allocationFailed && (
+                    <div className="flex flex-wrap gap-2">
+                      {canRetryAllocation && (
+                        <button
+                          type="button"
+                          onClick={() => retryAllocation(order.id)}
+                          disabled={retryingOrderId === order.id}
+                          className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                        >
+                          <RotateCw className={`h-3.5 w-3.5 ${retryingOrderId === order.id ? "animate-spin" : ""}`} />
+                          {retryingOrderId === order.id ? "Retrying..." : "Retry allocation"}
+                        </button>
+                      )}
+                      {canControlOrders && (
+                        <button
+                          type="button"
+                          onClick={() => openManualAssignment(order)}
+                          disabled={!activeDistributors.length}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Assign to distributor
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {allocationFailures[order.id] && (
+                  <div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+                    <p>{allocationFailures[order.id].message}</p>
+                    {allocationFailures[order.id].stockShortages.length > 0 && (
+                      <ul className="mt-2 list-disc space-y-1 pl-5">
+                        {allocationFailures[order.id].stockShortages.flatMap((candidate) =>
+                          candidate.shortages.map((shortage) => (
+                            <li key={`${candidate.distributor}-${shortage.productId}-${shortage.size}-${shortage.color}`}>
+                              {candidate.distributor}: product {shortage.productId}, {shortage.size} / {shortage.color} — need {shortage.requiredQuantity}, available {shortage.availableQuantity}.
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {!loading && (
+          unassignedPagination ? (
+            <Pagination
+              page={unassignedPagination.page || unassignedPage}
+              totalPages={unassignedPagination.totalPages || 1}
+              total={unassignedPagination.total ?? unassignedOrders.length}
+              limit={unassignedPagination.limit || UNASSIGNED_PAGE_SIZE}
+              loading={loading}
+              onPageChange={setUnassignedPage}
+            />
+          ) : (
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <span className="text-xs text-slate-500">Page {unassignedPage} · {unassignedOrders.length} orders shown</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={loading || unassignedPage === 1}
+                  onClick={() => setUnassignedPage((current) => current - 1)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || !unassignedHasMore}
+                  onClick={() => setUnassignedPage((current) => current + 1)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )
+        )}
+      </section>
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
@@ -201,22 +438,19 @@ const OrderAssignments = ({ token }) => {
                 <tr>
                   <th className="py-3 px-4">Order ID &amp; Date</th>
                   <th className="py-3 px-4">Destination City</th>
-                  <th className="py-3 px-4">Assigned Manufacturer Hub</th>
+                  <th className="py-3 px-4">Assigned Distributor Hub</th>
                   <th className="py-3 px-4">Items / Total</th>
                   <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Admin Override</th>
+                  <th className="py-3 px-4">Assignment Type</th>
+                  <th className="py-3 px-4">NCM / Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium">
                 {filtered.map((a) => {
                   const order = a.order;
-                  const mfg = a.manufacturer;
+                  const hub = a.distributor || a.manufacturer;
                   const items = order?.items || [];
                   const totalQty = items.reduce((sum, i) => sum + (i.quantity || 1), 0);
-                  const canAdminReassign = canAdminReassignAssignment({
-                    status: a.status,
-                    hasDeliveryOrder: Boolean(a.delivery),
-                  });
 
                   return (
                     <tr key={a.id} className="hover:bg-slate-50/80 transition-colors">
@@ -233,10 +467,10 @@ const OrderAssignments = ({ token }) => {
 
                       <td className="py-3.5 px-4">
                         <span className="font-bold text-slate-900 block">
-                          {mfg?.businessName || "Pending Assignment"}
+                          {hub?.name || hub?.businessName || "Pending Assignment"}
                         </span>
                         <span className="text-[11px] text-slate-500">
-                          {mfg?.city} (Score: {mfg?.qualityRating?.toFixed(1) || "5.0"})
+                          {hub?.city || ""}
                         </span>
                       </td>
 
@@ -262,25 +496,46 @@ const OrderAssignments = ({ token }) => {
                           }`}
                         >
                           {a.status}
+                          {a.delivery?.ncmStatus && (
+                            <span className="mt-1 block text-[10px] font-semibold text-sky-700">
+                              NCM: {a.delivery.ncmStatus}
+                            </span>
+                          )}
                         </span>
                       </td>
 
-                      <td className="py-3.5 px-4 text-right">
-                        {canAdminReassign ? (
+                      <td className="py-3.5 px-4 text-slate-600">
+                        {a.distributorId ? "Distributor" : a.manufacturerId ? "Legacy manufacturer" : "Unassigned"}
+                      </td>
+                      <td className="py-3.5 px-4 min-w-40">
+                        {canControlOrders && a.distributorId && !a.delivery && ["assigned", "pending_acceptance", "rejected"].includes(String(a.status || "").toLowerCase()) && (
                           <button
-                            onClick={() => {
-                              setSelectedAssignment(a);
-                              setTargetMfgId(a.manufacturerId || "");
-                              setReassignReason("");
-                              setReassignModalOpen(true);
-                            }}
-                            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs cursor-pointer shadow-xs"
+                            type="button"
+                            onClick={() => openManualReassignment(a)}
+                            className="mb-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
                           >
-                            Re-route Hub
+                            <RotateCw className="h-3.5 w-3.5" />
+                            Reassign hub
+                          </button>
+                        )}
+                        {a.delivery?.ncmOrderId ? (
+                          <div className="space-y-1">
+                            <span className="font-mono text-[11px] font-bold text-sky-800">Waybill #{a.delivery.ncmOrderId}</span>
+                            <span className="block text-[10px] text-slate-500">{a.delivery.ncmStatus || a.delivery.state}</span>
+                          </div>
+                        ) : ["packed", "package_details_complete", "ready_for_pickup"].includes(String(a.status || "").toLowerCase()) &&
+                          !["NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"].includes(a.delivery?.state) ? (
+                          <button
+                            type="button"
+                            onClick={() => openNcmForm(a)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-2.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-700"
+                          >
+                            <Truck className="h-3.5 w-3.5" />
+                            Request NCM delivery
                           </button>
                         ) : (
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-bold border border-slate-200">
-                            Locked
+                          <span className="text-[10px] text-slate-400" title="Packing is required before requesting NCM delivery; it does not affect hub reassignment.">
+                            {a.delivery?.state || "Pack first for NCM"}
                           </span>
                         )}
                       </td>
@@ -291,81 +546,169 @@ const OrderAssignments = ({ token }) => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || assignments.length}
+          limit={pagination?.limit || ASSIGNMENT_PAGE_SIZE}
+          loading={loading}
+          onPageChange={setPage}
+        />
       </div>
 
-      {/* Manual Re-assign Modal */}
-      {reassignModalOpen && selectedAssignment && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Manual Hub Re-Allocation
-              </h3>
-              <button
-                onClick={() => setReassignModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
+      {ncmAssignment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-3 sm:p-6">
+          <form onSubmit={requestNcmDelivery} className="max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-slate-50 shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
+              <div>
+                <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                  <Truck className="h-4 w-4 text-sky-600" />
+                  Request NCM delivery
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Order #{ncmAssignment.order?.orderReference} · Pickup {ncmAssignment.distributor?.ncmPickupBranch || ncmAssignment.manufacturer?.ncmPickupBranch || "branch not configured"} · Destination {ncmAssignment.order?.address?.ncmBranch || ncmAssignment.order?.address?.city || "not set"}
+                </p>
+              </div>
+              <button type="button" onClick={() => setNcmAssignment(null)} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100" aria-label="Close package details">
+                <X className="h-4 w-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-500">
-              Manually override the proximity algorithm and assign this order to a specific manufacturer hub.
-            </p>
-
-            <form onSubmit={handleManualReassign} className="space-y-4 text-xs">
+            <section className="m-4 space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Select Target Manufacturer Hub
-                </label>
-                <select
-                  required
-                  value={targetMfgId}
-                  onChange={(e) => setTargetMfgId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                >
-                  <option value="">Select manufacturer...</option>
-                  {manufacturers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.businessName} — {m.city} ({m.qualityRating?.toFixed(1)} Rating)
-                    </option>
-                  ))}
-                </select>
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                  Packaging &amp; Quality Dispatch Parameters
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Add package details before submitting this packed order to NCM. The booking uses the assigned hub pickup branch and customer delivery address.
+                </p>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Reason for Manual Override
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  Product Type
+                  <input required value={ncmForm.productType || ""} onChange={(event) => setNcmForm({ ...ncmForm, productType: event.target.value })} placeholder="e.g. Shirt, Kurta, Jacket" className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal text-slate-800" />
                 </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Prioritized rush order / capacity balancing"
-                  value={reassignReason}
-                  onChange={(e) => setReassignReason(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
+                <label className="text-xs font-semibold text-slate-700">
+                  Package Type
+                  <select required value={ncmForm.packageType || "Box"} onChange={(event) => setNcmForm({ ...ncmForm, packageType: event.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-normal text-slate-800">
+                    {["Box", "Polybag", "Envelope", "Carton", "Gift Box"].map((type) => <option key={type}>{type}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Product Description
+                  <textarea required rows={2} value={ncmForm.productDescription || ""} onChange={(event) => setNcmForm({ ...ncmForm, productDescription: event.target.value })} placeholder="Describe the item in the package" className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-normal text-slate-800" />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Delivery Instructions
+                  <textarea rows={2} value={ncmForm.deliveryInstruction || ""} onChange={(event) => setNcmForm({ ...ncmForm, deliveryInstruction: event.target.value })} placeholder="Call before delivery, handle with care" className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-normal text-slate-800" />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Package Weight (approx. kg)
+                  <span className="relative mt-1 block">
+                    <Weight className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input required type="number" min="0.1" step="0.1" value={ncmForm.packageWeight || ""} onChange={(event) => setNcmForm({ ...ncmForm, packageWeight: event.target.value })} placeholder="e.g. 0.8" className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs font-normal text-slate-800" />
+                  </span>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Package Dimensions (L × W × H cm)
+                  <span className="relative mt-1 block">
+                    <Layers className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input required value={ncmForm.packageDimensions || ""} onChange={(event) => setNcmForm({ ...ncmForm, packageDimensions: event.target.value })} placeholder="e.g. 30 x 20 x 5 cm" className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs font-normal text-slate-800" />
+                  </span>
+                </label>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setReassignModalOpen(false)}
-                  className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 rounded-xl font-bold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? "Re-assigning..." : "Confirm Re-assignment"}
-                </button>
-              </div>
-            </form>
-          </div>
+              <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                <span>
+                  <span className="block font-semibold text-slate-700">Fragile item</span>
+                  <span className="text-[10px] text-slate-500">Mark this package for extra handling</span>
+                </span>
+                <input type="checkbox" checked={Boolean(ncmForm.isFragile)} onChange={(event) => setNcmForm({ ...ncmForm, isFragile: event.target.checked })} className="h-4 w-4 accent-amber-500" />
+              </label>
+
+              <label className="block text-xs font-semibold text-slate-700">
+                Quality Inspection &amp; Packaging Notes
+                <textarea rows={3} value={ncmForm.packagingNotes || ""} onChange={(event) => setNcmForm({ ...ncmForm, packagingNotes: event.target.value })} placeholder="e.g. Ironed, tagged with Aama hologram, wrapped in waterproof polybag." className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-normal text-slate-800" />
+              </label>
+            </section>
+
+            <div className="sticky bottom-0 flex justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
+              <button type="button" onClick={() => setNcmAssignment(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Cancel</button>
+              <button type="submit" disabled={bookingAssignmentId === ncmAssignment.id} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                <Truck className="h-3.5 w-3.5" />
+                {bookingAssignmentId === ncmAssignment.id ? "Submitting..." : "Submit to NCM"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
+
+      {activeManualOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={submitManualAssignment} className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">{activeManualAssignmentId ? "Reassign order to another distributor" : "Manually assign failed order"}</h2>
+                <p className="mt-1 text-xs text-slate-500">Order #{activeManualOrder.orderReference} · assignment requires enough available distributor ledger stock.</p>
+              </div>
+              <button type="button" onClick={() => setActiveManualOrder(null)} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Active distributor
+              <select
+                required
+                value={manualDistributorId}
+                onChange={(event) => setManualDistributorId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"
+              >
+                <option value="">Select a distributor</option>
+                {!manualReassignmentDistributors.length && (
+                  <option value="" disabled>No other active distributor is available</option>
+                )}
+                {manualReassignmentDistributors.map((distributor) => (
+                  <option key={distributor.id} value={distributor.id}>
+                    {distributor.name} · {[distributor.district, distributor.province].filter(Boolean).join(", ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {activeManualAssignmentId && !manualReassignmentDistributors.length && (
+              <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                There is no other active distributor to select. Activate another distributor first; it must also have enough available stock for this order.
+              </p>
+            )}
+            <label className="block text-xs font-semibold text-slate-700">
+              Reason for override
+              <textarea
+                required
+                minLength={10}
+                maxLength={500}
+                rows={3}
+                value={manualAssignmentReason}
+                onChange={(event) => setManualAssignmentReason(event.target.value)}
+                placeholder="Explain why this distributor should fulfill the order."
+                className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+              />
+            </label>
+            <p className="text-[11px] text-slate-500">{activeManualAssignmentId ? "Available only before acceptance and before delivery handoff. The current stock reservation will be transferred atomically." : "This operation is audited. It will not fall back to another distributor if the selected hub lacks stock."}</p>
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+              <button type="button" onClick={() => setActiveManualOrder(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Cancel</button>
+              <button
+                type="submit"
+                disabled={manualAssignmentBusy || !manualDistributorId || manualAssignmentReason.trim().length < 10}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {manualAssignmentBusy ? "Saving..." : activeManualAssignmentId ? "Confirm reassignment" : "Confirm assignment"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
     </div>
   );
 };

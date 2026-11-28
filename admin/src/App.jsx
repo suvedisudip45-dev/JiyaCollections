@@ -1,20 +1,23 @@
 /* eslint-disable react/prop-types */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { clearAuthTokens } from "./auth/tokenStorage";
 import { PermissionsProvider, usePermissions } from "./auth/PermissionsContext";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
+import Breadcrumbs from "./components/Breadcrumbs";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Add from "./pages/Add";
 import List from "./pages/List";
-import Orders from "./pages/Orders";
+import Orders, { AdminOrderDetail } from "./pages/Orders";
 import Categories from "./pages/Categories";
 import ComboBundles from "./pages/ComboBundles";
-import Collaborations from "./pages/Collaborations";
 import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
+import PlatformFeatureSettings from "./pages/PlatformFeatureSettings";
+import StorefrontContentSettings from "./pages/StorefrontContentSettings";
 import Customers from "./pages/Customers";
+import CustomerDetail from "./pages/CustomerDetail";
 import LoyaltyLevels from "./pages/LoyaltyLevels";
 import GiftPromotions from "./pages/GiftPromotions";
 import CreateOrder from "./pages/CreateOrder";
@@ -28,24 +31,40 @@ import TreasuryCash from "./pages/TreasuryCash";
 import AssetManagement from "./pages/AssetManagement";
 import PartnershipEquity from "./pages/PartnershipEquity";
 import TaxCompliance from "./pages/TaxCompliance";
+import NepaliCalendar from "./pages/NepaliCalendar";
 import ReturnsManagement from "./pages/ReturnsManagement";
 import ExpenseManagement from "./pages/ExpenseManagement";
 import FinancialStatements from "./pages/FinancialStatements";
 import PayablesReceivables from "./pages/PayablesReceivables";
 import ChartOfAccounts from "./pages/ChartOfAccounts";
 import JournalEntries from "./pages/JournalEntries";
+import AccountingApprovals from "./pages/AccountingApprovals";
 import GeneralLedger from "./pages/GeneralLedger";
 import TrialBalance from "./pages/TrialBalance";
 import FiscalPeriods from "./pages/FiscalPeriods";
 import AccountingHealth from "./pages/AccountingHealth";
 import Manufacturers from "./pages/Manufacturers";
+import ManufacturerDetail from "./pages/ManufacturerDetail";
 import LocationPricing from "./pages/LocationPricing";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
+import NcmDeliveries from "./pages/NcmDeliveries";
+import SelfDeliveries from "./pages/SelfDeliveries";
+import NcmTools from "./pages/NcmTools";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
+import ManufacturerProductionRequests from "./pages/ManufacturerProductionRequests";
+import DistributorApplications from "./pages/DistributorApplications";
+import DistributorDirectory from "./pages/DistributorDirectory";
+import DistributorDetail from "./pages/DistributorDetail";
+import InventoryLedgerAudit from "./pages/InventoryLedgerAudit";
+import StockTransfers from "./pages/StockTransfers";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
 import MarketingCards from "./pages/MarketingCards";
+import MarketingPartnerDetail from "./pages/MarketingPartnerDetail";
+import ProductAnalytics from "./pages/ProductAnalytics";
+import DiscountAnalytics from "./pages/DiscountAnalytics";
 import AccessUsers from "./pages/AccessUsers";
+import AccessDrivers from "./pages/AccessDrivers";
 import AccessRoles from "./pages/AccessRoles";
 import AccessPermissions from "./pages/AccessPermissions";
 import AuditHistory from "./pages/AuditHistory";
@@ -74,6 +93,8 @@ const App = () => {
   const navigate = useNavigate();
   // Retrieve the token from localStorage only on the initial render
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const [authLoading, setAuthLoading] = useState(() => Boolean(localStorage.getItem("token")));
   const [sessionAccount, setSessionAccount] = useState(null);
   const [permissions, setPermissions] = useState([]);
@@ -151,7 +172,7 @@ const App = () => {
   }, [token]);
 
   return (
-    <div className="admin-shell bg-[#f3f6f4] min-h-screen">
+    <div className="admin-shell min-h-screen bg-surface-base">
       <ToastContainer />
       {authLoading ? (
         <div className="min-h-[70vh] flex items-center justify-center text-sm text-slate-500">Checking session...</div>
@@ -159,7 +180,7 @@ const App = () => {
         <Login setToken={setToken} />
       ) : (
         <PermissionsProvider account={sessionAccount} permissions={permissions}>
-          <Navbar setToken={setToken} />
+          <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
           {passwordChangeRequired ? (
             <main className="min-h-[calc(100vh-65px)] p-4 sm:p-6 lg:p-8">
               <div className="max-w-7xl mx-auto">
@@ -175,9 +196,10 @@ const App = () => {
             </main>
           ) : (
             <div className="flex w-full min-h-[calc(100vh-65px)]">
-              <Sidebar />
-              <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-[#f3f6f4] overflow-x-hidden min-w-0">
+              <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
+              <main className="min-w-0 flex-1 overflow-x-hidden bg-surface-base p-4 sm:p-6 lg:p-8">
                 <div className="max-w-7xl mx-auto">
+                  <Breadcrumbs />
                   <Routes>
                   <Route path="/" element={<Navigate to="/orders" replace />} />
                   <Route path="/finance" element={withPermission("/finance", <FinanceDashboard token={token} />)} />
@@ -186,11 +208,13 @@ const App = () => {
                   <Route path="/partners" element={withPermission("/partners", <PartnershipEquity token={token} />)} />
                   <Route path="/expenses" element={withPermission("/expenses", <ExpenseManagement token={token} />)} />
                   <Route path="/tax" element={withPermission("/tax", <TaxCompliance token={token} />)} />
+                  <Route path="/nepali-calendar" element={withPermission("/nepali-calendar", <NepaliCalendar token={token} />)} />
                   <Route path="/returns" element={withPermission("/returns", <ReturnsManagement token={token} />)} />
                   <Route path="/payables" element={withPermission("/payables", <PayablesReceivables token={token} />)} />
                   <Route path="/statements" element={withPermission("/statements", <FinancialStatements token={token} />)} />
                   <Route path="/chart-of-accounts" element={withPermission("/chart-of-accounts", <ChartOfAccounts token={token} />)} />
                   <Route path="/journal-entries" element={withPermission("/journal-entries", <JournalEntries token={token} />)} />
+                  <Route path="/accounting-approvals" element={withPermission("/accounting-approvals", <AccountingApprovals token={token} />)} />
                   <Route path="/general-ledger" element={withPermission("/general-ledger", <GeneralLedger token={token} />)} />
                   <Route path="/trial-balance" element={withPermission("/trial-balance", <TrialBalance token={token} />)} />
                   <Route path="/fiscal-periods" element={withPermission("/fiscal-periods", <FiscalPeriods token={token} />)} />
@@ -203,23 +227,41 @@ const App = () => {
                   <Route path="/create-order" element={withPermission("/create-order", <CreateOrder token={token} />)} />
                   <Route path="/add-order" element={withPermission("/add-order", <CreateOrder token={token} />)} />
                   <Route path="/orders" element={withPermission("/orders", <Orders token={token} />)} />
+                  <Route path="/orders/:orderId" element={withPermission("/orders", <AdminOrderDetail token={token} />)} />
+                  <Route path="/product-analytics" element={withPermission("/product-analytics", <ProductAnalytics token={token} />)} />
+                  <Route path="/discount-analytics" element={withPermission("/discount-analytics", <DiscountAnalytics token={token} />)} />
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
+                  <Route path="/ncm-deliveries" element={withPermission("/ncm-deliveries", <NcmDeliveries token={token} />)} />
+                  <Route path="/self-deliveries" element={withPermission("/self-deliveries", <SelfDeliveries token={token} />)} />
+                  <Route path="/ncm-tools" element={withPermission("/ncm-tools", <NcmTools token={token} />)} />
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
+                  <Route path="/manufacturers/:manufacturerId" element={withPermission("/manufacturers/:manufacturerId", <ManufacturerDetail token={token} />)} />
                   <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />
                   <Route path="/manufacturer-inventory" element={withPermission("/manufacturer-inventory", <ManufacturerInventoryMonitor token={token} />)} />
+                  <Route path="/manufacturer-production" element={withPermission("/manufacturer-production", <ManufacturerProductionRequests token={token} />)} />
+                  <Route path="/distributor-applications" element={withPermission("/distributor-applications", <DistributorApplications token={token} />)} />
+                  <Route path="/distributors" element={withPermission("/distributors", <DistributorDirectory token={token} />)} />
+                  <Route path="/distributors/:distributorId" element={withPermission("/distributors/:distributorId", <DistributorDetail token={token} />)} />
+                  <Route path="/inventory-ledger" element={withPermission("/inventory-ledger", <InventoryLedgerAudit token={token} />)} />
+                  <Route path="/stock-transfers" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
+                  <Route path="/stock-transfers/:transferId" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
+                  <Route path="/marketing-partners/:partnerId" element={withPermission("/marketing-partners/:partnerId", <MarketingPartnerDetail token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
+                  <Route path="/customers/:customerId" element={withPermission("/customers/:customerId", <CustomerDetail token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />
                   <Route path="/gift-promotions" element={withPermission("/gift-promotions", <GiftPromotions token={token} />)} />
                   <Route path="/categories" element={withPermission("/categories", <Categories token={token} />)} />
                   <Route path="/combo-bundles" element={withPermission("/combo-bundles", <ComboBundles token={token} />)} />
-                  <Route path="/collaborations" element={withPermission("/collaborations", <Collaborations token={token} />)} />
                   <Route path="/reviews" element={withPermission("/reviews", <Reviews token={token} />)} />
                   <Route path="/story-letter-library" element={withPermission("/story-letter-library", <StoryLetterLibrary token={token} />)} />
                   <Route path="/shipping" element={withPermission("/shipping", <ShippingSettings token={token} />)} />
+                  <Route path="/platform-features" element={withPermission("/platform-features", <PlatformFeatureSettings token={token} />)} />
+                  <Route path="/storefront-content" element={withPermission("/storefront-content", <StorefrontContentSettings token={token} />)} />
                   <Route path="/change-password" element={<ChangePassword token={token} />} />
                   <Route path="/access-control/users" element={withPermission("/access-control/users", <AccessUsers token={token} />)} />
+                  <Route path="/access-control/drivers" element={withPermission("/access-control/drivers", <AccessDrivers token={token} />)} />
                   <Route path="/access-control/roles" element={withPermission("/access-control/roles", <AccessRoles token={token} />)} />
                   <Route path="/access-control/permissions" element={withPermission("/access-control/permissions", <AccessPermissions token={token} />)} />
                   <Route path="/audit-history" element={withPermission("/audit-history", <AuditHistory token={token} />)} />

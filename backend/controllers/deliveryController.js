@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { saveNcmSupportTicket } from "../services/ncmSupportTicketService.js";
 import { readRecentLogs } from "../utils/logger.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
@@ -12,12 +13,121 @@ import {
   storeAndApplyWebhook,
   storeOrderCommentWebhook,
   submitDeliveryToNcm,
-  webhookIdentifiers,
+  validateNcmWebhookPayload,
 } from "../services/deliveryService.js";
-import { postNcmRemittanceAccounting } from "../services/accountingPostingEngine.js";
+import {
+  listNcmSettlementBatches,
+  listNcmSettlementCandidates,
+  summarizeNcmSettlementTotals,
+  validateNcmSettlementSelection,
+} from "../services/ncmSettlementService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
+import { applyNcmStockTransferWebhook } from "./stockTransferController.js";
+import { validateCodTransferBankDetails } from "../services/ncmClient.js";
 
 
 const webhookSecret = process.env.NCM_WEBHOOK_SECRET || "";
+
+const findNcmSimulationOrderMatch = async (numericOrderId) => {
+  const stringOrderId = String(numericOrderId);
+  const [delivery, stockTransfer, customerReturn, exchange] = await Promise.all([
+    prisma.deliveryOrder.findFirst({
+      where: {
+        OR: [
+          { ncmOrderId: numericOrderId },
+          { vendorReference: stringOrderId },
+          { orderId: stringOrderId },
+          { id: stringOrderId },
+        ],
+      },
+      select: { id: true },
+    }),
+    prisma.stockTransferShipment.findFirst({
+      where: {
+        bookingMode: "NCM",
+        OR: [{ ncmOrderId: stringOrderId }, { externalReference: stringOrderId }],
+      },
+      select: { id: true },
+    }),
+    prisma.customerReturn.findFirst({
+      where: { OR: [{ originalNcmOrderId: numericOrderId }, { ncmReturnOrderId: numericOrderId }] },
+      select: { id: true },
+    }),
+    prisma.orderExchangeRequest.findFirst({
+      where: { OR: [{ ncmReturnOrderId: numericOrderId }, { ncmReplacementOrderId: numericOrderId }] },
+      select: { id: true },
+    }),
+  ]);
+  return delivery || stockTransfer || customerReturn || exchange;
+};
+
+export const getNcmSettlementFailureMessage = (error, submittedBankDetails) => {
+  const response = error?.response;
+  const providerHttpError = /^NCM_HTTP_\d{3}$/.test(String(error?.code || ""));
+  if (!providerHttpError) {
+    return error?.message || "Failed to request NCM COD settlement.";
+  }
+
+  const readProviderMessage = (value) => {
+    if (Array.isArray(value)) {
+      const messages = value.map(readProviderMessage).filter(Boolean);
+      return messages.length ? messages.join(" ") : null;
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") return readProviderMessage(parsed);
+      } catch {
+        return trimmed;
+      }
+      return trimmed;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    for (const key of ["message", "detail", "error", "errors", "non_field_errors"]) {
+      if (value[key] !== undefined) {
+        const message = readProviderMessage(value[key]);
+        if (message) return message;
+      }
+    }
+    const fieldErrors = Object.entries(value)
+      .filter(([key]) => /^(bank_?name|bank_?account_?name|bank_?account_?number)$/i.test(key))
+      .map(([key, fieldMessage]) => `${key.replace(/([A-Z])/g, " $1")}: ${readProviderMessage(fieldMessage) || "Invalid value"}`);
+    return fieldErrors.length ? fieldErrors.join(" ") : null;
+  };
+
+  if (!/^NCM_HTTP_4\d\d$/.test(String(error.code || ""))) {
+    return "NCM is temporarily unavailable. Please try again later.";
+  }
+
+  const allowedFields = /^(detail|message|error|errors|non_field_errors|bank_?name|bank_?account_?name|bank_?account_?number)$/i;
+  let details = response;
+  if (typeof details === "string") {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      details = { message: details };
+    }
+  }
+  if (response && typeof response === "object" && !Array.isArray(response)) {
+    details = Object.fromEntries(
+      Object.entries(response).filter(([key]) => allowedFields.test(key)),
+    );
+    if (!Object.keys(details).length) details = null;
+  }
+
+  let message = readProviderMessage(details)
+    || "NCM rejected the COD transfer request. Check the bank details or contact NCM support.";
+  const valuesToRedact = [
+    ...Object.values(submittedBankDetails || {}),
+    process.env.NCM_API_TOKEN,
+  ].filter((value) => typeof value === "string" && value.length > 0);
+  for (const value of valuesToRedact) {
+    message = message.split(value).join("[REDACTED]");
+  }
+  return message.slice(0, 1200);
+};
 
 const safeCompare = (left, right) => {
   if (!left || !right) return false;
@@ -27,7 +137,7 @@ const safeCompare = (left, right) => {
 };
 
 const isWebhookAuthorized = (req) => {
-  if (!webhookSecret) return true;
+  if (!webhookSecret) return process.env.NODE_ENV !== "production";
   const authHeader = req.get("authorization") || "";
   const tokenFromAuth = authHeader.startsWith("Token ")
     ? authHeader.slice(6).trim()
@@ -42,18 +152,14 @@ const isWebhookAuthorized = (req) => {
     req.body?.secret ||
     req.body?.token;
 
-  if (!provided) {
-    const userAgent = req.get("user-agent") || "";
-    if (userAgent.includes("NCM-Webhook")) return true;
-    return false;
-  }
-  return safeCompare(provided, webhookSecret) || provided === webhookSecret;
+  return safeCompare(provided, webhookSecret);
 };
 
 export const readyForDelivery = async (req, res) => {
   try {
     const result = await prepareReadyDelivery({
       orderId: req.body.orderId,
+      distributorId: req.distributorId,
       manufacturerId: req.manufacturerId,
       packageWeight: req.body.packageWeight,
       packageDimensions: req.body.packageDimensions,
@@ -70,7 +176,11 @@ export const readyForDelivery = async (req, res) => {
     const delivery = await submitDeliveryToNcm(result.delivery.id);
     res.status(202).json({ success: true, delivery });
   } catch (error) {
-    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code) ? 404 : 400;
+    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code)
+      ? 404
+      : error.code === "DELIVERY_METHOD_CHANGED"
+        ? 409
+        : 400;
     const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
       ? `Failed to book courier. ${error.message}`
       : error.message;
@@ -80,16 +190,56 @@ export const readyForDelivery = async (req, res) => {
 
 export const readyForDeliveryByAssignment = async (req, res) => {
   const assignment = await prisma.orderAssignment.findUnique({ where: { id: req.params.id } });
-  if (!assignment || assignment.manufacturerId !== req.manufacturerId) {
+  const isOwner =
+    (req.distributorId && assignment?.distributorId === req.distributorId) ||
+    (req.manufacturerId && assignment?.manufacturerId === req.manufacturerId) ||
+    req.adminId;
+
+  if (!assignment || !isOwner) {
     return res.status(404).json({ success: false, message: "Assignment not found" });
   }
   req.body.orderId = assignment.orderId;
   return readyForDelivery(req, res);
 };
 
+export const adminRequestNcmDeliveryByAssignment = async (req, res) => {
+  try {
+    const assignment = await prisma.orderAssignment.findUnique({ where: { id: req.params.id } });
+    if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+    const result = await prepareReadyDelivery({
+      orderId: assignment.orderId,
+      adminId: req.adminId,
+      packageWeight: req.body.packageWeight,
+      packageDimensions: req.body.packageDimensions,
+      packagingNotes: req.body.packagingNotes,
+      productType: req.body.productType,
+      productDescription: req.body.productDescription,
+      packageType: req.body.packageType,
+      isFragile: req.body.isFragile,
+      deliveryInstruction: req.body.deliveryInstruction,
+      instruction: req.body.instruction,
+    });
+    if (result.alreadySubmitted) {
+      return res.json({ success: true, delivery: result.delivery, duplicate: true });
+    }
+    const delivery = await submitDeliveryToNcm(result.delivery.id);
+    return res.status(202).json({ success: true, delivery });
+  } catch (error) {
+    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code)
+      ? 404
+      : error.code === "DELIVERY_METHOD_CHANGED"
+        ? 409
+        : 400;
+    const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
+      ? `Failed to book courier. ${error.message}`
+      : error.message;
+    return res.status(status).json({ success: false, message: userMessage, code: error.code || "DELIVERY_FAILED" });
+  }
+};
+
 export const requestReturn = async (req, res) => {
   try {
-    const result = await requestDeliveryReturn({ deliveryId: req.body.deliveryId, manufacturerId: req.manufacturerId, reason: req.body.reason });
+    const result = await requestDeliveryReturn({ deliveryId: req.body.deliveryId, manufacturerId: req.manufacturerId, distributorId: req.distributorId, reason: req.body.reason });
     res.json({ success: true, return: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -112,17 +262,120 @@ export const receiveWebhook = async (req, res) => {
   }
 
   // 3. Validate body payload
-  if (!req.body || typeof req.body !== "object" || webhookIdentifiers(req.body).length === 0) {
-    return res.status(400).json({ status: "bad_request", success: false, message: "Invalid webhook payload" });
+  const validation = validateNcmWebhookPayload(req.body);
+  if (!validation.valid) {
+    const status = validation.statusCode || 400;
+    return res.status(status).json({
+      status: status === 413 ? "payload_too_large" : "bad_request",
+      success: false,
+      message: validation.message,
+    });
   }
 
-  res.status(202).json({ status: "received", success: true, accepted: true });
-  storeAndApplyWebhook(req.body).catch((error) => {
+  try {
+    const result = await storeAndApplyWebhook(req.body, { onStockTransferStatus: applyNcmStockTransferWebhook });
+    const matchedIdentifiers = new Set((result.updated || []).map((entry) => entry.ncmId));
+    const ambiguousIdentifiers = new Set((result.updated || [])
+      .filter((entry) => entry.ambiguous)
+      .map((entry) => entry.ncmId));
+    return res.status(200).json({
+      status: "received",
+      success: true,
+      accepted: true,
+      duplicate: result.duplicate,
+      updates: result.updated,
+      ambiguousOrderIds: [...ambiguousIdentifiers],
+      invalidOrderIdCount: validation.invalidIdentifierCount,
+      unmatchedOrderIds: validation.identifiers.filter((identifier) =>
+        !matchedIdentifiers.has(identifier) && !ambiguousIdentifiers.has(identifier)),
+    });
+  } catch (error) {
     console.error("NCM webhook processing failed:", error.message);
-  });
+    return res.status(500).json({ status: "error", success: false, message: "Webhook status could not be saved. NCM may retry." });
+  }
 };
 
 export const receiveOrderStatusWebhook = (req, res) => receiveWebhook(req, res);
+
+export const adminSimulateNcmWebhook = async (req, res) => {
+  const simulatorEnabled = process.env.NCM_WEBHOOK_SIMULATOR_ENABLED === "true";
+  const isProduction = process.env.NODE_ENV === "production" && process.env.APP_ENV !== "staging";
+  if (!simulatorEnabled || isProduction) {
+    return res.status(404).json({ success: false, message: "NCM webhook simulation is disabled." });
+  }
+
+  const { type, payload } = req.body || {};
+  if (type === "status") {
+    const validation = validateNcmWebhookPayload(payload);
+    if (!validation.valid) {
+      return res.status(validation.statusCode || 400).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+    if (validation.identifiers.length !== 1 || !/^\d+$/.test(validation.identifiers[0])) {
+      return res.status(400).json({ success: false, message: "Simulation requires exactly one numeric NCM order ID." });
+    }
+
+    try {
+      const numericOrderId = Number(validation.identifiers[0]);
+      if (await findNcmSimulationOrderMatch(numericOrderId)) {
+        return res.status(409).json({
+          success: false,
+          message: "Simulation is restricted to unmatched test order IDs and cannot alter a linked delivery, transfer, return, or exchange.",
+        });
+      }
+      const result = await storeAndApplyWebhook(payload, {
+        onStockTransferStatus: applyNcmStockTransferWebhook,
+        source: "ADMIN_WEBHOOK_SIMULATION",
+        actorId: req.auth?.accountId || null,
+      });
+      return res.json({
+        success: true,
+        simulated: true,
+        duplicate: result.duplicate,
+        updates: result.updated,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Unable to apply simulated NCM status.",
+      });
+    }
+  }
+
+  if (type === "comment") {
+    const commentPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    const orderId = Number(commentPayload.order_id ?? commentPayload.orderid ?? commentPayload.id);
+    const rawComment = commentPayload.comments ?? commentPayload.comment ?? commentPayload.message;
+    const comments = typeof rawComment === "string" ? rawComment.trim() : "";
+    if (!Number.isSafeInteger(orderId) || orderId <= 0 || !comments || comments.length > 2000) {
+      return res.status(400).json({ success: false, message: "Simulation requires a numeric order ID and comment of 1–2000 characters." });
+    }
+    try {
+      if (await findNcmSimulationOrderMatch(orderId)) {
+        return res.status(409).json({
+          success: false,
+          message: "Simulation is restricted to unmatched test order IDs and cannot alter a linked delivery, transfer, return, or exchange.",
+        });
+      }
+      const result = await storeOrderCommentWebhook({
+        ...commentPayload,
+        order_id: orderId,
+        comments,
+        addedBy: "ADMIN_WEBHOOK_SIMULATION",
+      });
+      return res.json({ success: true, simulated: true, duplicate: result.duplicate, matchedDelivery: result.matchedDelivery });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Unable to store simulated NCM comment.",
+      });
+    }
+  }
+
+  return res.status(400).json({ success: false, message: "Simulation type must be status or comment." });
+};
 
 export const receiveOrderCommentWebhook = async (req, res) => {
   if (!isWebhookAuthorized(req)) {
@@ -171,17 +424,130 @@ export const getCustomerDelivery = async (req, res) => {
 
 export const adminReconcileDelivery = async (req, res) => {
   try {
-    const delivery = await reconcileDelivery(req.params.id);
+    const delivery = await reconcileDelivery(req.params.id, { actorId: req.auth?.accountId || null });
     res.json({ success: true, delivery });
   } catch (error) {
-    res.status(502).json({ success: false, message: error.message });
+    res.status(error.code === "DELIVERY_NOT_FOUND" ? 404 : 502).json({
+      success: false,
+      code: error.code || "NCM_RECONCILIATION_FAILED",
+      message: error.message,
+    });
   }
 };
 
-export const adminReconcileActive = async (_req, res) => {
+export const adminResolveNcmDeliveryReconciliation = async (req, res) => {
+  const decision = String(req.body?.decision || "").trim().toUpperCase();
+  const note = String(req.body?.note || "").trim();
+  if (!["CONFIRM_DELIVERED", "CONFIRM_NOT_DELIVERED"].includes(decision) || note.length < 10 || note.length > 2000) {
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_NCM_RECONCILIATION_DECISION",
+      message: "Choose a resolution and provide an investigation note between 10 and 2000 characters.",
+    });
+  }
+
   try {
-    const deliveries = await reconcileActiveDeliveries();
-    res.json({ success: true, count: deliveries.length });
+    const delivery = await prisma.deliveryOrder.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        orderId: true,
+        ncmOrderId: true,
+        state: true,
+        deliveredAt: true,
+        ncmReconciliationRequired: true,
+      },
+    });
+    if (!delivery) return res.status(404).json({ success: false, message: "Delivery not found." });
+    if (!delivery.ncmReconciliationRequired) {
+      return res.status(409).json({ success: false, message: "This delivery is no longer awaiting NCM reconciliation." });
+    }
+    if (decision === "CONFIRM_NOT_DELIVERED" && (delivery.state === "DELIVERED" || delivery.deliveredAt)) {
+      return res.status(409).json({
+        success: false,
+        message: "A delivery already recorded as delivered cannot be marked not delivered here; use the return workflow if appropriate.",
+      });
+    }
+
+    const actorId = req.auth?.accountId || null;
+    if (decision === "CONFIRM_DELIVERED") {
+      await applyNcmStatus({
+        payload: {
+          order_id: String(delivery.ncmOrderId || delivery.id),
+          status: "Delivered",
+          event: "ADMIN_CONFIRMED_DELIVERY",
+          timestamp: new Date().toISOString(),
+          resolution_note: note,
+        },
+        source: "ADMIN_RECONCILIATION_DECISION",
+        actorId,
+      });
+    } else {
+      const now = new Date();
+      await prisma.$transaction(async (tx) => {
+        const current = await tx.deliveryOrder.findUnique({ where: { id: delivery.id } });
+        if (!current?.ncmReconciliationRequired) {
+          throw Object.assign(new Error("This delivery is no longer awaiting NCM reconciliation."), { statusCode: 409 });
+        }
+        if (current.state === "DELIVERED" || current.deliveredAt) {
+          throw Object.assign(new Error("A delivery already recorded as delivered cannot be marked not delivered here."), { statusCode: 409 });
+        }
+        await tx.deliveryOrder.update({
+          where: { id: delivery.id },
+          data: {
+            ncmReconciliationRequired: false,
+            ncmReconciliationReason: null,
+            lastSyncError: null,
+            lastSyncedAt: now,
+          },
+        });
+        await tx.deliveryEvent.create({
+          data: {
+            deliveryOrderId: delivery.id,
+            orderId: delivery.orderId,
+            source: "ADMIN",
+            eventType: "NCM_RECONCILIATION_CONFIRMED_NOT_DELIVERED",
+            fromState: current.state,
+            toState: current.state,
+            ncmStatus: current.ncmStatus,
+            payloadJson: { decision, note },
+            actorId,
+            occurredAt: now,
+            idempotencyKey: `NCM_RECONCILIATION_DECISION:${delivery.id}:${crypto.randomUUID()}`,
+          },
+        });
+      });
+    }
+
+    return res.json({
+      success: true,
+      decision,
+      delivery: await prisma.deliveryOrder.findUnique({
+        where: { id: delivery.id },
+        include: { events: { orderBy: { occurredAt: "desc" }, take: 100 } },
+      }),
+    });
+  } catch (error) {
+    const status = error.statusCode || (error.code === "DELIVERY_NOT_FOUND" ? 404 : 500);
+    return res.status(status).json({
+      success: false,
+      code: error.code || "NCM_RECONCILIATION_DECISION_FAILED",
+      message: error.message || "Unable to record the reconciliation decision.",
+    });
+  }
+};
+
+export const adminReconcileActive = async (req, res) => {
+  const afterId = req.query.afterId;
+  if (afterId !== undefined && (typeof afterId !== "string" || !afterId.trim() || afterId.length > 191)) {
+    return res.status(400).json({ success: false, message: "afterId must be a non-empty delivery ID of at most 191 characters." });
+  }
+  try {
+    const result = await reconcileActiveDeliveries({
+      actorId: req.auth?.accountId || null,
+      afterId: afterId?.trim() || null,
+    });
+    res.status(result.failedCount > 0 ? 207 : 200).json({ success: result.failedCount === 0, ...result });
   } catch (error) {
     res.status(502).json({ success: false, message: error.message });
   }
@@ -316,53 +682,159 @@ export const getRecentSystemLogs = async (_req, res) => {
 };
 
 export const adminSettlementSummary = async (_req, res) => {
-    const [settlements, deliveries] = await Promise.all([
-      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeExpected: true, deliveryFeeActual: true, settlementState: true } }),
+    const [settlements, deliveries, batches] = await Promise.all([
+      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeActual: true, deliveryFeeDiscount: true, settlementState: true } }),
       prisma.deliveryOrder.findMany({ select: { customerDeliveryCharge: true, ncmDeliveryCharge: true, state: true } }),
+      prisma.ncmSettlementBatch.findMany({
+        where: { status: { not: "REVERSED" } },
+        select: { totalCod: true },
+      }),
     ]);
-    const totalDeliveryChargeExpected = deliveries.reduce((sum, item) => sum + Number(item.customerDeliveryCharge || 0), 0);
-    const totalCarrierFees = settlements.reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
-    const totalDeliveryChargePaid = settlements
-      .filter((item) => item.settlementState === "SETTLED")
-      .reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
-    const codExpected = settlements.reduce((sum, item) => sum + Number(item.codExpected || 0), 0);
-    const codReceived = settlements.reduce((sum, item) => sum + Number(item.codCollected || 0), 0);
     res.json({
       success: true,
-      summary: {
-        totalDeliveryChargeExpected,
-        totalDeliveryChargePaid,
-        deliveryChargeToPay: Math.max(0, totalCarrierFees - totalDeliveryChargePaid),
-        codExpected,
-        codReceived,
-        codToReceive: Math.max(0, codExpected - codReceived),
-        pendingSettlements: settlements.filter((item) => ["PENDING", "COD_RECEIVED", "REQUESTED"].includes(item.settlementState)).length,
-        settledCount: settlements.filter((item) => item.settlementState === "SETTLED").length,
-      },
+      summary: summarizeNcmSettlementTotals({ settlements, deliveries, batches }),
     });
 };
 
+export const adminListSettlementCandidates = async (req, res) => {
+  try {
+    return res.json(await listNcmSettlementCandidates(req.query));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to list NCM settlement candidates.",
+    });
+  }
+};
+
+export const adminListSettlementBatches = async (_req, res) => {
+  try {
+    return res.json(await listNcmSettlementBatches());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to list NCM settlement batches.",
+    });
+  }
+};
+
+export const adminResolveSettlementVariance = async (req, res) => {
+  try {
+    const result = await requestAccountingActionApproval({
+      actionType: "NCM_VARIANCE_RESOLUTION",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        ...req.body,
+        batchId: req.params.batchId,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This NCM variance approval request already exists."
+        : "NCM variance resolution submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to resolve NCM settlement variance.",
+    });
+  }
+};
+
 export const adminRequestSettlement = async (req, res) => {
-    const { bankName, bankAccountName, bankAccountNumber } = req.body || {};
-    if (!bankName || !bankAccountName || !bankAccountNumber) {
-      return res.status(400).json({ success: false, message: "Bank name, account name, and account number are required" });
-    }
+    const {
+      bankName,
+      bankAccountName,
+      bankAccountNumber,
+      settlementIds,
+      startDate,
+      endDate,
+    } = req.body || {};
+    const submittedBankDetails = { bankName, bankAccountName, bankAccountNumber };
     try {
-      const ticket = await requestCodSettlement({ bankName, bankAccountName, bankAccountNumber });
-      const ticketId = Number(ticket?.ticket || ticket?.id || 0) || null;
-      await prisma.deliveryFinancialSettlement.updateMany({
-        where: { settlementState: { in: ["PENDING", "COD_RECEIVED", "REQUESTED"] } },
+      const bankDetails = validateCodTransferBankDetails(submittedBankDetails);
+      const { ids } = await validateNcmSettlementSelection({ settlementIds, startDate, endDate });
+      const selectedSettlements = await prisma.deliveryFinancialSettlement.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, ncmTicketId: true, settlementState: true },
+      });
+      if (selectedSettlements.length !== ids.length) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENTS_CHANGED",
+          message: "One or more selected deliveries changed before the NCM request could be created. Refresh and retry.",
+        });
+      }
+      if (selectedSettlements.some(({ ncmTicketId, settlementState }) =>
+        ncmTicketId != null || settlementState === "REQUESTED"
+      )) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENT_ALREADY_REQUESTED",
+          message: "One or more selected deliveries already have an NCM settlement request. Reconcile the existing request instead of creating another.",
+        });
+      }
+      if (selectedSettlements.some(({ settlementState }) => !["PENDING", "COD_RECEIVED"].includes(settlementState))) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENTS_CHANGED",
+          message: "One or more selected deliveries are no longer requestable. Refresh and retry.",
+        });
+      }
+      const ticket = await requestCodSettlement(bankDetails);
+      const savedTicket = await saveNcmSupportTicket(ticket, {
+        ticketType: "COD Transfer",
+        message: "COD transfer request",
+        addedOn: new Date(),
+        recordedByAccountId: req.auth?.accountId || null,
+      });
+      const ticketId = savedTicket.ncmTicketId;
+      const claimed = await prisma.deliveryFinancialSettlement.updateMany({
+        where: {
+          id: { in: ids },
+          ncmTicketId: null,
+          settlementState: { in: ["PENDING", "COD_RECEIVED"] },
+        },
         data: { ncmTicketId: ticketId, settlementState: "REQUESTED" },
       });
-      res.status(201).json({ success: true, ticket, ticketId });
+      if (claimed.count !== ids.length) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENT_REQUEST_LINK_CONFLICT",
+          message: `NCM ticket ${ticketId} was created, but the selected deliveries changed before they could be linked. Reconcile this ticket in NCM support before retrying.`,
+          ticketId,
+        });
+      }
+      res.status(201).json({ success: true, ticket, ticketId, selectedCount: ids.length });
     } catch (error) {
-      res.status(502).json({ success: false, message: error.message });
+      res.status(error.statusCode || 502).json({
+        success: false,
+        code: error.code || "NCM_SETTLEMENT_REQUEST_FAILED",
+        message: getNcmSettlementFailureMessage(error, submittedBankDetails),
+      });
     }
 };
 
 export const adminListSettlements = async (req, res) => {
   const pagination = getPagination(req.query);
-  const where = req.query.state ? { settlementState: req.query.state } : {};
+  const where = req.query.state
+    ? { settlementState: req.query.state }
+    : { settlementState: { in: ["PENDING", "COD_RECEIVED", "REQUESTED"] } };
   const [settlements, total] = await prisma.$transaction([
     prisma.deliveryFinancialSettlement.findMany({ where, orderBy: { updatedAt: "desc" }, skip: pagination.skip, take: pagination.limit }),
     prisma.deliveryFinancialSettlement.count({ where }),
@@ -371,107 +843,65 @@ export const adminListSettlements = async (req, res) => {
 };
 
 export const adminConfirmSettlement = async (req, res) => {
-  const { settlementIds, settlementId, financialAccountId, reference, notes } = req.body || {};
+  const {
+    settlementIds,
+    settlementId,
+    financialAccountId,
+    reference,
+    notes,
+    actualNetDeposit,
+    varianceType,
+    varianceReason,
+    startDate,
+    endDate,
+    ncmTicketId,
+  } = req.body || {};
   const ids = settlementIds || (settlementId ? [settlementId] : []);
   if (!ids.length) {
     return res.status(400).json({ success: false, message: "Please select at least one settlement to confirm." });
   }
-  if (!financialAccountId) {
-    return res.status(400).json({ success: false, message: "Please select a valid Bank or Cash account to deposit the COD remittance." });
-  }
-
   try {
-    const account = await prisma.financialAccount.findUnique({ where: { id: financialAccountId } });
-    if (!account) {
-      return res.status(404).json({ success: false, message: "Selected financial account not found." });
-    }
-
-    const settlements = await prisma.deliveryFinancialSettlement.findMany({
-      where: { id: { in: ids } },
+    const result = await requestAccountingActionApproval({
+      actionType: "NCM_SETTLEMENT_CONFIRM",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        settlementIds: ids,
+        financialAccountId,
+        reference,
+        notes,
+        actualNetDeposit,
+        varianceType,
+        varianceReason,
+        periodStart: startDate,
+        periodEnd: endDate,
+        ncmTicketId: ncmTicketId == null ? null : Number(ncmTicketId),
+        createdBy: req.auth?.email || "ADMIN",
+        reason: notes,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
     });
-
-    if (!settlements.length) {
-      return res.status(404).json({ success: false, message: "No matching settlements found." });
-    }
-
-    const alreadySettled = settlements.filter((s) => s.settlementState === "SETTLED");
-    if (alreadySettled.length === settlements.length) {
-      return res.status(400).json({ success: false, message: "Selected settlements are already settled." });
-    }
-
-    const toProcess = settlements.filter((s) => s.settlementState !== "SETTLED");
-
-    let totalCod = 0;
-    let totalFee = 0;
-
-    toProcess.forEach((s) => {
-      const cod = Number(s.codCollected || s.codExpected || 0);
-      const fee = Number(s.deliveryFeeActual || s.deliveryFeeExpected || 0);
-      totalCod += cod;
-      totalFee += fee;
-    });
-
-    const netDeposit = Math.max(0, totalCod - totalFee);
-
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Update Financial Account Balance
-      const updatedAccount = await tx.financialAccount.update({
-        where: { id: financialAccountId },
-        data: {
-          currentBalance: { increment: netDeposit },
-        },
-      });
-
-      // 2. Create Cash Flow Inflow Record
-      const cashTx = await tx.cashTransaction.create({
-        data: {
-          toAccountId: financialAccountId,
-          amount: netDeposit,
-          type: "INFLOW",
-          category: "COD_REMITTANCE",
-          partyName: "Nepal Can Move (NCM)",
-          invoiceNumber: reference || "",
-          referenceId: toProcess[0]?.id || "",
-          description: `NCM COD remittance deposit for ${toProcess.length} order(s). Total COD: Rs ${totalCod}, Courier Fees: Rs ${totalFee}. ${notes || ""}`.trim(),
-        },
-      });
-
-      // 3. Update Delivery Settlements
-      const settledAt = new Date();
-      await Promise.all(toProcess.map((settlement) => tx.deliveryFinancialSettlement.update({
-        where: { id: settlement.id },
-        data: {
-          settlementState: "SETTLED",
-          settledAt,
-          codCollected: Number(settlement.codCollected || settlement.codExpected || 0),
-        },
-      })));
-
-      // 4. Double-Entry Accounting Journal Posting
-      const isCash = ["CASH", "CASH_IN_HAND"].includes(String(account.accountType).toUpperCase());
-      await postNcmRemittanceAccounting({
-        settlementId: toProcess[0]?.id || "BATCH",
-        codCollected: totalCod,
-        deliveryFeeActual: totalFee,
-        isCash,
-        destinationAccountName: account.accountName,
-        createdBy: "ADMIN",
-      }, { client: tx });
-
-      return { updatedAccount, cashTx };
-    });
-
-    res.json({
+    return res.status(result.isReplay ? 200 : 202).json({
       success: true,
-      message: `Successfully deposited Rs ${netDeposit.toLocaleString()} net COD remittance into ${account.accountName}`,
-      netDeposit,
-      totalCod,
-      totalFee,
-      settledCount: toProcess.length,
-      account: result.updatedAccount,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This NCM remittance approval request already exists."
+        : "NCM remittance submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message || "Failed to confirm COD settlement." });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to confirm COD settlement.",
+    });
   }
 };
 

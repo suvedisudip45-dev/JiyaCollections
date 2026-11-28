@@ -113,7 +113,7 @@ const PasswordStrength = ({ password }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 const Profile = () => {
-  const { token, setToken, backendUrl, navigate, currency = "Rs " } = useContext(ShopContext);
+  const { token, setToken, backendUrl, navigate, currency = "Rs ", platformFeatures } = useContext(ShopContext);
 
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
@@ -155,7 +155,9 @@ const Profile = () => {
         setLoading(true);
         const [profRes, loyRes] = await Promise.all([
           axios.get(`${backendUrl}/api/user/profile`, { headers: { token } }),
-          axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } }),
+          platformFeatures?.loyaltyEnabled
+            ? axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } })
+            : Promise.resolve({ data: { success: false } }),
         ]);
 
         if (profRes.data.success && profRes.data.user) {
@@ -197,8 +199,8 @@ const Profile = () => {
         setLoading(false);
       }
     };
-    fetchProfileAndLoyalty();
-  }, [token]);
+    if (platformFeatures) fetchProfileAndLoyalty();
+  }, [token, platformFeatures, backendUrl, navigate, setToken]);
 
   const handleEditChange = (e) => {
     const { name, value } = e.target;

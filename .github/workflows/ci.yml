@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm run check:migrations
+        working-directory: backend
+      - run: npm run build
+        working-directory: backend
+        env:
+          DATABASE_URL: mysql://ci:ci@127.0.0.1:3306/ci
+      - run: npm test
+        working-directory: backend
+
+  portals:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        portal: [frontend, admin, manufacturer, marketing]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.portal }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.portal }}
+      - run: npm run build
+        working-directory: ${{ matrix.portal }}

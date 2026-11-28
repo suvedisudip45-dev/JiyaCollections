@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { expireCampaignCards } from "./marketingCardService.js";
 import { postMarketingCpaRedemptionAccounting } from "./accountingPostingEngine.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 /**
  * Partner-scoped read-only service functions.
@@ -13,21 +14,178 @@ export const getPartnerById = (partnerId) =>
     select: { id: true, code: true, name: true, description: true, status: true, createdAt: true },
   });
 
-export const getPartnerCampaigns = async ({ partnerId, status } = {}) => {
-  await expireCampaignCards();
-  return prisma.marketingCampaign.findMany({
-    where: {
-      marketingPartnerId: partnerId,
-      ...(status && status !== "all" ? { status } : {}),
+const asCount = (value) => Number(value || 0);
+
+export const getAdminMarketingPartnerDetail = async (partnerId) => {
+  const partner = await prisma.marketingPartner.findUnique({
+    where: { id: partnerId },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      description: true,
+      status: true,
+      email: true,
+      contactPhone: true,
+      website: true,
+      address: true,
+      createdAt: true,
     },
-    orderBy: { createdAt: "desc" },
+  });
+  if (!partner) {
+    const error = new Error("Marketing partner not found.");
+    error.code = "PARTNER_NOT_FOUND";
+    throw error;
+  }
+
+  const [campaigns, campaignCardCounts, campaignScanCounts, campaignRewardCounts, distributorStats, scanLocations, distributionLocations] = await Promise.all([
+    prisma.marketingCampaign.findMany({
+      where: { marketingPartnerId: partnerId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        startsAt: true,
+        endsAt: true,
+        cardExpiresAt: true,
+        targetScopeType: true,
+        targetProvince: true,
+        targetDistrict: true,
+      },
+    }),
+    prisma.$queryRaw`
+      SELECT \`campaignId\`, COUNT(*) AS \`totalCards\`,
+        SUM(CASE WHEN \`physicalStatus\` = 'ATTACHED' THEN 1 ELSE 0 END) AS \`attachedCards\`
+      FROM \`MarketingCard\`
+      WHERE \`partnerId\` = ${partnerId}
+      GROUP BY \`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT c.\`campaignId\`, COUNT(*) AS \`scannedCards\`
+      FROM \`MarketingCardCustomer\` scan
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = scan.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY c.\`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT c.\`campaignId\`, COUNT(*) AS \`rewardsClaimed\`
+      FROM \`MarketingBenefitRedemption\` redemption
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = redemption.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId} AND redemption.\`status\` IN ('CLAIMED', 'REDEEMED')
+      GROUP BY c.\`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT d.\`id\`, d.\`name\`, d.\`province\`, d.\`district\`,
+        COUNT(DISTINCT c.\`id\`) AS \`totalCards\`,
+        COUNT(DISTINCT CASE WHEN c.\`physicalStatus\` = 'ATTACHED' THEN c.\`id\` END) AS \`attachedCards\`,
+        COUNT(DISTINCT redemption.\`id\`) AS \`rewardsClaimed\`
+      FROM \`MarketingCard\` c
+      INNER JOIN \`Distributor\` d ON d.\`id\` = c.\`assignedDistributorId\`
+      LEFT JOIN \`MarketingBenefitRedemption\` redemption
+        ON redemption.\`cardId\` = c.\`id\` AND redemption.\`status\` IN ('CLAIMED', 'REDEEMED')
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY d.\`id\`, d.\`name\`, d.\`province\`, d.\`district\`
+      ORDER BY \`totalCards\` DESC, d.\`name\` ASC
+    `,
+    prisma.$queryRaw`
+      SELECT COALESCE(scan.\`scannedProvince\`, 'Unknown') AS \`province\`,
+        COALESCE(scan.\`scannedDistrict\`, 'Unknown') AS \`district\`,
+        COUNT(*) AS \`scannedCards\`
+      FROM \`MarketingCardCustomer\` scan
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = scan.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY COALESCE(scan.\`scannedProvince\`, 'Unknown'), COALESCE(scan.\`scannedDistrict\`, 'Unknown')
+      ORDER BY \`scannedCards\` DESC, \`province\` ASC, \`district\` ASC
+    `,
+    prisma.$queryRaw`
+      SELECT COALESCE(d.\`province\`, 'Unknown') AS \`province\`,
+        COALESCE(d.\`district\`, 'Unknown') AS \`district\`,
+        COUNT(*) AS \`distributedCards\`
+      FROM \`MarketingCard\` c
+      INNER JOIN \`Distributor\` d ON d.\`id\` = c.\`assignedDistributorId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY COALESCE(d.\`province\`, 'Unknown'), COALESCE(d.\`district\`, 'Unknown')
+      ORDER BY \`distributedCards\` DESC, \`province\` ASC, \`district\` ASC
+    `,
+  ]);
+
+  const cardCounts = new Map(campaignCardCounts.map((row) => [row.campaignId, row]));
+  const scanCounts = new Map(campaignScanCounts.map((row) => [row.campaignId, row]));
+  const rewardCounts = new Map(campaignRewardCounts.map((row) => [row.campaignId, row]));
+
+  return {
+    partner,
+    campaigns: campaigns.map((campaign) => ({
+      ...campaign,
+      totalCards: asCount(cardCounts.get(campaign.id)?.totalCards),
+      attachedCards: asCount(cardCounts.get(campaign.id)?.attachedCards),
+      scannedCards: asCount(scanCounts.get(campaign.id)?.scannedCards),
+      rewardsClaimed: asCount(rewardCounts.get(campaign.id)?.rewardsClaimed),
+    })),
+    distributors: distributorStats.map((row) => ({
+      id: row.id,
+      name: row.name,
+      province: row.province,
+      district: row.district,
+      totalCards: asCount(row.totalCards),
+      attachedCards: asCount(row.attachedCards),
+      rewardsClaimed: asCount(row.rewardsClaimed),
+    })),
+    scanLocations: scanLocations.map((row) => ({
+      province: row.province,
+      district: row.district,
+      scannedCards: asCount(row.scannedCards),
+    })),
+    distributionLocations: distributionLocations.map((row) => ({
+      province: row.province,
+      district: row.district,
+      distributedCards: asCount(row.distributedCards),
+    })),
+  };
+};
+
+export const getPartnerCampaigns = async ({ partnerId, status, page, limit, search } = {}) => {
+  await expireCampaignCards();
+  const where = {
+    marketingPartnerId: partnerId,
+    ...(status && status !== "all" ? { status } : {}),
+    ...(search
+      ? {
+        OR: [
+          { name: { contains: search } },
+          { description: { contains: search } },
+          { targetProvince: { contains: search } },
+          { targetDistrict: { contains: search } },
+        ],
+      }
+      : {}),
+  };
+  const query = {
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: {
       _count: {
         select: { cards: true, batches: true, benefits: true },
       },
       benefits: { select: { id: true, name: true, benefitType: true, value: true, percentage: true, status: true, expiresAt: true } },
     },
-  });
+  };
+
+  if (page === undefined && limit === undefined) {
+    return prisma.marketingCampaign.findMany(query);
+  }
+
+  const pagination = getPagination({ page, limit });
+  const [campaigns, total] = await prisma.$transaction([
+    prisma.marketingCampaign.findMany({
+      ...query,
+      skip: pagination.skip,
+      take: pagination.limit,
+    }),
+    prisma.marketingCampaign.count({ where }),
+  ]);
+  return paginatedResponse("campaigns", campaigns, pagination, total);
 };
 
 export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {
@@ -69,19 +227,32 @@ export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {
 export const getPartnerCards = async ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
   await expireCampaignCards();
   const skip = (Number(page) - 1) * Number(limit);
+  const now = new Date();
   const where = {
     partnerId,
     ...(campaignId ? { campaignId } : {}),
-    ...(status && status !== "all" ? { physicalStatus: status } : {}),
+    ...(status === "EXPIRED"
+      ? {
+          campaign: {
+            OR: [
+              { status: "EXPIRED" },
+              { endsAt: { lt: now } },
+              { cardExpiresAt: { lt: now } },
+            ],
+          },
+        }
+      : status && status !== "all"
+        ? { physicalStatus: status }
+        : {}),
   };
-  return Promise.all([
+  const [cards, total] = await Promise.all([
     prisma.marketingCard.findMany({
       where,
       orderBy: { createdAt: "desc" },
       skip,
       take: Number(limit),
       include: {
-        campaign: { select: { id: true, name: true, targetScopeType: true, targetProvince: true, targetDistrict: true } },
+        campaign: { select: { id: true, name: true, status: true, endsAt: true, cardExpiresAt: true, targetScopeType: true, targetProvince: true, targetDistrict: true } },
         customerLinks: { select: { id: true, status: true, linkedAt: true, activatedAt: true } },
         benefitRedemptions: { select: { id: true, status: true, redeemedAt: true } },
         assignedManufacturer: { select: { id: true, name: true, city: true } },
@@ -89,7 +260,19 @@ export const getPartnerCards = async ({ partnerId, campaignId, status, page = 1,
     }),
     prisma.marketingCard.count({ where }),
   ]);
+  return [
+    cards.map((card) => ({
+      ...card,
+      dashboardCategory: isPartnerCardExpired(card.campaign, now) ? "EXPIRED" : card.physicalStatus,
+    })),
+    total,
+  ];
 };
+
+const isPartnerCardExpired = (campaign, now) =>
+  campaign?.status === "EXPIRED" ||
+  Boolean(campaign?.endsAt && new Date(campaign.endsAt) < now) ||
+  Boolean(campaign?.cardExpiresAt && new Date(campaign.cardExpiresAt) < now);
 
 export const getPartnerCardDetail = async ({ partnerId, cardId }) => {
   await expireCampaignCards();
@@ -315,9 +498,12 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
   };
 };
 
-export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =>
-  prisma.$transaction(async (tx) => {
-    await expireCampaignCards({ db: tx });
+export const redeemPartnerBenefit = async (
+  { partnerId, cardCode, benefitId },
+  { client = prisma, postAccounting = postMarketingCpaRedemptionAccounting, expireCards = expireCampaignCards } = {},
+) => {
+  const redeem = async (tx) => {
+    await expireCards({ db: tx });
     const card = await tx.marketingCard.findFirst({
       where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
       include: {
@@ -357,6 +543,7 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       throw new Error(`This card has expired as of ${new Date(card.campaign.cardExpiresAt).toLocaleDateString()}. The offer can no longer be redeemed.`);
     }
     const customerId = customerLink.customerId;
+    const cpaRateSnapshot = String(card.campaign?.cpaRate ?? 0);
 
     const redemption = await tx.marketingBenefitRedemption.create({
       data: { cardId: card.id, benefitId, customerId, status: "REDEEMED" },
@@ -368,18 +555,26 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
         eventType: "BENEFIT_REDEEMED",
         actorRole: "MARKETING_PARTNER",
         actorId: partnerId,
-        metadata: { benefitName: benefit.name, value: benefit.value, redemptionId: redemption.id },
+        referenceId: redemption.id,
+        metadata: {
+          benefitName: benefit.name,
+          value: benefit.value,
+          redemptionId: redemption.id,
+          cpaRateSnapshot,
+        },
       },
     });
 
     // Accrue Marketing CPA Double-Entry Accounting
-    if (card.campaign?.cpaRate > 0) {
-      await postMarketingCpaRedemptionAccounting(
-        { redemption, campaign: card.campaign, partner: card.partner },
-        { client: tx }
-      ).catch((err) => {
-        console.error("Marketing CPA accounting posting error:", err.message);
-      });
+    if (Number(cpaRateSnapshot) > 0) {
+      await postAccounting(
+        {
+          redemption: { ...redemption, cpaRateSnapshot },
+          campaign: card.campaign,
+          partner: card.partner,
+          client: tx,
+        },
+      );
     }
 
     return {
@@ -388,7 +583,9 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       redeemedAt: redemption.redeemedAt,
       benefit: { id: benefit.id, name: benefit.name, benefitType: benefit.benefitType, value: benefit.value },
     };
-  });
+  };
+  return typeof client.$transaction === "function" ? client.$transaction(redeem) : redeem(client);
+};
 
 export const rejectPartnerCard = async ({ partnerId, cardCode, reason }) =>
   prisma.$transaction(async (tx) => {

@@ -1,0 +1,206 @@
+- generic [ref=f3e3]:
+  - banner [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - img "Aama Clothings" [ref=f3e6]
+      - generic [ref=f3e7]:
+        - heading "Aama Clothings" [level=1] [ref=f3e8]
+        - paragraph [ref=f3e9]: Admin Management Console
+    - generic [ref=f3e10]:
+      - button "Jump to an admin page" [ref=f3e11] [cursor=pointer]:
+        - generic [ref=f3e15]: Jump to a page
+        - generic [ref=f3e16]: K
+      - generic [ref=f3e19]: Thu, 29 Oct NPT
+      - generic [ref=f3e23]:
+        - generic [ref=f3e24]: AD
+        - generic [ref=f3e25]:
+          - generic [ref=f3e26]: Administrator
+          - generic [ref=f3e27]: Admin console
+      - button "Logout" [ref=f3e28] [cursor=pointer]
+  - generic [ref=f3e33]:
+    - complementary "Admin navigation" [ref=f3e34]:
+      - generic [ref=f3e35]:
+        - generic [ref=f3e36]:
+          - button "Access Control" [ref=f3e37] [cursor=pointer]
+          - navigation [ref=f3e44]:
+            - link "Portal Users" [ref=f3e45] [cursor=pointer]:
+              - /url: /access-control/users
+            - link "Admin Roles" [ref=f3e50] [cursor=pointer]:
+              - /url: /access-control/roles
+            - link "Permissions" [ref=f3e55] [cursor=pointer]:
+              - /url: /access-control/permissions
+            - link "Audit History" [ref=f3e60] [cursor=pointer]:
+              - /url: /audit-history
+        - generic [ref=f3e66]:
+          - button "Merchandising" [ref=f3e67] [cursor=pointer]
+          - navigation [ref=f3e75]:
+            - link "All Products" [ref=f3e76] [cursor=pointer]:
+              - /url: /list
+            - link "Add Product" [ref=f3e81] [cursor=pointer]:
+              - /url: /add
+            - link "Categories & Types" [ref=f3e86] [cursor=pointer]:
+              - /url: /categories
+            - link "Combo Bundles" [ref=f3e91] [cursor=pointer]:
+              - /url: /combo-bundles
+            - link "Festive Campaigns" [ref=f3e96] [cursor=pointer]:
+              - /url: /special-offers
+        - generic [ref=f3e102]:
+          - button "Sales & Orders" [ref=f3e103] [cursor=pointer]
+          - navigation [ref=f3e110]:
+            - link "Customer Orders" [ref=f3e111] [cursor=pointer]:
+              - /url: /orders
+            - link "Create Direct Order" [ref=f3e116] [cursor=pointer]:
+              - /url: /create-order
+            - link "Product performance" [ref=f3e121] [cursor=pointer]:
+              - /url: /product-analytics
+        - generic [ref=f3e127]:
+          - button "Logistics & Supply Chain" [ref=f3e128] [cursor=pointer]
+          - navigation [ref=f3e135]:
+            - link "Order Routing Engine" [ref=f3e136] [cursor=pointer]:
+              - /url: /order-assignments
+            - link "Delivery & COD Monitor" [ref=f3e141] [cursor=pointer]:
+              - /url: /delivery-monitor
+            - link "NCM Deliveries" [ref=f3e146] [cursor=pointer]:
+              - /url: /ncm-deliveries
+            - link "Distributor Self-Delivery" [ref=f3e151] [cursor=pointer]:
+              - /url: /self-deliveries
+            - link "Manufacturers" [ref=f3e156] [cursor=pointer]:
+              - /url: /manufacturers
+            - link "Multi-Hub Stock" [ref=f3e161] [cursor=pointer]:
+              - /url: /manufacturer-inventory
+            - link "Production Requests" [ref=f3e166] [cursor=pointer]:
+              - /url: /manufacturer-production
+            - link "Distributor Applications" [ref=f3e171] [cursor=pointer]:
+              - /url: /distributor-applications
+            - link "Distributor Directory" [ref=f3e176] [cursor=pointer]:
+              - /url: /distributors
+            - link "Bulk Stock Transfers" [ref=f3e181] [cursor=pointer]:
+              - /url: /stock-transfers
+        - generic [ref=f3e186]:
+          - button "Location Pricing" [ref=f3e187] [cursor=pointer]
+          - navigation [ref=f3e194]:
+            - link "District Rules" [ref=f3e195] [cursor=pointer]:
+              - /url: /location-pricing
+        - generic [ref=f3e201]:
+          - button "Marketing Partners" [ref=f3e202] [cursor=pointer]
+          - navigation [ref=f3e209]:
+            - link "Card Assignment" [ref=f3e210] [cursor=pointer]:
+              - /url: /marketing-cards
+        - generic [ref=f3e216]:
+          - button "Operations & Costing" [ref=f3e217] [cursor=pointer]
+          - navigation [ref=f3e225]:
+            - link "Inventory & Stock" [ref=f3e226] [cursor=pointer]:
+              - /url: /inventory
+            - link "Inventory Ledger Audit" [ref=f3e231] [cursor=pointer]:
+              - /url: /inventory-ledger
+            - link "COGS & Margins" [ref=f3e236] [cursor=pointer]:
+              - /url: /cogs
+            - link "Shipping Rates" [ref=f3e241] [cursor=pointer]:
+              - /url: /shipping
+        - generic [ref=f3e247]:
+          - button "Platform Settings" [ref=f3e248] [cursor=pointer]
+          - navigation [ref=f3e256]:
+            - link "Feature Settings" [ref=f3e257] [cursor=pointer]:
+              - /url: /platform-features
+        - generic [ref=f3e264]:
+          - button "Finance & Banking" [ref=f3e265] [cursor=pointer]
+          - navigation [ref=f3e272]:
+            - link "Financial Dashboard" [ref=f3e273] [cursor=pointer]:
+              - /url: /finance
+            - link "Cash & Banks" [ref=f3e278] [cursor=pointer]:
+              - /url: /treasury
+            - link "Assets & Depreciation" [ref=f3e283] [cursor=pointer]:
+              - /url: /assets
+            - link "Partners & Investors" [ref=f3e288] [cursor=pointer]:
+              - /url: /partners
+            - link "Expenses & Overhead" [ref=f3e293] [cursor=pointer]:
+              - /url: /expenses
+            - link "13% VAT & Tax" [ref=f3e298] [cursor=pointer]:
+              - /url: /tax
+            - link "Returns & Debit Notes" [ref=f3e303] [cursor=pointer]:
+              - /url: /returns
+            - link "Payables & Receivables" [ref=f3e308] [cursor=pointer]:
+              - /url: /payables
+            - link "Financial Statements" [ref=f3e313] [cursor=pointer]:
+              - /url: /statements
+        - generic [ref=f3e319]:
+          - button "General Ledger" [ref=f3e320] [cursor=pointer]
+          - navigation [ref=f3e328]:
+            - link "Chart of Accounts" [ref=f3e329] [cursor=pointer]:
+              - /url: /chart-of-accounts
+            - link "Journal Entries" [ref=f3e334] [cursor=pointer]:
+              - /url: /journal-entries
+            - link "General Ledger" [ref=f3e339] [cursor=pointer]:
+              - /url: /general-ledger
+            - link "Trial Balance" [ref=f3e344] [cursor=pointer]:
+              - /url: /trial-balance
+            - link "Fiscal Periods" [ref=f3e349] [cursor=pointer]:
+              - /url: /fiscal-periods
+            - link "Accounting Health" [ref=f3e354] [cursor=pointer]:
+              - /url: /accounting-health
+        - generic [ref=f3e361]:
+          - button "Customers & CRM" [ref=f3e362] [cursor=pointer]
+          - navigation [ref=f3e369]:
+            - link "Customer Profiles" [ref=f3e370] [cursor=pointer]:
+              - /url: /customers
+            - link "VIP Loyalty Tiers" [ref=f3e375] [cursor=pointer]:
+              - /url: /loyalty-levels
+            - link "Gift Promotions" [ref=f3e380] [cursor=pointer]:
+              - /url: /gift-promotions
+            - link "Product Reviews" [ref=f3e385] [cursor=pointer]:
+              - /url: /reviews
+            - link "Story Letter Library" [ref=f3e390] [cursor=pointer]:
+              - /url: /story-letter-library
+      - generic [ref=f3e395]:
+        - link "Change Password" [ref=f3e396] [cursor=pointer]:
+          - /url: /change-password
+        - generic [ref=f3e405]:
+          - paragraph [ref=f3e406]: Aama Clothings
+          - paragraph [ref=f3e407]: Admin workspace
+    - main [ref=f3e408]:
+      - generic [ref=f3e409]:
+        - navigation "Breadcrumb" [ref=f3e410]:
+          - link "Home" [ref=f3e412] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f3e413]: Details
+        - generic [ref=f3e417]:
+          - generic [ref=f3e418]:
+            - generic [ref=f3e419]:
+              - generic [ref=f3e420]:
+                - heading "General Ledger Statement" [level=1] [ref=f3e421]
+                - generic [ref=f3e422]: Account-Level Drilldown
+              - paragraph [ref=f3e423]: Running debit/credit transactions, opening/closing balances, and detailed journal references
+            - button "Refresh Statement" [ref=f3e425] [cursor=pointer]
+          - generic [ref=f3e428]:
+            - generic [ref=f3e429]:
+              - generic [ref=f3e430]: Select General Ledger Account
+              - combobox [ref=f3e432]
+            - generic [ref=f3e433]:
+              - generic [ref=f3e434]: From Date
+              - textbox [ref=f3e435]: 2026-01-01
+            - generic [ref=f3e436]:
+              - generic [ref=f3e437]: To Date
+              - generic [ref=f3e438]:
+                - textbox [ref=f3e439]: 2026-10-29
+                - button "Filter" [ref=f3e440] [cursor=pointer]
+          - generic [ref=f3e441]:
+            - generic [ref=f3e442]:
+              - generic [ref=f3e443]:
+                - heading "Account Transaction Ledger" [level=2] [ref=f3e444]
+                - paragraph [ref=f3e445]:
+                  - text: "Account:"
+                  - generic [ref=f3e446]: "[]"
+                  - text: ()
+              - generic [ref=f3e447]: 0 journal postings in range
+            - table [ref=f3e449]:
+              - rowgroup [ref=f3e450]:
+                - row [ref=f3e451]:
+                  - columnheader "Date" [ref=f3e452]
+                  - 'columnheader "Journal #" [ref=f3e453]'
+                  - columnheader "Source Type" [ref=f3e454]
+                  - columnheader "Description / Reference" [ref=f3e455]
+                  - columnheader "Debit (Dr)" [ref=f3e456]
+                  - columnheader "Credit (Cr)" [ref=f3e457]
+                  - columnheader "Running Balance" [ref=f3e458]
+              - rowgroup [ref=f3e459]:
+                - row [ref=f3e460]:
+                  - cell "No transactions recorded for this account in the selected period." [ref=f3e461]

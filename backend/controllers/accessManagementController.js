@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   assignAdminUserRoles,
   createAdminRole,
@@ -15,6 +16,7 @@ import {
   updateAdminRole,
   updatePortalUser,
 } from "../services/accessManagementService.js";
+import { recordSystemAudit } from "../services/auditService.js";
 
 const actorContextFromRequest = (req) => ({
   actorId: req.auth?.accountId,
@@ -244,6 +246,27 @@ export const getAuditLogs = async (req, res) => {
 export const downloadAuditLogs = async (req, res) => {
   try {
     const result = await exportSystemAuditLogs(req.query);
+    const exportHash = createHash("sha256").update(result.content).digest("hex");
+    await recordSystemAudit(actorContextFromRequest(req), {
+      action: "SYSTEM_AUDIT_LOGS_EXPORTED",
+      entityType: "SystemAuditLogExport",
+      entityId: exportHash,
+      afterState: {
+        format: result.format,
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+        sha256: exportHash,
+        filters: {
+          startDate: req.query.startDate || null,
+          endDate: req.query.endDate || null,
+          actorId: req.query.actorId || null,
+          entityType: req.query.entityType || null,
+          action: req.query.action || null,
+          status: req.query.status || null,
+          search: req.query.search || null,
+        },
+      },
+    });
     if (result.format === "csv") {
       res.type("text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="audit-history.csv"');

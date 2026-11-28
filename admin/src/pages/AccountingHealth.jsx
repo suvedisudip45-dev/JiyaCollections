@@ -1,17 +1,94 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import { Link } from "react-router-dom";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import { usePermissions } from "../auth/PermissionsContext";
+import { compareDecimalStrings, formatNprAmount } from "../utils/decimalDisplay";
+
+const ManufacturerPayableReconciliationSection = ({ title, sourceLabel, reconciliation = {} }) => {
+  const rows = reconciliation.sources || [];
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+      <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">{title}</h2>
+          <p className="mt-1 text-xs text-slate-500">{reconciliation.coverageNote || "Source-linked manufacturer payable documents compared with posted 2160 journal lines."}</p>
+        </div>
+        <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+          reconciliation.isReconciled ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+        }`}>
+          {Number(reconciliation.sourceCount || 0) === 0
+            ? "NO SOURCE ACTIVITY"
+            : reconciliation.isReconciled
+            ? "SOURCE MATCH"
+            : `${Number(reconciliation.unmatchedCount || 0)} SOURCE(S) NEED REVIEW`}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-4">
+        <div><span className="text-slate-500">Posted payable</span><p className="mt-1 font-mono font-semibold">Rs {Number(reconciliation.journalPayable || 0).toLocaleString()}</p></div>
+        <div><span className="text-slate-500">Document total</span><p className="mt-1 font-mono font-semibold">Rs {Number(reconciliation.documentOriginal || 0).toLocaleString()}</p></div>
+        <div><span className="text-slate-500">Open documents</span><p className="mt-1 font-mono font-semibold">Rs {Number(reconciliation.documentOutstanding || 0).toLocaleString()}</p></div>
+        <div><span className="text-slate-500">Variance</span><p className="mt-1 font-mono font-semibold">Rs {Number(reconciliation.variance || 0).toLocaleString()}</p></div>
+      </div>
+      <div className="max-h-80 overflow-auto">
+        <table className="min-w-full text-left text-xs">
+          <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-5 py-3 font-semibold">Manufacturer</th>
+              <th className="px-5 py-3 font-semibold">{sourceLabel}</th>
+              <th className="px-5 py-3 text-right font-semibold">Journal payable</th>
+              <th className="px-5 py-3 text-right font-semibold">Bill original</th>
+              <th className="px-5 py-3 text-right font-semibold">Bill open</th>
+              <th className="px-5 py-3 text-right font-semibold">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((row) => (
+              <tr key={`${row.manufacturerId || "unattributed"}:${row.sourceId}`} className="text-slate-700">
+                <td className="px-5 py-3 font-mono">{row.manufacturerId || "Unattributed"}</td>
+                <td className="px-5 py-3 font-mono">{row.sourceId}</td>
+                <td className="px-5 py-3 text-right font-mono">Rs {Number(row.journalPayable || 0).toLocaleString()}</td>
+                <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOriginal || 0).toLocaleString()}</td>
+                <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOutstanding || 0).toLocaleString()}</td>
+                <td className="px-5 py-3 text-right">
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                    {row.status}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={6} className="px-5 py-8 text-center text-slate-400">No posted journals or payable documents found for this source.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
 
 const AccountingHealth = ({ token }) => {
   const [reconciliation, setReconciliation] = useState(null);
   const [trialBalanceData, setTrialBalanceData] = useState(null);
   const [financialStatements, setFinancialStatements] = useState(null);
+  const [collaborationFeeCredits, setCollaborationFeeCredits] = useState([]);
+  const [creditApplication, setCreditApplication] = useState({
+    creditDocumentId: "",
+    invoiceDocumentId: "",
+    amount: "",
+    notes: "",
+  });
+  const [creditApplicationError, setCreditApplicationError] = useState("");
+  const [applyingCredit, setApplyingCredit] = useState(false);
   const [loading, setLoading] = useState(true);
+  const creditApplicationRequest = useRef(null);
+  const { can } = usePermissions();
 
-  const fetchHealthData = async () => {
+  const fetchHealthData = useCallback(async () => {
     try {
       setLoading(true);
       const [recRes, tbRes, stmtRes] = await Promise.all([
@@ -29,24 +106,117 @@ const AccountingHealth = ({ token }) => {
       if (stmtRes.data.success) {
         setFinancialStatements(stmtRes.data);
       }
+      try {
+        const creditRes = await axios.get(`${backendUrl}/api/accounting/collaboration-fee-credit-applications`, { headers: { token } });
+        if (creditRes.data.success) {
+          setCollaborationFeeCredits(creditRes.data.creditNotes || []);
+          setCreditApplicationError("");
+        } else {
+          throw new Error(creditRes.data.message || "Unable to load partner credit applications.");
+        }
+      } catch (error) {
+        console.error("Failed to load collaboration fee credit applications", error);
+        setCollaborationFeeCredits([]);
+        setCreditApplicationError(error.response?.data?.message || error.message || "Unable to load partner credits.");
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to compile accounting reconciliation health data");
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     if (token) fetchHealthData();
-  }, [token]);
+  }, [token, fetchHealthData]);
+
+  const selectedCredit = collaborationFeeCredits.find(({ id }) => id === creditApplication.creditDocumentId);
+  const selectedInvoice = selectedCredit?.invoices?.find(({ id }) => id === creditApplication.invoiceDocumentId);
+  const maxCreditApplication = selectedCredit && selectedInvoice
+    ? Math.min(Number(selectedCredit.remainingAmount), Number(selectedInvoice.remainingAmount))
+    : 0;
+
+  const submitCollaborationFeeCreditApplication = async (event) => {
+    event.preventDefault();
+    const amount = Number(creditApplication.amount);
+    if (
+      !selectedCredit ||
+      !selectedInvoice ||
+      !Number.isFinite(amount) ||
+      amount <= 0 ||
+      amount > maxCreditApplication ||
+      !creditApplication.notes.trim()
+    ) {
+      toast.error("Choose an eligible credit and invoice, enter a valid amount, and provide notes.");
+      return;
+    }
+
+    setApplyingCredit(true);
+    try {
+      const requestFingerprint = JSON.stringify({
+        creditDocumentId: selectedCredit.id,
+        invoiceDocumentId: selectedInvoice.id,
+        amount,
+        notes: creditApplication.notes,
+      });
+      if (creditApplicationRequest.current?.fingerprint !== requestFingerprint) {
+        creditApplicationRequest.current = {
+          fingerprint: requestFingerprint,
+          idempotencyKey: `collab-fee-credit:${globalThis.crypto.randomUUID()}`,
+        };
+      }
+      const response = await axios.post(
+        `${backendUrl}/api/accounting/collaboration-fee-credit-applications`,
+        {
+          creditDocumentId: selectedCredit.id,
+          invoiceDocumentId: selectedInvoice.id,
+          amount,
+          notes: creditApplication.notes,
+        },
+        {
+          headers: {
+            token,
+            "Idempotency-Key": creditApplicationRequest.current.idempotencyKey,
+          },
+        }
+      );
+      creditApplicationRequest.current = null;
+      toast.info(response.data.message || "Partner credit application submitted for independent Admin approval.");
+      setCreditApplication({ creditDocumentId: "", invoiceDocumentId: "", amount: "", notes: "" });
+      await fetchHealthData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not apply the partner credit.");
+    } finally {
+      setApplyingCredit(false);
+    }
+  };
 
   const ar = reconciliation?.accountsReceivable || {};
   const ap = reconciliation?.accountsPayable || {};
+  const partySubledgers = reconciliation?.partySubledgers || [];
+  const generalLedgerBalances = reconciliation?.generalLedgerBalances || {};
+  const generalLedgerAccountRows = generalLedgerBalances.accounts || [];
+  const controlCoverage = reconciliation?.accountingControlCoverage || {};
+  const controlCoverageRows = controlCoverage.controls || [];
+  const ncmCarrierFees = reconciliation?.ncmCarrierFeeReconciliation || {};
+  const ncmCarrierFeeRows = ncmCarrierFees.sources || [];
+  const marketingCpaPayables = reconciliation?.marketingCpaPayableReconciliation || {};
+  const marketingCpaPayableRows = marketingCpaPayables.sources || [];
+  const collaborationFeeReceivables = reconciliation?.collaborationFeeReceivableReconciliation || {};
+  const collaborationFeeReceivableRows = collaborationFeeReceivables.sources || [];
+  const customerRefundPayables = reconciliation?.customerRefundPayableReconciliation || {};
+  const customerRefundPayableRows = customerRefundPayables.sources || [];
+  const manufacturerProduction = reconciliation?.manufacturerProductionReconciliation || {};
+  const manufacturerLogistics = reconciliation?.manufacturerLogisticsReconciliation || {};
+  const fixedAssetReconciliation = reconciliation?.fixedAssetReconciliation || {};
+  const fixedAssetControlRows = fixedAssetReconciliation.controls || [];
+  const inventoryValuation = reconciliation?.inventoryValuationReconciliation || {};
   const cashBank = reconciliation?.cashAndBank || {};
   const isTbBalanced = Boolean(trialBalanceData?.isBalanced);
   const isBsBalanced = Boolean(financialStatements?.isBalanceSheetBalanced);
   const hasCompleteCoverage = reconciliation?.coverageStatus === "COMPLETE";
+  const hasUnpostedDeliveryAccounting = Number(reconciliation?.accountingPostingStatus?.unpostedCount || 0) > 0;
 
   const allReconciled =
     hasCompleteCoverage &&
@@ -54,7 +224,9 @@ const AccountingHealth = ({ token }) => {
     Boolean(ap.isReconciled) &&
     Boolean(cashBank.isReconciled) &&
     isTbBalanced &&
-    isBsBalanced;
+    isBsBalanced &&
+    Boolean(generalLedgerBalances.isReconciled) &&
+    !hasUnpostedDeliveryAccounting;
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
@@ -80,12 +252,13 @@ const AccountingHealth = ({ token }) => {
         <div className="flex items-center gap-3">
           <button
             onClick={fetchHealthData}
-            className="px-3.5 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl flex items-center gap-1.5 transition-colors shadow-xs"
+            disabled={loading}
+            className="px-3.5 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-xl flex items-center gap-1.5 transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            Re-run Health Engine
+            {loading ? "Refreshing..." : "Re-run Health Engine"}
           </button>
         </div>
       </div>
@@ -129,6 +302,8 @@ const AccountingHealth = ({ token }) => {
         </div>
       </div>
 
+      <AccountingPostingStatusBanner status={reconciliation?.accountingPostingStatus} />
+
       {reconciliation?.coverageGaps?.length > 0 && (
         <div className="border border-amber-200 bg-amber-50 p-4 rounded-lg">
           <h2 className="text-xs font-bold text-amber-900">Reconciliation coverage gaps</h2>
@@ -168,23 +343,23 @@ const AccountingHealth = ({ token }) => {
               <div className="flex justify-between text-slate-600">
                 <span>GL Control Balance (1130):</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(ar.glControlBalance || 0).toLocaleString()}
+                  Rs {formatNprAmount(ar.glControlBalance ?? "0")}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Active AR Bills Total:</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(ar.subledgerTotal || 0).toLocaleString()}
+                  Rs {formatNprAmount(ar.subledgerTotal ?? "0")}
                 </span>
               </div>
               <div className="flex justify-between pt-2 border-t border-slate-100 font-semibold">
                 <span>Reconciliation Variance:</span>
                 <span
                   className={`font-mono ${
-                    Number(ar.variance || 0) === 0 ? "text-emerald-600" : "text-rose-600"
+                    compareDecimalStrings(ar.variance ?? "0", "0") === 0 ? "text-emerald-600" : "text-rose-600"
                   }`}
                 >
-                  Rs {Number(ar.variance || 0).toLocaleString()}
+                  Rs {formatNprAmount(ar.variance ?? "0")}
                 </span>
               </div>
             </div>
@@ -226,23 +401,23 @@ const AccountingHealth = ({ token }) => {
               <div className="flex justify-between text-slate-600">
                 <span>GL Control Balance (2110):</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(ap.glControlBalance || 0).toLocaleString()}
+                  Rs {formatNprAmount(ap.glControlBalance ?? "0")}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Active AP Bills Total:</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(ap.subledgerTotal || 0).toLocaleString()}
+                  Rs {formatNprAmount(ap.subledgerTotal ?? "0")}
                 </span>
               </div>
               <div className="flex justify-between pt-2 border-t border-slate-100 font-semibold">
                 <span>Reconciliation Variance:</span>
                 <span
                   className={`font-mono ${
-                    Number(ap.variance || 0) === 0 ? "text-emerald-600" : "text-rose-600"
+                    compareDecimalStrings(ap.variance ?? "0", "0") === 0 ? "text-emerald-600" : "text-rose-600"
                   }`}
                 >
-                  Rs {Number(ap.variance || 0).toLocaleString()}
+                  Rs {formatNprAmount(ap.variance ?? "0")}
                 </span>
               </div>
             </div>
@@ -280,29 +455,29 @@ const AccountingHealth = ({ token }) => {
             <h3 className="text-base font-bold text-slate-900 mt-1">
               Treasury Cash vs GL Control
             </h3>
-            <p className="text-[11px] text-slate-400">Each Treasury balance is compared with its explicitly mapped GL account.</p>
+            <p className="text-[11px] text-slate-400">Each Treasury balance is compared exactly with its mapped GL account. Account 1180 can include wallet and gateway-clearing activity; this is not a bank or wallet-provider reconciliation.</p>
 
             <div className="space-y-2 mt-4 pt-3 border-t border-slate-100 text-xs">
               <div className="flex justify-between text-slate-600">
                 <span>Mapped GL balance:</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(cashBank.glTotalBalance || 0).toLocaleString()}
+                  Rs {formatNprAmount(cashBank.glTotalBalance || "0")}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Mapped Treasury balance:</span>
                 <span className="font-mono font-bold text-slate-900">
-                  Rs {Number(cashBank.treasuryAccountsTotal || 0).toLocaleString()}
+                  Rs {formatNprAmount(cashBank.treasuryAccountsTotal || "0")}
                 </span>
               </div>
               <div className="flex justify-between pt-2 border-t border-slate-100 font-semibold">
-                <span>Reconciliation Variance:</span>
+                <span>Gross mapped variance:</span>
                 <span
                   className={`font-mono ${
-                    Number(cashBank.variance || 0) === 0 ? "text-emerald-600" : "text-rose-600"
+                    compareDecimalStrings(cashBank.absoluteVariance || "0", "0") === 0 ? "text-emerald-600" : "text-rose-600"
                   }`}
                 >
-                  Rs {Number(cashBank.variance || 0).toLocaleString()}
+                  Rs {formatNprAmount(cashBank.absoluteVariance || "0")}
                 </span>
               </div>
               {Number(cashBank.unmappedAccountCount || 0) > 0 && (
@@ -324,6 +499,657 @@ const AccountingHealth = ({ token }) => {
           </Link>
         </div>
       </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">NCM Carrier Fee Payables</h2>
+            <p className="mt-1 text-xs text-slate-500">{ncmCarrierFees.coverageNote || "Carrier-fee accruals compared with payable bills, allocations, and 2180 remittance debits."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            Number(ncmCarrierFees.sourceCount || 0) === 0
+              ? "bg-slate-100 text-slate-700"
+              : ncmCarrierFees.isReconciled
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}>
+            {Number(ncmCarrierFees.sourceCount || 0) === 0
+              ? "NO SOURCE ACTIVITY"
+              : ncmCarrierFees.isReconciled
+              ? "SOURCE MATCH"
+              : `${Number(ncmCarrierFees.unmatchedCount || 0)} SOURCE(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-5">
+          <div><span className="text-slate-500">Accrued</span><p className="mt-1 font-mono font-semibold">Rs {Number(ncmCarrierFees.accrualPayable || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Bill original</span><p className="mt-1 font-mono font-semibold">Rs {Number(ncmCarrierFees.documentOriginal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Allocated</span><p className="mt-1 font-mono font-semibold">Rs {Number(ncmCarrierFees.allocationAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">2180 settlement debit</span><p className="mt-1 font-mono font-semibold">Rs {Number(ncmCarrierFees.settlementJournalDebit || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Outstanding</span><p className="mt-1 font-mono font-semibold">Rs {Number(ncmCarrierFees.documentOutstanding || 0).toLocaleString()}</p></div>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Fee batch</th>
+                <th className="px-5 py-3 text-right font-semibold">Accrual</th>
+                <th className="px-5 py-3 text-right font-semibold">Bill</th>
+                <th className="px-5 py-3 text-right font-semibold">Allocated</th>
+                <th className="px-5 py-3 text-right font-semibold">2180 debit</th>
+                <th className="px-5 py-3 text-right font-semibold">Open</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {ncmCarrierFeeRows.map((row) => (
+                <tr key={row.sourceId} className="text-slate-700">
+                  <td className="px-5 py-3 font-mono">{row.sourceId}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.accrualPayable || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOriginal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.allocationAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.settlementJournalDebit || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOutstanding || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {ncmCarrierFeeRows.length === 0 && (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-400">No NCM carrier fee accruals, bills, or remittance sources found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Marketing CPA Payable Reconciliation</h2>
+            <p className="mt-1 text-xs text-slate-500">{marketingCpaPayables.coverageNote || "Source-scoped comparison of posted CPA journals and partner payable bills."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            Number(marketingCpaPayables.sourceCount || 0) === 0
+              ? "bg-slate-100 text-slate-700"
+              : marketingCpaPayables.isReconciled
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}>
+            {Number(marketingCpaPayables.sourceCount || 0) === 0
+              ? "NO REDEMPTION OR CPA SOURCES"
+              : marketingCpaPayables.isReconciled
+              ? "SOURCE MATCH"
+              : `${Number(marketingCpaPayables.unmatchedCount || 0)} SOURCE(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-7">
+          <div><span className="text-slate-500">Snapshotted CPA</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.expectedCpaAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Historical rate unknown</span><p className="mt-1 font-mono font-semibold">{Number(marketingCpaPayables.rateSnapshotUnknownCount || 0)}</p></div>
+          <div><span className="text-slate-500">6420 expense</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.expenseAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">2170 payable</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.payableAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Bill original</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.documentOriginal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Bill allocated</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.documentAllocated || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Bill outstanding</span><p className="mt-1 font-mono font-semibold">Rs {Number(marketingCpaPayables.documentOutstanding || 0).toLocaleString()}</p></div>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Redemption source</th>
+                <th className="px-5 py-3 font-semibold">Partner</th>
+                <th className="px-5 py-3 text-right font-semibold">Expected CPA</th>
+                <th className="px-5 py-3 text-right font-semibold">6420 expense</th>
+                <th className="px-5 py-3 text-right font-semibold">2170 payable</th>
+                <th className="px-5 py-3 text-right font-semibold">Bill</th>
+                <th className="px-5 py-3 text-right font-semibold">Allocated</th>
+                <th className="px-5 py-3 text-right font-semibold">Outstanding</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {marketingCpaPayableRows.map((row) => (
+                <tr key={row.sourceId} className="text-slate-700">
+                  <td className="px-5 py-3 font-mono">{row.sourceId}</td>
+                  <td className="px-5 py-3">{row.partnerName || "Partner identity missing"}</td>
+                  <td className="px-5 py-3 text-right font-mono">
+                    {row.expectedCpaAmount === null
+                      ? "Unknown"
+                      : row.expectedCpaAmount === 0
+                        ? "No CPA"
+                        : `Rs ${Number(row.expectedCpaAmount).toLocaleString()}`}
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.expenseAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.payableAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOriginal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentAllocated || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOutstanding || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {marketingCpaPayableRows.length === 0 && (
+                <tr><td colSpan={9} className="px-5 py-8 text-center text-slate-400">No partner benefit-redemption events or CPA accounting records found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="border-b border-slate-100 px-5 py-4">
+          <h2 className="text-sm font-bold text-slate-900">Distributor &amp; NCM Party Subledgers</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Open source documents compared with their mapped control accounts. Historical/unmatched balances remain flagged for reconciliation.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Party balance</th>
+                <th className="px-5 py-3 font-semibold">GL control</th>
+                <th className="px-5 py-3 text-right font-semibold">Open documents</th>
+                <th className="px-5 py-3 text-right font-semibold">Subledger</th>
+                <th className="px-5 py-3 text-right font-semibold">GL</th>
+                <th className="px-5 py-3 text-right font-semibold">Variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {partySubledgers.map((row) => (
+                <tr key={`${row.side}:${row.sourceType}`} className="text-slate-700">
+                  <td className="px-5 py-3 font-medium">{row.label}</td>
+                  <td className="px-5 py-3 font-mono">{row.controlAccountCode}</td>
+                  <td className="px-5 py-3 text-right">{Number(row.documentCount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.subledgerTotal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.glControlBalance || 0).toLocaleString()}</td>
+                  <td className={`px-5 py-3 text-right font-mono ${Number(row.variance || 0) === 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                    Rs {Number(row.variance || 0).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      {row.isReconciled ? "MATCH" : "REVIEW"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {partySubledgers.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-8 text-center text-slate-400">Party subledger balances are unavailable.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <ManufacturerPayableReconciliationSection
+        title="Manufacturer Accepted Production Bills"
+        sourceLabel="Production request"
+        reconciliation={manufacturerProduction}
+      />
+
+      <ManufacturerPayableReconciliationSection
+        title="Manufacturer Local Freight Documents"
+        sourceLabel="Shipment source"
+        reconciliation={manufacturerLogistics}
+      />
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Fixed Asset Register-to-GL Reconciliation</h2>
+            <p className="mt-1 text-xs text-slate-500">{fixedAssetReconciliation.coverageNote || "Active fixed-asset register balances compared with mapped GL controls."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            Number(fixedAssetReconciliation.activeAssetCount || 0) === 0 && fixedAssetReconciliation.isReconciled
+              ? "bg-slate-100 text-slate-700"
+              : fixedAssetReconciliation.isReconciled
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}>
+            {Number(fixedAssetReconciliation.activeAssetCount || 0) === 0 && fixedAssetReconciliation.isReconciled
+              ? "NO ACTIVE ASSETS"
+              : fixedAssetReconciliation.isReconciled
+              ? "REGISTER MATCH"
+              : `${Number(fixedAssetReconciliation.unmatchedCount || 0)} ISSUE(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-4">
+          <div><span className="text-slate-500">Active assets</span><p className="mt-1 font-mono font-semibold">{Number(fixedAssetReconciliation.activeAssetCount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Gross register cost</span><p className="mt-1 font-mono font-semibold">Rs {Number(fixedAssetReconciliation.grossCost || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Accumulated depreciation</span><p className="mt-1 font-mono font-semibold">Rs {Number(fixedAssetReconciliation.accumulatedDepreciation || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Net book value</span><p className="mt-1 font-mono font-semibold">Rs {Number(fixedAssetReconciliation.netBookValue || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Gross less depreciation vs register</span><p className="mt-1 font-mono font-semibold">Rs {Number(fixedAssetReconciliation.bookValueVariance || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Asset book-value exceptions</span><p className="mt-1 font-mono font-semibold">{Number(fixedAssetReconciliation.assetBookMismatchCount || 0)}</p></div>
+          <div><span className="text-slate-500">Inactive assets with book value</span><p className="mt-1 font-mono font-semibold">{Number(fixedAssetReconciliation.inactiveAssetBookValueCount || 0)}</p></div>
+          <div><span className="text-slate-500">Unrecognized categories</span><p className="mt-1 font-mono font-semibold">{Number(fixedAssetReconciliation.unsupportedCategoryCount || 0)}</p></div>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Control</th>
+                <th className="px-5 py-3 text-right font-semibold">Register balance</th>
+                <th className="px-5 py-3 text-right font-semibold">GL balance</th>
+                <th className="px-5 py-3 text-right font-semibold">Variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Active assets</th>
+                <th className="px-5 py-3 text-right font-semibold">Asset exceptions</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {fixedAssetControlRows.map((row) => (
+                <tr key={row.accountCode} className="text-slate-700">
+                  <td className="px-5 py-3">
+                    <span className="font-mono">{row.accountCode}</span>
+                    <span className="ml-2">{row.label}</span>
+                    {row.categories?.length > 0 && <span className="mt-1 block text-[10px] text-slate-400">{row.categories.join(", ")}</span>}
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.registerBalance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.glBalance || 0).toLocaleString()}</td>
+                  <td className={`px-5 py-3 text-right font-mono ${Math.abs(Number(row.variance || 0)) <= 0.05 ? "text-emerald-700" : "text-rose-700"}`}>Rs {Number(row.variance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">{Number(row.assetCount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">{Number(row.bookMismatchCount || 0) + Number(row.unsupportedCategoryCount || 0)}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                      {!row.accountExists ? "MISSING GL" : !row.accountMappingMatches ? "CHECK NORMAL BALANCE" : row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {fixedAssetControlRows.length === 0 && (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-400">Fixed-asset reconciliation is unavailable.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Inventory Cost-Layer to GL Reconciliation</h2>
+            <p className="mt-1 text-xs text-slate-500">{inventoryValuation.coverageNote || "Current platform-owned quantities are compared with recorded production cost layers and Account 1140."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            inventoryValuation.isReconciled ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+          }`}>
+            {!inventoryValuation.accountExists
+              ? "1140 MISSING"
+              : !inventoryValuation.accountMappingMatches
+              ? "CHECK NORMAL BALANCE"
+              : inventoryValuation.isReconciled
+              ? "SOURCE-SCOPED MATCH"
+              : "REVIEW REQUIRED"}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 px-5 py-3 text-xs sm:grid-cols-4">
+          <div><span className="text-slate-500">Layer-traced value</span><p className="mt-1 font-mono font-semibold">Rs {Number(inventoryValuation.subledgerTotal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">1140 GL balance</span><p className="mt-1 font-mono font-semibold">Rs {Number(inventoryValuation.glBalance || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">GL less traced value</span><p className="mt-1 font-mono font-semibold">Rs {Number(inventoryValuation.variance || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Platform on-hand units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.platformOnHandQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Quantity mismatches</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.balanceMismatchCount || 0)}</p></div>
+          <div><span className="text-slate-500">Invalid balances</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.invalidBalanceCount || 0)}</p></div>
+          <div><span className="text-slate-500">Uncosted units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.uncostedQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Excess layer units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.excessLayerQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Lost-location units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.lostLocationOnHandQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Lost-layer residual units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.lostLocationLayerQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Sensitive-location units</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.sensitiveLocationQuantity || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Invalid cost layers</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.invalidCostLayerCount || 0)}</p></div>
+          <div><span className="text-slate-500">Orphaned layer balances</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.orphanedLayerBalanceCount || 0)}</p></div>
+          <div><span className="text-slate-500">Unknown location kinds</span><p className="mt-1 font-mono font-semibold">{Number(inventoryValuation.unknownLocationKindCount || 0)}</p></div>
+        </div>
+        {inventoryValuation.sensitiveLocations?.length > 0 && (
+          <div className="border-t border-slate-100 px-5 py-3 text-xs text-amber-800">
+            Finance review by location type: {inventoryValuation.sensitiveLocations.map(({ kind, quantity }) => `${kind}: ${Number(quantity).toLocaleString()} units`).join(" · ")}
+          </div>
+        )}
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Collaboration Fee Receivables</h2>
+            <p className="mt-1 text-xs text-slate-500">{collaborationFeeReceivables.coverageNote || "Invoices, receivable documents, recorded allocations, and linked posted 1130 journals are compared."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            Number(collaborationFeeReceivables.sourceCount || 0) === 0
+              ? "bg-slate-100 text-slate-700"
+              : collaborationFeeReceivables.isReconciled
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}>
+            {Number(collaborationFeeReceivables.sourceCount || 0) === 0
+              ? "NO SOURCE ACTIVITY"
+              : collaborationFeeReceivables.isReconciled
+              ? "SOURCE MATCH"
+              : `${Number(collaborationFeeReceivables.unmatchedCount || 0)} SOURCE(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-4">
+          <div><span className="text-slate-500">Invoice total</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.invoiceTotal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Document original</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.documentOriginal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Document allocated</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.documentAllocated || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Document outstanding</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.documentOutstanding || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Journal receivable</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.journalReceivable || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Allocation records</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.allocationAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Posted receipt allocations</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.postedReceiptAllocationAmount || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Verified credit offsets</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.offsetApplicationAmount || 0).toLocaleString()} ({Number(collaborationFeeReceivables.offsetApplicationCount || 0)})</p></div>
+          <div><span className="text-slate-500">Offset evidence needing review</span><p className="mt-1 font-mono font-semibold">{Number(collaborationFeeReceivables.offsetApplicationInvalidCount || 0)}</p></div>
+          <div><span className="text-slate-500">Linked 1130 journal net</span><p className="mt-1 font-mono font-semibold">Rs {Number(collaborationFeeReceivables.collectionJournalCredit || 0).toLocaleString()}</p></div>
+        </div>
+        {can("finance:receivable_collect") && (
+          <form onSubmit={submitCollaborationFeeCreditApplication} className="space-y-3 border-b border-slate-100 bg-slate-50/70 px-5 py-4">
+            <div>
+              <h3 className="text-xs font-bold text-slate-800">Apply partner credit to a later invoice</h3>
+              <p className="mt-1 text-[11px] text-slate-500">This offsets open documents against the original credit-note journal; it does not post another journal or issue a cash refund.</p>
+            </div>
+            {creditApplicationError ? (
+              <p className="text-xs text-rose-700">Could not load partner credits: {creditApplicationError}</p>
+            ) : collaborationFeeCredits.length === 0 ? (
+              <p className="text-xs text-slate-500">No verified open partner credits have an eligible later invoice.</p>
+            ) : (
+              <>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Partner credit
+                    <select
+                      value={creditApplication.creditDocumentId}
+                      onChange={(event) => {
+                        const nextCredit = collaborationFeeCredits.find(({ id }) => id === event.target.value);
+                        const nextInvoice = nextCredit?.invoices?.[0];
+                        setCreditApplication((current) => ({
+                          ...current,
+                          creditDocumentId: nextCredit?.id || "",
+                          invoiceDocumentId: nextInvoice?.id || "",
+                          amount: nextInvoice
+                            ? Math.min(Number(nextCredit.remainingAmount), Number(nextInvoice.remainingAmount)).toFixed(2)
+                            : "",
+                        }));
+                      }}
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
+                      required
+                    >
+                      <option value="">Select a credit note</option>
+                      {collaborationFeeCredits.map((credit) => (
+                        <option key={credit.id} value={credit.id}>
+                          {credit.partnerName} · {credit.documentNumber} · {credit.currency} {Number(credit.remainingAmount).toFixed(2)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Later open invoice
+                    <select
+                      value={creditApplication.invoiceDocumentId}
+                      onChange={(event) => {
+                        const nextInvoice = selectedCredit?.invoices?.find(({ id }) => id === event.target.value);
+                        setCreditApplication((current) => ({
+                          ...current,
+                          invoiceDocumentId: nextInvoice?.id || "",
+                          amount: nextInvoice && selectedCredit
+                            ? Math.min(Number(selectedCredit.remainingAmount), Number(nextInvoice.remainingAmount)).toFixed(2)
+                            : "",
+                        }));
+                      }}
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
+                      required
+                      disabled={!selectedCredit}
+                    >
+                      <option value="">Select an invoice</option>
+                      {(selectedCredit?.invoices || []).map((invoice) => (
+                        <option key={invoice.id} value={invoice.id}>
+                          {invoice.documentNumber} · {invoice.currency} {Number(invoice.remainingAmount).toFixed(2)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Amount
+                    <input
+                      type="number"
+                      min="0.01"
+                      max={maxCreditApplication || undefined}
+                      step="0.01"
+                      value={creditApplication.amount}
+                      onChange={(event) => setCreditApplication((current) => ({ ...current, amount: event.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
+                      required
+                    />
+                  </label>
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Application notes
+                    <input
+                      type="text"
+                      maxLength={1000}
+                      value={creditApplication.notes}
+                      onChange={(event) => setCreditApplication((current) => ({ ...current, notes: event.target.value }))}
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
+                      required
+                    />
+                  </label>
+                </div>
+                <button
+                  type="submit"
+                  disabled={applyingCredit || !selectedInvoice || Number(creditApplication.amount) <= 0 || Number(creditApplication.amount) > maxCreditApplication}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {applyingCredit ? "Applying..." : "Apply credit"}
+                </button>
+              </>
+            )}
+          </form>
+        )}
+        <div className="max-h-80 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Invoice</th>
+                <th className="px-5 py-3 font-semibold">Status</th>
+                <th className="px-5 py-3 text-right font-semibold">Invoice total</th>
+                <th className="px-5 py-3 text-right font-semibold">Document original</th>
+                <th className="px-5 py-3 text-right font-semibold">Journal debit</th>
+                <th className="px-5 py-3 text-right font-semibold">Document allocated</th>
+                <th className="px-5 py-3 text-right font-semibold">Allocation records</th>
+                <th className="px-5 py-3 text-right font-semibold">Credit offsets</th>
+                <th className="px-5 py-3 text-right font-semibold">Posted receipt allocations</th>
+                <th className="px-5 py-3 text-right font-semibold">Outstanding</th>
+                <th className="px-5 py-3 text-right font-semibold">Doc variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Journal variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {collaborationFeeReceivableRows.map((row) => (
+                <tr key={row.sourceId} className="text-slate-700">
+                  <td className="px-5 py-3 font-mono">{row.invoiceNumber || row.sourceId}</td>
+                  <td className="px-5 py-3">{row.invoiceStatus || "Missing"}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.invoiceTotal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOriginal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.journalReceivable || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentAllocated || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.allocationAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.offsetAllocationAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.postedReceiptAllocationAmount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentOutstanding || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.invoiceToDocumentVariance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.documentToJournalVariance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {collaborationFeeReceivableRows.length === 0 && (
+                <tr><td colSpan={13} className="px-5 py-8 text-center text-slate-400">No collaboration fee invoices found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Platform-Funded Customer Return &amp; Exchange Refund Payables</h2>
+            <p className="mt-1 text-xs text-slate-500">{customerRefundPayables.coverageNote || "Current platform-funded refund AP originals compared with source-linked 2110 journal credits."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            Number(customerRefundPayables.sourceCount || 0) === 0
+              ? "bg-slate-100 text-slate-700"
+              : customerRefundPayables.isReconciled
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-amber-100 text-amber-800"
+          }`}>
+            {Number(customerRefundPayables.sourceCount || 0) === 0
+              ? "NO SOURCE ACTIVITY"
+              : customerRefundPayables.isReconciled
+              ? "SOURCE MATCH"
+              : `${Number(customerRefundPayables.unmatchedCount || 0)} SOURCE(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 border-b border-slate-100 px-5 py-3 text-xs sm:grid-cols-4">
+          <div><span className="text-slate-500">Journal payable</span><p className="mt-1 font-mono font-semibold">Rs {Number(customerRefundPayables.journalPayable || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">AP original</span><p className="mt-1 font-mono font-semibold">Rs {Number(customerRefundPayables.payableOriginal || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">AP outstanding</span><p className="mt-1 font-mono font-semibold">Rs {Number(customerRefundPayables.payableOutstanding || 0).toLocaleString()}</p></div>
+          <div><span className="text-slate-500">Variance</span><p className="mt-1 font-mono font-semibold">Rs {Number(customerRefundPayables.variance || 0).toLocaleString()}</p></div>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Refund source</th>
+                <th className="px-5 py-3 font-semibold">Reference</th>
+                <th className="px-5 py-3 text-right font-semibold">Journal</th>
+                <th className="px-5 py-3 text-right font-semibold">AP original</th>
+                <th className="px-5 py-3 text-right font-semibold">Outstanding</th>
+                <th className="px-5 py-3 text-right font-semibold">Paid</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {customerRefundPayableRows.map((row) => (
+                <tr key={`${row.referenceType}:${row.sourceId}`} className="text-slate-700">
+                  <td className="px-5 py-3 font-medium">{row.label}</td>
+                  <td className="px-5 py-3 font-mono">{row.sourceId}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.journalPayable || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.payableOriginal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.payableOutstanding || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.payablePaid || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {customerRefundPayableRows.length === 0 && (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-400">No platform-funded customer return or exchange downgrade refund AP sources found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Balance-Sheet Control Coverage</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Explicit coverage and known gaps for configured balance-sheet controls. A matching GL balance alone does not mean its operational source is reconciled.
+            </p>
+          </div>
+          <span className="w-fit rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold text-amber-800">
+            {Number(controlCoverage.unreconciledCount || 0)} / {Number(controlCoverage.controlAccountCount || 0)} NOT COMPLETE
+          </span>
+        </div>
+        <div className="max-h-96 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Control</th>
+                <th className="px-5 py-3 font-semibold">Source scope</th>
+                <th className="px-5 py-3 text-right font-semibold">GL balance</th>
+                <th className="px-5 py-3 font-semibold">Status and gap</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {controlCoverageRows.map((row) => (
+                <tr key={row.accountCode} className="align-top text-slate-700">
+                  <td className="px-5 py-3 font-medium">{row.accountCode} · {row.label}</td>
+                  <td className="px-5 py-3">{row.source}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.glBalance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3">
+                    <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800">
+                      {row.status.replace(/_/g, " ")}
+                    </span>
+                    <p className="mt-1 text-slate-500">{row.gap}</p>
+                  </td>
+                </tr>
+              ))}
+              {controlCoverageRows.length === 0 && (
+                <tr><td colSpan={4} className="px-5 py-8 text-center text-slate-400">Control-account coverage is unavailable.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Journal-Derived GL Balance Check</h2>
+            <p className="mt-1 text-xs text-slate-500">{generalLedgerBalances.coverageNote || "Stored GL balances compared with posted journal lines."}</p>
+          </div>
+          <span className={`w-fit rounded-full px-2.5 py-1 text-[10px] font-bold ${
+            generalLedgerBalances.isReconciled ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+          }`}>
+            {generalLedgerBalances.isReconciled ? "ALL MATCH" : `${Number(generalLedgerBalances.unresolvedCount || 0)} ACCOUNT(S) NEED REVIEW`}
+          </span>
+        </div>
+        <div className="max-h-96 overflow-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Account</th>
+                <th className="px-5 py-3 text-right font-semibold">Stored GL balance</th>
+                <th className="px-5 py-3 text-right font-semibold">Journal-derived</th>
+                <th className="px-5 py-3 text-right font-semibold">Variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {generalLedgerAccountRows.map((row) => (
+                <tr key={row.accountId} className="text-slate-700">
+                  <td className="px-5 py-3 font-medium">{row.accountCode || "—"} · {row.accountName || "Unnamed account"}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.storedBalance || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">
+                    {row.journalDerivedBalance === null ? "Unknown" : `Rs ${Number(row.journalDerivedBalance).toLocaleString()}`}
+                  </td>
+                  <td className={`px-5 py-3 text-right font-mono ${row.isReconciled ? "text-emerald-700" : "text-rose-700"}`}>
+                    {row.variance === null ? "Unknown" : `Rs ${Number(row.variance).toLocaleString()}`}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
+                      {row.isReconciled ? "MATCH" : "REVIEW"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {generalLedgerAccountRows.length === 0 && (
+                <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-400">Journal-derived GL balances are unavailable.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* DOUBLE ENTRY FINANCIAL INVARIANTS STATUS */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -347,7 +1173,7 @@ const AccountingHealth = ({ token }) => {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
               <span className="text-[10px] uppercase font-bold text-slate-400">Total Debit Balance</span>
               <p className="font-mono font-bold text-slate-900 text-sm mt-0.5">
-                Rs {Number(trialBalanceData?.totals?.totalClosingDebit || 0).toLocaleString()}
+                Rs {formatNprAmount(trialBalanceData?.totals?.totalClosingDebit ?? "0")}
               </p>
             </div>
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
@@ -384,13 +1210,13 @@ const AccountingHealth = ({ token }) => {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
               <span className="text-[10px] uppercase font-bold text-slate-400">Total Assets</span>
               <p className="font-mono font-bold text-slate-900 text-sm mt-0.5">
-                Rs {Number(financialStatements?.balanceSheet?.assets?.totalAssets || 0).toLocaleString()}
+                Rs {formatNprAmount(financialStatements?.balanceSheet?.assets?.totalAssets ?? "0")}
               </p>
             </div>
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
               <span className="text-[10px] uppercase font-bold text-slate-400">Total Liabilities + Equity</span>
               <p className="font-mono font-bold text-slate-900 text-sm mt-0.5">
-                Rs {Number(financialStatements?.balanceSheet?.totalLiabilitiesAndEquity || 0).toLocaleString()}
+                Rs {formatNprAmount(financialStatements?.balanceSheet?.totalLiabilitiesAndEquity ?? "0")}
               </p>
             </div>
           </div>

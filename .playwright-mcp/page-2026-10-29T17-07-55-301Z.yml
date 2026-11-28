@@ -1,0 +1,205 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - img "Aama Clothings" [ref=f2e6]
+      - generic [ref=f2e7]:
+        - heading "Aama Clothings" [level=1] [ref=f2e8]
+        - paragraph [ref=f2e9]: Admin Management Console
+    - generic [ref=f2e10]:
+      - button "Jump to an admin page" [ref=f2e11] [cursor=pointer]:
+        - generic [ref=f2e15]: Jump to a page
+        - generic [ref=f2e16]: K
+      - generic [ref=f2e19]: Thu, 29 Oct NPT
+      - generic [ref=f2e23]:
+        - generic [ref=f2e24]: AD
+        - generic [ref=f2e25]:
+          - generic [ref=f2e26]: Administrator
+          - generic [ref=f2e27]: Admin console
+      - button "Logout" [ref=f2e28] [cursor=pointer]
+  - generic [ref=f2e33]:
+    - complementary "Admin navigation" [ref=f2e34]:
+      - generic [ref=f2e35]:
+        - generic [ref=f2e36]:
+          - button "Access Control" [ref=f2e37] [cursor=pointer]
+          - navigation [ref=f2e44]:
+            - link "Portal Users" [ref=f2e45] [cursor=pointer]:
+              - /url: /access-control/users
+            - link "Admin Roles" [ref=f2e50] [cursor=pointer]:
+              - /url: /access-control/roles
+            - link "Permissions" [ref=f2e55] [cursor=pointer]:
+              - /url: /access-control/permissions
+            - link "Audit History" [ref=f2e60] [cursor=pointer]:
+              - /url: /audit-history
+        - generic [ref=f2e66]:
+          - button "Merchandising" [ref=f2e67] [cursor=pointer]
+          - navigation [ref=f2e75]:
+            - link "All Products" [ref=f2e76] [cursor=pointer]:
+              - /url: /list
+            - link "Add Product" [ref=f2e81] [cursor=pointer]:
+              - /url: /add
+            - link "Categories & Types" [ref=f2e86] [cursor=pointer]:
+              - /url: /categories
+            - link "Combo Bundles" [ref=f2e91] [cursor=pointer]:
+              - /url: /combo-bundles
+            - link "Festive Campaigns" [ref=f2e96] [cursor=pointer]:
+              - /url: /special-offers
+        - generic [ref=f2e102]:
+          - button "Sales & Orders" [ref=f2e103] [cursor=pointer]
+          - navigation [ref=f2e110]:
+            - link "Customer Orders" [ref=f2e111] [cursor=pointer]:
+              - /url: /orders
+            - link "Create Direct Order" [ref=f2e116] [cursor=pointer]:
+              - /url: /create-order
+            - link "Product performance" [ref=f2e121] [cursor=pointer]:
+              - /url: /product-analytics
+        - generic [ref=f2e127]:
+          - button "Logistics & Supply Chain" [ref=f2e128] [cursor=pointer]
+          - navigation [ref=f2e135]:
+            - link "Order Routing Engine" [ref=f2e136] [cursor=pointer]:
+              - /url: /order-assignments
+            - link "Delivery & COD Monitor" [ref=f2e141] [cursor=pointer]:
+              - /url: /delivery-monitor
+            - link "NCM Deliveries" [ref=f2e146] [cursor=pointer]:
+              - /url: /ncm-deliveries
+            - link "Distributor Self-Delivery" [ref=f2e151] [cursor=pointer]:
+              - /url: /self-deliveries
+            - link "Manufacturers" [ref=f2e156] [cursor=pointer]:
+              - /url: /manufacturers
+            - link "Multi-Hub Stock" [ref=f2e161] [cursor=pointer]:
+              - /url: /manufacturer-inventory
+            - link "Production Requests" [ref=f2e166] [cursor=pointer]:
+              - /url: /manufacturer-production
+            - link "Distributor Applications" [ref=f2e171] [cursor=pointer]:
+              - /url: /distributor-applications
+            - link "Distributor Directory" [ref=f2e176] [cursor=pointer]:
+              - /url: /distributors
+            - link "Bulk Stock Transfers" [ref=f2e181] [cursor=pointer]:
+              - /url: /stock-transfers
+        - generic [ref=f2e186]:
+          - button "Location Pricing" [ref=f2e187] [cursor=pointer]
+          - navigation [ref=f2e194]:
+            - link "District Rules" [ref=f2e195] [cursor=pointer]:
+              - /url: /location-pricing
+        - generic [ref=f2e201]:
+          - button "Marketing Partners" [ref=f2e202] [cursor=pointer]
+          - navigation [ref=f2e209]:
+            - link "Card Assignment" [ref=f2e210] [cursor=pointer]:
+              - /url: /marketing-cards
+        - generic [ref=f2e216]:
+          - button "Operations & Costing" [ref=f2e217] [cursor=pointer]
+          - navigation [ref=f2e225]:
+            - link "Inventory & Stock" [ref=f2e226] [cursor=pointer]:
+              - /url: /inventory
+            - link "Inventory Ledger Audit" [ref=f2e231] [cursor=pointer]:
+              - /url: /inventory-ledger
+            - link "COGS & Margins" [ref=f2e236] [cursor=pointer]:
+              - /url: /cogs
+            - link "Shipping Rates" [ref=f2e241] [cursor=pointer]:
+              - /url: /shipping
+        - generic [ref=f2e247]:
+          - button "Platform Settings" [ref=f2e248] [cursor=pointer]
+          - navigation [ref=f2e256]:
+            - link "Feature Settings" [ref=f2e257] [cursor=pointer]:
+              - /url: /platform-features
+        - generic [ref=f2e264]:
+          - button "Finance & Banking" [ref=f2e265] [cursor=pointer]
+          - navigation [ref=f2e272]:
+            - link "Financial Dashboard" [ref=f2e273] [cursor=pointer]:
+              - /url: /finance
+            - link "Cash & Banks" [ref=f2e278] [cursor=pointer]:
+              - /url: /treasury
+            - link "Assets & Depreciation" [ref=f2e283] [cursor=pointer]:
+              - /url: /assets
+            - link "Partners & Investors" [ref=f2e288] [cursor=pointer]:
+              - /url: /partners
+            - link "Expenses & Overhead" [ref=f2e293] [cursor=pointer]:
+              - /url: /expenses
+            - link "13% VAT & Tax" [ref=f2e298] [cursor=pointer]:
+              - /url: /tax
+            - link "Returns & Debit Notes" [ref=f2e303] [cursor=pointer]:
+              - /url: /returns
+            - link "Payables & Receivables" [ref=f2e308] [cursor=pointer]:
+              - /url: /payables
+            - link "Financial Statements" [ref=f2e313] [cursor=pointer]:
+              - /url: /statements
+        - generic [ref=f2e319]:
+          - button "General Ledger" [ref=f2e320] [cursor=pointer]
+          - navigation [ref=f2e328]:
+            - link "Chart of Accounts" [ref=f2e329] [cursor=pointer]:
+              - /url: /chart-of-accounts
+            - link "Journal Entries" [ref=f2e334] [cursor=pointer]:
+              - /url: /journal-entries
+            - link "General Ledger" [ref=f2e339] [cursor=pointer]:
+              - /url: /general-ledger
+            - link "Trial Balance" [ref=f2e344] [cursor=pointer]:
+              - /url: /trial-balance
+            - link "Fiscal Periods" [ref=f2e349] [cursor=pointer]:
+              - /url: /fiscal-periods
+            - link "Accounting Health" [ref=f2e354] [cursor=pointer]:
+              - /url: /accounting-health
+        - generic [ref=f2e361]:
+          - button "Customers & CRM" [ref=f2e362] [cursor=pointer]
+          - navigation [ref=f2e369]:
+            - link "Customer Profiles" [ref=f2e370] [cursor=pointer]:
+              - /url: /customers
+            - link "VIP Loyalty Tiers" [ref=f2e375] [cursor=pointer]:
+              - /url: /loyalty-levels
+            - link "Gift Promotions" [ref=f2e380] [cursor=pointer]:
+              - /url: /gift-promotions
+            - link "Product Reviews" [ref=f2e385] [cursor=pointer]:
+              - /url: /reviews
+            - link "Story Letter Library" [ref=f2e390] [cursor=pointer]:
+              - /url: /story-letter-library
+      - generic [ref=f2e395]:
+        - link "Change Password" [ref=f2e396] [cursor=pointer]:
+          - /url: /change-password
+        - generic [ref=f2e405]:
+          - paragraph [ref=f2e406]: Aama Clothings
+          - paragraph [ref=f2e407]: Admin workspace
+    - main [ref=f2e408]:
+      - generic [ref=f2e409]:
+        - navigation "Breadcrumb" [ref=f2e410]:
+          - link "Home" [ref=f2e412] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f2e413]: Details
+        - generic [ref=f2e417]:
+          - generic [ref=f2e418]:
+            - generic [ref=f2e419]:
+              - generic [ref=f2e420]:
+                - heading "Journal Entries" [level=1] [ref=f2e421]
+                - generic [ref=f2e422]: Double-Entry Ledger
+              - paragraph [ref=f2e423]: Authoritative general journal register with automatic debit/credit balance verification
+            - generic [ref=f2e424]:
+              - button "Refresh" [ref=f2e425] [cursor=pointer]
+              - button "New Manual Journal" [ref=f2e428] [cursor=pointer]
+          - generic [ref=f2e432]:
+            - generic [ref=f2e433]:
+              - generic [ref=f2e434]: Search Journal / Reference / Memo
+              - textbox "e.g. JRN-2026-0001, INV-1002..." [ref=f2e438]
+            - generic [ref=f2e439]:
+              - generic [ref=f2e440]: Source Transaction Type
+              - combobox [ref=f2e441]:
+                - option "All Source Types" [selected]
+                - option "Sales Invoices"
+                - option "Customer Receipts / COD"
+                - option "Purchase Bills"
+                - option "Supplier / Manufacturer Payments"
+                - option "Sales Returns & RMA"
+                - option "Operating Expenses"
+                - option "Fixed Assets"
+                - option "Depreciation Batches"
+                - option "Loan Disbursements"
+                - option "Loan Repayments"
+                - option "Share Capital"
+                - option "Manual Adjustments"
+                - option "Reversals"
+            - generic [ref=f2e442]:
+              - generic [ref=f2e443]: Status
+              - combobox [ref=f2e444]:
+                - option "All Statuses" [selected]
+                - option "POSTED"
+                - option "REVERSED"
+            - generic [ref=f2e445]:
+              - button "Apply Filter" [ref=f2e446] [cursor=pointer]
+              - button "Reset" [ref=f2e447] [cursor=pointer]
+          - generic [ref=f2e448]: Loading journal entries...

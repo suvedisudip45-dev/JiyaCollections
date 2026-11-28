@@ -1,0 +1,169 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - img "Aama Clothings" [ref=f1e6]
+      - generic [ref=f1e7]:
+        - heading "Aama Clothings" [level=1] [ref=f1e8]
+        - paragraph [ref=f1e9]: Admin Management Console
+    - generic [ref=f1e10]:
+      - button "Jump to an admin page" [ref=f1e11] [cursor=pointer]:
+        - generic [ref=f1e15]: Jump to a page
+        - generic [ref=f1e16]: K
+      - generic [ref=f1e19]: Sat, 7 Nov NPT
+      - generic [ref=f1e23]:
+        - generic [ref=f1e24]: AD
+        - generic [ref=f1e25]:
+          - generic [ref=f1e26]: Administrator
+          - generic [ref=f1e27]: Admin console
+      - button "Logout" [ref=f1e28] [cursor=pointer]
+  - generic [ref=f1e33]:
+    - complementary "Admin navigation" [ref=f1e34]:
+      - generic [ref=f1e35]:
+        - generic [ref=f1e36]:
+          - button "Access Control" [ref=f1e37] [cursor=pointer]
+          - navigation [ref=f1e44]:
+            - link "Portal Users" [ref=f1e45] [cursor=pointer]:
+              - /url: /access-control/users
+            - link "Admin Roles" [ref=f1e50] [cursor=pointer]:
+              - /url: /access-control/roles
+            - link "Permissions" [ref=f1e55] [cursor=pointer]:
+              - /url: /access-control/permissions
+            - link "Audit History" [ref=f1e60] [cursor=pointer]:
+              - /url: /audit-history
+        - generic [ref=f1e66]:
+          - button "Merchandising" [ref=f1e67] [cursor=pointer]
+          - navigation [ref=f1e75]:
+            - link "All Products" [ref=f1e76] [cursor=pointer]:
+              - /url: /list
+            - link "Add Product" [ref=f1e81] [cursor=pointer]:
+              - /url: /add
+            - link "Categories & Types" [ref=f1e86] [cursor=pointer]:
+              - /url: /categories
+            - link "Combo Bundles" [ref=f1e91] [cursor=pointer]:
+              - /url: /combo-bundles
+            - link "Festive Campaigns" [ref=f1e96] [cursor=pointer]:
+              - /url: /special-offers
+        - generic [ref=f1e102]:
+          - button "Sales & Orders" [ref=f1e103] [cursor=pointer]
+          - navigation [ref=f1e110]:
+            - link "Customer Orders" [ref=f1e111] [cursor=pointer]:
+              - /url: /orders
+            - link "Create Direct Order" [ref=f1e116] [cursor=pointer]:
+              - /url: /create-order
+            - link "Product performance" [ref=f1e121] [cursor=pointer]:
+              - /url: /product-analytics
+            - link "Discount analytics" [ref=f1e126] [cursor=pointer]:
+              - /url: /discount-analytics
+        - generic [ref=f1e132]:
+          - button "Logistics & Supply Chain" [ref=f1e133] [cursor=pointer]
+          - navigation [ref=f1e140]:
+            - link "Order Routing Engine" [ref=f1e141] [cursor=pointer]:
+              - /url: /order-assignments
+            - link "Delivery & COD Monitor" [ref=f1e146] [cursor=pointer]:
+              - /url: /delivery-monitor
+            - link "NCM Deliveries" [ref=f1e151] [cursor=pointer]:
+              - /url: /ncm-deliveries
+            - link "Distributor Self-Delivery" [ref=f1e156] [cursor=pointer]:
+              - /url: /self-deliveries
+            - link "Manufacturers" [ref=f1e161] [cursor=pointer]:
+              - /url: /manufacturers
+            - link "Multi-Hub Stock" [ref=f1e166] [cursor=pointer]:
+              - /url: /manufacturer-inventory
+            - link "Production Requests" [ref=f1e171] [cursor=pointer]:
+              - /url: /manufacturer-production
+            - link "Distributor Applications" [ref=f1e176] [cursor=pointer]:
+              - /url: /distributor-applications
+            - link "Distributor Directory" [ref=f1e181] [cursor=pointer]:
+              - /url: /distributors
+            - link "Bulk Stock Transfers" [ref=f1e186] [cursor=pointer]:
+              - /url: /stock-transfers
+        - generic [ref=f1e191]:
+          - button "Location Pricing" [ref=f1e192] [cursor=pointer]
+          - navigation [ref=f1e199]:
+            - link "District Rules" [ref=f1e200] [cursor=pointer]:
+              - /url: /location-pricing
+        - generic [ref=f1e206]:
+          - button "Marketing Partners" [ref=f1e207] [cursor=pointer]
+          - navigation [ref=f1e214]:
+            - link "Card Assignment" [ref=f1e215] [cursor=pointer]:
+              - /url: /marketing-cards
+        - generic [ref=f1e221]:
+          - button "Operations & Costing" [ref=f1e222] [cursor=pointer]
+          - navigation [ref=f1e230]:
+            - link "Inventory & Stock" [ref=f1e231] [cursor=pointer]:
+              - /url: /inventory
+            - link "Inventory Ledger Audit" [ref=f1e236] [cursor=pointer]:
+              - /url: /inventory-ledger
+            - link "COGS & Margins" [ref=f1e241] [cursor=pointer]:
+              - /url: /cogs
+            - link "Shipping Rates" [ref=f1e246] [cursor=pointer]:
+              - /url: /shipping
+        - generic [ref=f1e252]:
+          - button "Platform Settings" [ref=f1e253] [cursor=pointer]
+          - navigation [ref=f1e261]:
+            - link "Feature Settings" [ref=f1e262] [cursor=pointer]:
+              - /url: /platform-features
+            - link "Storefront Content" [ref=f1e268] [cursor=pointer]:
+              - /url: /storefront-content
+        - generic [ref=f1e275]:
+          - button "Finance & Banking" [ref=f1e276] [cursor=pointer]
+          - navigation [ref=f1e284]:
+            - link "Financial Dashboard" [ref=f1e285] [cursor=pointer]:
+              - /url: /finance
+            - link "Cash & Banks" [ref=f1e290] [cursor=pointer]:
+              - /url: /treasury
+            - link "Assets & Depreciation" [ref=f1e295] [cursor=pointer]:
+              - /url: /assets
+            - link "Partners & Investors" [ref=f1e300] [cursor=pointer]:
+              - /url: /partners
+            - link "Expenses & Overhead" [ref=f1e305] [cursor=pointer]:
+              - /url: /expenses
+            - link "Tax Compliance" [ref=f1e310] [cursor=pointer]:
+              - /url: /tax
+            - link "Returns & Debit Notes" [ref=f1e315] [cursor=pointer]:
+              - /url: /returns
+            - link "Payables & Receivables" [ref=f1e320] [cursor=pointer]:
+              - /url: /payables
+            - link "Financial Statements" [ref=f1e325] [cursor=pointer]:
+              - /url: /statements
+        - generic [ref=f1e331]:
+          - button "General Ledger" [ref=f1e332] [cursor=pointer]
+          - navigation [ref=f1e339]:
+            - link "Chart of Accounts" [ref=f1e340] [cursor=pointer]:
+              - /url: /chart-of-accounts
+            - link "Journal Entries" [ref=f1e345] [cursor=pointer]:
+              - /url: /journal-entries
+            - link "General Ledger" [ref=f1e350] [cursor=pointer]:
+              - /url: /general-ledger
+            - link "Trial Balance" [ref=f1e355] [cursor=pointer]:
+              - /url: /trial-balance
+            - link "Fiscal Periods" [ref=f1e360] [cursor=pointer]:
+              - /url: /fiscal-periods
+            - link "Accounting Health" [ref=f1e365] [cursor=pointer]:
+              - /url: /accounting-health
+        - generic [ref=f1e372]:
+          - button "Customers & CRM" [ref=f1e373] [cursor=pointer]
+          - navigation [ref=f1e380]:
+            - link "Customer Profiles" [ref=f1e381] [cursor=pointer]:
+              - /url: /customers
+            - link "VIP Loyalty Tiers" [ref=f1e386] [cursor=pointer]:
+              - /url: /loyalty-levels
+            - link "Gift Promotions" [ref=f1e391] [cursor=pointer]:
+              - /url: /gift-promotions
+            - link "Product Reviews" [ref=f1e396] [cursor=pointer]:
+              - /url: /reviews
+            - link "Story Letter Library" [ref=f1e401] [cursor=pointer]:
+              - /url: /story-letter-library
+      - generic [ref=f1e406]:
+        - link "Change Password" [ref=f1e407] [cursor=pointer]:
+          - /url: /change-password
+        - generic [ref=f1e416]:
+          - paragraph [ref=f1e417]: Aama Clothings
+          - paragraph [ref=f1e418]: Admin workspace
+    - main [ref=f1e419]:
+      - generic [ref=f1e420]:
+        - navigation "Breadcrumb" [ref=f1e421]:
+          - link "Home" [ref=f1e423] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f1e424]: Details
+        - paragraph [ref=f1e431]: Loading Tax Compliance Engine...

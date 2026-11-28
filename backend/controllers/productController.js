@@ -2,11 +2,39 @@ import { v2 as cloudinary } from "cloudinary";
 import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { prisma } from "../config/db.js";
-import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
+import { syncProductStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { recordSystemAudit } from "../services/auditService.js";
+import { validateImageMerchandisingRules, assembleProductImages } from "../services/imageMerchandisingRules.js";
+import {
+  getSizeChartValidationError,
+  transliterateToNepali,
+  parseStructuredDescription,
+} from "../utils/nepaliTransliteration.js";
+import { toStorefrontProduct } from "../utils/storefrontProductResponse.js";
+
+const STOREFRONT_PRODUCT_SELECT = {
+  id: true,
+  name: true,
+  nepaliName: true,
+  description: true,
+  price: true,
+  image: true,
+  category: true,
+  subCategory: true,
+  sizes: true,
+  colors: true,
+  colorImages: true,
+  variants: true,
+  bestseller: true,
+  newInStore: true,
+  isUnisex: true,
+  discount: true,
+  stockQuantity: true,
+  date: true,
+};
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -29,7 +57,7 @@ const normalizeCategories = (val) => {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return parsed.map((s) => String(s).trim()).filter(Boolean);
-      } catch {}
+      } catch { }
     }
     return trimmed.split(",").map((s) => s.trim()).filter(Boolean);
   }
@@ -81,6 +109,45 @@ const createRequestImageUploader = () => {
   };
 };
 
+const sanitizeDescriptionSection = (section) => {
+  const cleanText = (value) => sanitizeText(String(value ?? ""), { preserveWhitespace: true });
+  if (typeof section === "string") return cleanText(section);
+  if (!section || typeof section !== "object" || !Array.isArray(section.blocks)) return "";
+
+  return {
+    blocks: section.blocks.map((block) => {
+      if (block.type === "paragraph") return { type: "paragraph", text: cleanText(block.text) };
+      if (block.type === "list") return { type: "list", items: block.items.map(cleanText) };
+      if (block.type === "table") {
+        return {
+          type: "table",
+          headers: block.headers.map(cleanText),
+          rows: block.rows.map((row) => row.map(cleanText)),
+        };
+      }
+      return null;
+    }).filter(Boolean),
+  };
+};
+
+const sanitizeSizeChart = (chart) => {
+  if (!chart || typeof chart !== "object") return null;
+  const cleanText = (value) => sanitizeText(String(value ?? ""), { preserveWhitespace: true });
+  const headers = Array.isArray(chart.headers) ? chart.headers.slice(0, 20).map(cleanText) : [];
+  const rows = Array.isArray(chart.rows)
+    ? chart.rows.slice(0, 100).map((row) =>
+      headers.map((_, index) => cleanText(Array.isArray(row) ? row[index] : ""))
+    )
+    : [];
+  return {
+    title: cleanText(chart.title || "Garment Sizing Guide"),
+    subtitle: cleanText(chart.subtitle || ""),
+    headers,
+    rows,
+    fitTip: cleanText(chart.fitTip || ""),
+  };
+};
+
 // function for add product
 const addProduct = async (req, res) => {
   try {
@@ -108,6 +175,18 @@ const addProduct = async (req, res) => {
       featuredType, // 'variant' | 'gallery'
       featuredIndex, // number index
     } = req.body;
+
+    const addDescription = parseStructuredDescription(description);
+    const addSizeChartError = addDescription.isStructured
+      ? getSizeChartValidationError(addDescription.sizeChart)
+      : "";
+    if (addSizeChartError) {
+      return res.status(400).json({
+        success: false,
+        message: addSizeChartError,
+        code: "SIZE_CHART_INVALID",
+      });
+    }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
     if (!Array.isArray(parsedVariants)) parsedVariants = [];
@@ -145,54 +224,26 @@ const addProduct = async (req, res) => {
       colorImage.image = await uploadImage(file);
     }
 
-    // 3. Assemble and order the full image gallery, ensuring Featured Image is at index 0
-    let featuredUrl = "";
-    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
+    // 3. Validate image merchandising rules (gallery cover required, color option cover disallowed)
+    const merchandisingCheck = validateImageMerchandisingRules({
+      galleryUrls,
+      colorImages: parsedColorImages,
+      variants: parsedVariants,
+      featuredType,
+      featuredIndex,
+      isUpdate: false,
+    });
 
-    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      const featuredVariant = parsedVariants[featIdx];
-      featuredUrl = featuredVariant?.image || parsedColorImages.find(
-        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
-      )?.image || "";
-      parsedVariants = parsedVariants.map((v, idx) => ({
-        ...v,
-        isFeatured: idx === featIdx,
-      }));
-    } else if (featuredType === "gallery" && featIdx >= 0 && featIdx < galleryUrls.length) {
-      featuredUrl = galleryUrls[featIdx] || "";
-      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
-    } else {
-      // Check if any variant has isFeatured = true
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        featuredUrl = featVar.image;
-      } else if (galleryUrls.length > 0) {
-        featuredUrl = galleryUrls[0];
-      } else if (parsedColorImages[0]?.image) {
-        featuredUrl = parsedColorImages[0].image;
-      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
-        featuredUrl = parsedVariants[0].image;
-        parsedVariants[0].isFeatured = true;
-      }
+    if (!merchandisingCheck.valid) {
+      return res.json({ success: false, message: merchandisingCheck.message });
     }
 
-    // Combine all distinct image URLs
-    const allImages = [];
-    if (featuredUrl) allImages.push(featuredUrl);
-
-    // Add remaining gallery URLs
-    galleryUrls.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    // Add remaining variant image URLs
-    parsedVariants.forEach((v) => {
-      if (v.image && !allImages.includes(v.image)) {
-        allImages.push(v.image);
-      }
-    });
-    parsedColorImages.forEach((entry) => {
-      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
+    // Assemble ordered images with the verified cover at index 0
+    const allImages = assembleProductImages({
+      featuredUrl: merchandisingCheck.resolvedFeaturedUrl,
+      galleryUrls,
+      variants: parsedVariants,
+      colorImages: parsedColorImages,
     });
 
     let qty = stockQuantity !== undefined && stockQuantity !== "" ? parseInt(stockQuantity, 10) : 0;
@@ -204,8 +255,25 @@ const addProduct = async (req, res) => {
     const isProductUnisex = isUnisex === "true" || isUnisex === true;
 
     const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
-    const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
-    const cleanDescription = sanitizeText(description) || "";
+    // Auto-transliterate to Nepali Unicode if nepaliName not supplied
+    let cleanNepaliName = sanitizeText(nepaliName || nameNepali || "", { stripAllHtml: true }) || "";
+    if (!cleanNepaliName && cleanName) {
+      cleanNepaliName = transliterateToNepali(cleanName);
+    }
+
+    // Process and sanitize description (supports both structured JSON and plain text)
+    let cleanDescription = "";
+    const parsedDesc = parseStructuredDescription(description);
+    if (parsedDesc.isStructured) {
+      cleanDescription = JSON.stringify({
+        about: sanitizeDescriptionSection(parsedDesc.about),
+        fabricCare: sanitizeDescriptionSection(parsedDesc.fabricCare),
+        sizeChart: sanitizeSizeChart(parsedDesc.sizeChart),
+      });
+    } else {
+      cleanDescription = sanitizeText(description || "", { preserveWhitespace: true });
+    }
+
     const cleanSubCategory = sanitizeText(subCategory, { stripAllHtml: true }) || "";
 
     if (!cleanName) {
@@ -262,7 +330,7 @@ const addProduct = async (req, res) => {
       await prisma.stockLog.create({
         data: {
           productId: newProduct.id,
-          productName: name,
+          productName: cleanName,
           previousQty: 0,
           newQty: qty,
           changeQty: qty,
@@ -310,21 +378,26 @@ const updateProduct = async (req, res) => {
       existingImages,
     } = req.body;
 
+    if (description !== undefined) {
+      const updateDescription = parseStructuredDescription(description);
+      const updateSizeChartError = updateDescription.isStructured
+        ? getSizeChartValidationError(updateDescription.sizeChart)
+        : "";
+      if (updateSizeChartError) {
+        return res.status(400).json({
+          success: false,
+          message: updateSizeChartError,
+          code: "SIZE_CHART_INVALID",
+        });
+      }
+    }
+
     const existingProduct = await prisma.product.findUnique({
       where: { id },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true, pendingTermsVersion: true } } },
+      include: { collaborationLink: { select: { id: true } } },
     });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
-    }
-    if ((published === "true" || published === true) && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
-      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
-    }
-    const hasCollaborationPriceTerms = Boolean(existingProduct.collaborationLink?.activeTermsVersion || existingProduct.collaborationLink?.pendingTermsVersion);
-    const collaborationPriceChanged = (price !== undefined && Number(price) !== Number(existingProduct.price))
-      || (discount !== undefined && Number(discount) !== Number(existingProduct.discount));
-    if (hasCollaborationPriceTerms && collaborationPriceChanged) {
-      return res.status(409).json({ success: false, message: "Propose a new collaboration terms version to change the agreed retail price or discount." });
     }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
@@ -373,60 +446,27 @@ const updateProduct = async (req, res) => {
       colorImage.image = await uploadImage(file);
     }
 
-    // 3. Determine Featured Image
-    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
-    let featuredUrl = "";
+    // 3. Image Merchandising Rules Validation & Assembly
+    const combinedGallery = [...newGalleryUrls, ...currentImages];
 
-    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      const featuredVariant = parsedVariants[featIdx];
-      featuredUrl = featuredVariant?.image || parsedColorImages.find(
-        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
-      )?.image || "";
-      parsedVariants = parsedVariants.map((v, idx) => ({
-        ...v,
-        isFeatured: idx === featIdx,
-      }));
-    } else if (featuredType === "gallery") {
-      const combinedGallery = [...newGalleryUrls, ...currentImages];
-      if (featIdx >= 0 && featIdx < combinedGallery.length) {
-        featuredUrl = combinedGallery[featIdx] || "";
-      }
-      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
-    } else {
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        featuredUrl = featVar.image;
-      } else if (newGalleryUrls.length > 0) {
-        featuredUrl = newGalleryUrls[0];
-      } else if (currentImages.length > 0) {
-        featuredUrl = currentImages[0];
-      } else if (parsedColorImages[0]?.image) {
-        featuredUrl = parsedColorImages[0].image;
-      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
-        featuredUrl = parsedVariants[0].image;
-        parsedVariants[0].isFeatured = true;
-      }
+    const merchandisingCheck = validateImageMerchandisingRules({
+      galleryUrls: combinedGallery,
+      colorImages: parsedColorImages,
+      variants: parsedVariants,
+      featuredType,
+      featuredIndex,
+      isUpdate: true,
+    });
+
+    if (!merchandisingCheck.valid) {
+      return res.json({ success: false, message: merchandisingCheck.message });
     }
 
-    // Combine all images cleanly
-    const allImages = [];
-    if (featuredUrl) allImages.push(featuredUrl);
-
-    newGalleryUrls.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    currentImages.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    parsedVariants.forEach((v) => {
-      if (v.image && !allImages.includes(v.image)) {
-        allImages.push(v.image);
-      }
-    });
-    parsedColorImages.forEach((entry) => {
-      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
+    const allImages = assembleProductImages({
+      featuredUrl: merchandisingCheck.resolvedFeaturedUrl,
+      galleryUrls: combinedGallery,
+      variants: parsedVariants,
+      colorImages: parsedColorImages,
     });
 
     // Determine stock quantity
@@ -452,8 +492,25 @@ const updateProduct = async (req, res) => {
     const isProductUnisex = isUnisex !== undefined ? isUnisex === "true" || isUnisex === true : undefined;
 
     const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
-    const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
-    const cleanDescription = description !== undefined ? sanitizeText(description) : undefined;
+    let cleanNepaliName = (nepaliName || nameNepali) ? sanitizeText(nepaliName || nameNepali, { stripAllHtml: true }) : undefined;
+    if (!cleanNepaliName && cleanName) {
+      cleanNepaliName = transliterateToNepali(cleanName);
+    }
+
+    let cleanDescription = undefined;
+    if (description !== undefined) {
+      const parsedDesc = parseStructuredDescription(description);
+      if (parsedDesc.isStructured) {
+        cleanDescription = JSON.stringify({
+          about: sanitizeDescriptionSection(parsedDesc.about),
+          fabricCare: sanitizeDescriptionSection(parsedDesc.fabricCare),
+          sizeChart: sanitizeSizeChart(parsedDesc.sizeChart),
+        });
+      } else {
+        cleanDescription = sanitizeText(description, { preserveWhitespace: true });
+      }
+    }
+
     const cleanSubCategory = subCategory ? sanitizeText(subCategory, { stripAllHtml: true }) : undefined;
 
     let validatedPrice = undefined;
@@ -503,7 +560,9 @@ const updateProduct = async (req, res) => {
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
       ...(colorImages !== undefined && { colorImages: parsedColorImages.map(({ color, image }) => ({ color, image })) }),
       variants: parsedVariants,
-      ...(published !== undefined && { published: published === "true" || published === true }),
+      ...(existingProduct.collaborationLink
+        ? { published: false }
+        : published !== undefined && { published: published === "true" || published === true }),
     };
 
     await prisma.product.update({
@@ -539,18 +598,15 @@ const togglePublish = async (req, res) => {
     const { id } = req.body;
     const existingProduct = await prisma.product.findUnique({
       where: { id },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+      include: { collaborationLink: { select: { id: true } } },
     });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
-    }
-    if (!existingProduct.published && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
-      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
     }
 
     const updatedProduct = await prisma.product.update({
       where: { id },
-      data: { published: !existingProduct.published },
+      data: { published: existingProduct.collaborationLink ? false : !existingProduct.published },
     });
 
     const statusText = updatedProduct.published ? "Published" : "Unpublished";
@@ -566,7 +622,7 @@ const toggleBestseller = async (req, res) => {
   try {
     const { id } = req.body;
     const existingProduct = await prisma.product.findUnique({ where: { id } });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -594,10 +650,8 @@ const getSubcategoryBestsellers = async (req, res) => {
     const whereCondition = {
       published: true,
       bestseller: true,
-      OR: [
-        { collaborationLink: null },
-        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
-      ],
+      deletedAt: null,
+      collaborationLink: null,
     };
     if (category) {
       whereCondition.category = { contains: category.replace(/"/g, "") };
@@ -635,64 +689,90 @@ const listProducts = async (req, res) => {
     const requestedCategory = requestedCategoryValue.toLowerCase();
     const requestedSubcategory = String(req.query.subcategory || "").trim().toLowerCase();
     const requestedFeatured = String(req.query.featured || "").trim().toLowerCase();
-    const hasPublicFilters = !isAdmin && (requestedCategory || requestedSubcategory || requestedFeatured);
-
-    // Synchronize current stockQuantity & variant stock from ManufacturerInventory
-    await syncAllProductsStock();
-
+    const requestedBestseller = String(req.query.bestseller || "").trim().toLowerCase();
+    const search = String(req.query.search || "").trim();
+    const requestedProductIds = String(req.query.ids || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
     // Admin sees all products; Public customers see only published products
-    const whereCondition = isAdmin ? {} : {
+    // Both views exclude soft-deleted products
+    const whereCondition = isAdmin ? { deletedAt: null } : {
       published: true,
-      OR: [
-        { collaborationLink: null },
-        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
-      ],
+      deletedAt: null,
+      collaborationLink: null,
     };
-    if (hasPublicFilters) {
-      if (requestedCategory) {
-        const categoryValue = requestedCategoryValue.replace(/"/g, "");
+    if (requestedCategory) {
+      const categoryValue = requestedCategoryValue.replace(/"/g, "");
+      if (categoryValue.toLowerCase() === "unisex") {
+        const unisexCondition = { OR: [{ category: { contains: "Unisex" } }, { isUnisex: true }] };
+        if (isAdmin) {
+          Object.assign(whereCondition, unisexCondition);
+        } else {
+          whereCondition.AND = [...(whereCondition.AND || []), unisexCondition];
+        }
+      } else {
         whereCondition.category = { contains: categoryValue };
       }
-      if (requestedSubcategory) {
-        whereCondition.subCategory = { contains: requestedSubcategory };
-      }
-      if (requestedFeatured === "new") whereCondition.newInStore = true;
-      if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    }
+    if (requestedSubcategory) whereCondition.subCategory = { contains: requestedSubcategory };
+    if (requestedFeatured === "new") whereCondition.newInStore = true;
+    if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    if (requestedBestseller === "true") whereCondition.bestseller = true;
+    if (requestedBestseller === "false") whereCondition.bestseller = false;
+    if (requestedProductIds.length > 0) {
+      whereCondition.id = { in: requestedProductIds };
+    }
+    if (search) {
+      whereCondition.AND = [
+        ...(whereCondition.AND || []),
+        {
+          OR: [
+            { id: { contains: search } },
+            { name: { contains: search } },
+            { nepaliName: { contains: search } },
+            { subCategory: { contains: search } },
+          ],
+        },
+      ];
     }
 
-    const productQuery = isAdmin || hasPublicFilters
-      ? prisma.product.findMany({
+    const [rawProducts, total] = await Promise.all([
+      prisma.product.findMany({
         where: whereCondition,
-        orderBy: { date: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
-      })
-      : prisma.product.findMany({
-        where: whereCondition,
-        orderBy: { date: "desc" },
-      });
-    const [rawProducts, total, allReviews] = await Promise.all([
-      productQuery,
-      prisma.product.count({ where: whereCondition }),
-      prisma.review.findMany({
-        select: { productId: true, rating: true },
+        ...(!isAdmin ? { select: STOREFRONT_PRODUCT_SELECT } : {}),
       }),
+      prisma.product.count({ where: whereCondition }),
     ]);
+    const reviewStats = rawProducts.length
+      ? await prisma.review.groupBy({
+        by: ["productId"],
+        where: { productId: { in: rawProducts.map((product) => product.id) } },
+        _avg: { rating: true },
+        _count: { _all: true },
+      })
+      : [];
 
-    // Build rating lookup map per product
+    // Build rating lookup map only for products in this page.
     const reviewStatsMap = {};
-    for (const r of allReviews) {
-      if (!reviewStatsMap[r.productId]) {
-        reviewStatsMap[r.productId] = { sum: 0, count: 0 };
-      }
-      reviewStatsMap[r.productId].sum += Number(r.rating) || 5;
-      reviewStatsMap[r.productId].count += 1;
+    for (const stats of reviewStats) {
+      reviewStatsMap[stats.productId] = {
+        sum: Number(stats._avg.rating || 0) * stats._count._all,
+        count: stats._count._all,
+      };
     }
 
     let products = rawProducts.map((item) => {
       const cats = normalizeCategories(item.category);
       const rStats = reviewStatsMap[item.id] || { sum: 0, count: 0 };
       const avgRating = rStats.count > 0 ? Number((rStats.sum / rStats.count).toFixed(1)) : 0;
+
+      if (!isAdmin) {
+        return toStorefrontProduct(item, { rating: avgRating, reviewCount: rStats.count });
+      }
 
       return {
         ...item,
@@ -714,10 +794,9 @@ const listProducts = async (req, res) => {
     const district = String(req.query.district || "").trim();
     if (!isAdmin && province && district && products.length) {
       const locationPrices = await resolveLocationProductPrices({
-        items: products.map((product) => ({ productId: product.id, quantity: 1 })),
+        items: products.map((product) => ({ productId: product._id, quantity: 1 })),
         province,
         district,
-        eligibilityMode: "PER_ITEM",
       });
       products = products.map((product, index) => ({
         ...product,
@@ -728,33 +807,30 @@ const listProducts = async (req, res) => {
       }));
     }
 
-    if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
-      products = products.filter((product) => {
-        const matchesCategory = !requestedCategory || product.categories.some(
-          (category) => String(category).trim().toLowerCase() === requestedCategory
-        );
-        const matchesSubcategory = !requestedSubcategory || String(product.subCategory || "").trim().toLowerCase() === requestedSubcategory;
-        const matchesFeatured = requestedFeatured !== "new" || product.newInStore;
-        const matchesBestseller = requestedFeatured !== "bestseller" || product.bestseller;
-        return matchesCategory && matchesSubcategory && matchesFeatured && matchesBestseller;
-      });
-    }
-
-    const filteredTotal = products.length;
-
-    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: filteredTotal || pagination.limit, skip: 0 }, isAdmin ? total : filteredTotal));
+    res.json(paginatedResponse("products", products, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
   }
 };
 
-// function for removing product
+// function for removing product (soft-delete: sets deletedAt, preserves FK integrity)
 const removeProduct = async (req, res) => {
   try {
     const { id } = req.body;
-    await prisma.product.delete({
-      where: { id: id },
+    const existing = await prisma.product.findUnique({ where: { id } });
+    if (!existing) {
+      return res.json({ success: false, message: "Product not found" });
+    }
+    if (existing.deletedAt) {
+      return res.json({ success: false, message: "Product is already removed" });
+    }
+    await prisma.product.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        published: false,
+      },
     });
     res.json({ success: true, message: "Product Removed" });
   } catch (error) {
@@ -767,16 +843,25 @@ const removeProduct = async (req, res) => {
 const singleProduct = async (req, res) => {
   try {
     const { productId, province, district } = req.body;
-    
+
     // Sync stock from manufacturer inventory first
     await syncProductStock(productId);
 
+    const isAdmin = req.auth?.role === "ADMIN";
     const rawProduct = await prisma.product.findUnique({
       where: { id: productId },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+      ...(isAdmin
+        ? { include: { collaborationLink: { select: { id: true } } } }
+        : {
+            select: {
+              ...STOREFRONT_PRODUCT_SELECT,
+              published: true,
+              deletedAt: true,
+              collaborationLink: { select: { id: true } },
+            },
+          }),
     });
-    const isAdmin = req.auth?.role === "ADMIN";
-    if (!rawProduct || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
+    if (!rawProduct || rawProduct.deletedAt || (!isAdmin && (!rawProduct.published || rawProduct.collaborationLink))) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -792,25 +877,26 @@ const singleProduct = async (req, res) => {
     const avgRating = productReviews.length > 0 ? Number((ratingSum / productReviews.length).toFixed(1)) : 0;
 
     const cats = normalizeCategories(rawProduct.category);
-    const product = {
-      ...rawProduct,
-      _id: rawProduct.id,
-      date: Number(rawProduct.date),
-      image: toImageArray(rawProduct.image),
-      categories: cats,
-      category: cats.join(", "),
-      newInStore: Boolean(rawProduct.newInStore),
-      costPrice: Number(rawProduct.costPrice || 0),
-      lowStockThreshold: rawProduct.lowStockThreshold || 5,
-      rating: avgRating,
-      reviewCount: productReviews.length,
-    };
+    const product = isAdmin
+      ? {
+          ...rawProduct,
+          _id: rawProduct.id,
+          date: Number(rawProduct.date),
+          image: toImageArray(rawProduct.image),
+          categories: cats,
+          category: cats.join(", "),
+          newInStore: Boolean(rawProduct.newInStore),
+          costPrice: Number(rawProduct.costPrice || 0),
+          lowStockThreshold: rawProduct.lowStockThreshold || 5,
+          rating: avgRating,
+          reviewCount: productReviews.length,
+        }
+      : toStorefrontProduct(rawProduct, { rating: avgRating, reviewCount: productReviews.length });
     if (!isAdmin && province && district) {
       const locationPrices = await resolveLocationProductPrices({
         items: [{ productId, quantity: 1 }],
         province,
         district,
-        eligibilityMode: "PER_ITEM",
       });
       product.globalDiscountPercentage = Number(product.discount || 0);
       product.discount = locationPrices.items[0].effectiveDiscountPercentage;
@@ -834,7 +920,7 @@ const adjustStock = async (req, res) => {
     }
 
     const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product) {
+    if (!product || product.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -964,6 +1050,25 @@ const getStockLogs = async (req, res) => {
   }
 };
 
+/**
+ * Controller endpoint: transliterate Romanized English to Nepali Unicode
+ * Used by Admin UI for live real-time transliteration of names and descriptions.
+ */
+const transliterateProductText = async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== "string") {
+      return res.json({ success: true, transliterated: "" });
+    }
+    const clean = sanitizeText(text, { stripAllHtml: true });
+    const transliterated = transliterateToNepali(clean);
+    return res.json({ success: true, transliterated });
+  } catch (error) {
+    console.error("Transliteration endpoint error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export {
   addProduct,
   updateProduct,
@@ -975,4 +1080,5 @@ export {
   singleProduct,
   adjustStock,
   getStockLogs,
+  transliterateProductText,
 };

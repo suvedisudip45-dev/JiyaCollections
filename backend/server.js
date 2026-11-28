@@ -3,14 +3,13 @@ import cors from "cors";
 import { randomUUID } from "node:crypto";
 import "dotenv/config";
 import { flushLogs, logger } from "./utils/logger.js";
-import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
+import { ALLOWED_CORS_HEADERS, getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB, { prisma } from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
 import { validateJwtConfig } from "./config/jwt.js";
 import userRouter from "./routes/userRoute.js";
 import productRouter from "./routes/productRoute.js";
 import comboBundleRouter from "./routes/comboBundleRoute.js";
-import collaborationRouter from "./routes/collaborationRoute.js";
 import cartRouter from "./routes/cartRoute.js";
 import orderRouter from "./routes/orderRoute.js";
 import categoryRouter from "./routes/categoryRoute.js";
@@ -27,21 +26,46 @@ import returnsRouter from "./routes/returnsRoute.js";
 import accountingRouter from "./routes/accountingRoute.js";
 import manufacturerRouter from "./routes/manufacturerRoute.js";
 import manufacturerInventoryRouter from "./routes/manufacturerInventoryRoute.js";
+import manufacturerProductionRouter from "./routes/manufacturerProductionRoute.js";
 import orderAssignmentRouter from "./routes/orderAssignmentRoute.js";
-import manufacturerDirectOrderRouter from "./routes/manufacturerDirectOrderRoute.js";
+import distributorRouter from "./routes/distributorRoute.js";
+import driverRouter from "./routes/driverRoute.js";
+import adminDistributorApplicationRouter from "./routes/adminDistributorApplicationRoute.js";
+import adminDistributorRateRouter, { adminDistributorFinanceRouter } from "./routes/adminDistributorRateRoute.js";
+import adminDistributorDetailRouter from "./routes/adminDistributorDetailRoute.js";
+import adminManufacturerDetailRouter from "./routes/adminManufacturerDetailRoute.js";
+import adminManufacturerSettlementRouter from "./routes/adminManufacturerSettlementRoute.js";
+import inventoryLedgerRouter from "./routes/inventoryLedgerRoute.js";
+import adminStockTransferReconciliationRouter from "./routes/adminStockTransferReconciliationRoute.js";
+import stockTransferRouter from "./routes/stockTransferRoute.js";
 import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
 import marketingCardRouter from "./routes/marketingCardRoute.js";
+import productSalesAnalyticsRouter from "./routes/productSalesAnalyticsRoute.js";
+import discountAnalyticsRouter from "./routes/discountAnalyticsRoute.js";
+import platformFeatureRouter from "./routes/platformFeatureRoute.js";
+import storefrontContentRouter from "./routes/storefrontContentRoute.js";
 import authRouter from "./routes/authRoute.js";
 import accessManagementRouter from "./routes/accessManagementRoute.js";
 import locationPricingRouter from "./routes/locationPricingRoute.js";
+import locationLookupRouter from "./routes/locationLookupRoute.js";
 import notificationRouter from "./routes/notificationRoute.js";
-import { adminGiftRouter, manufacturerGiftRouter } from "./routes/giftRoute.js";
+import { adminGiftRouter, distributorGiftRouter } from "./routes/giftRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
+import { startDeliveryAccountingOutboxWorker } from "./services/accountingOutboxService.js";
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
+import { syncAllProductsStock } from "./services/stockSyncService.js";
+import {
+  createReadinessHandler,
+  livenessHandler,
+  markApplicationInitialized,
+  setStockProjectionStatus,
+} from "./services/runtimeStatus.js";
+import { invalidatePrismaQueryCache } from "./utils/prismaQueryCache.js";
+import { verifyRequestSignature } from "./middleware/verifyRequestSignature.js";
 
 // App Config
 const app = express();
@@ -54,15 +78,35 @@ const startServer = async () => {
   await connectCloudinary();
   await ensureStandardChartOfAccounts();
   startSystemAuditOutboxWorker();
+  startDeliveryAccountingOutboxWorker();
 
+  markApplicationInitialized();
+  setStockProjectionStatus("syncing");
   app.listen(port, () => {
     logger.info("Server started", { port });
   });
+
+  void syncAllProductsStock()
+    .then((syncedCount) => {
+      setStockProjectionStatus("ready");
+      logger.info("Startup stock projection synchronization completed.", { syncedCount });
+    })
+    .catch((error) => {
+      setStockProjectionStatus("failed");
+      logger.error("Startup stock projection synchronization failed.", {
+        error: error.message,
+        name: error.name,
+      });
+    });
 };
 
 // Middleware
-app.use(express.json({ limit: "10mb" }));
-app.use(sanitizeMiddleware);
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, res, buffer) => {
+    req.rawBody = buffer.toString("utf8");
+  },
+}));
 app.use((req, res, next) => {
   const suppliedId = String(req.headers["x-correlation-id"] || "").trim();
   req.correlationId = /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedId) ? suppliedId : randomUUID();
@@ -79,6 +123,14 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req, res, next) => {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  res.once("finish", () => {
+    if (res.statusCode >= 200 && res.statusCode < 400) invalidatePrismaQueryCache();
+  });
+  next();
+});
+
 const allowedOrigins = getAllowedOrigins();
 
 const corsOptions = {
@@ -88,24 +140,43 @@ const corsOptions = {
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'x-requested-with', 'x-correlation-id'],
+  allowedHeaders: ALLOWED_CORS_HEADERS,
   credentials: true,
 };
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+app.use(verifyRequestSignature);
+app.use(sanitizeMiddleware);
+
+app.get("/health", createReadinessHandler());
+app.get("/health/live", livenessHandler);
+app.get("/health/ready", createReadinessHandler());
 
 //  Api Endpoints
 app.use("/api/auth", authRouter);
+app.use("/api/distributor", distributorRouter);
+app.use("/api/driver", driverRouter);
+app.use("/api/admin/distributor-applications", adminDistributorApplicationRouter);
+app.use("/api/admin/distributor-rates", adminDistributorRateRouter);
+app.use("/api/admin/distributor-finance", adminDistributorFinanceRouter);
+app.use("/api/admin/distributors", adminDistributorDetailRouter);
+app.use("/api/admin/manufacturers", adminManufacturerDetailRouter);
+app.use("/api/admin/finance", adminManufacturerSettlementRouter);
+app.use("/api/admin/inventory-ledger", inventoryLedgerRouter);
+app.use("/api/admin/accounting", adminStockTransferReconciliationRouter);
+app.use("/api/stock-transfers", stockTransferRouter);
 app.use("/api/admin/access", accessManagementRouter);
 app.use("/api/admin", locationPricingRouter);
+app.use("/api/admin/product-analytics", productSalesAnalyticsRouter);
+app.use("/api/admin/discount-analytics", discountAnalyticsRouter);
+app.use("/api/lookups", locationLookupRouter);
 app.use("/api/admin/gifts", adminGiftRouter);
 app.use("/api/notifications", notificationRouter);
-app.use("/api/manufacturer/gifts", manufacturerGiftRouter);
+app.use("/api/distributor/gifts", distributorGiftRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/combo-bundles", comboBundleRouter);
-app.use("/api/collaborations", collaborationRouter);
 app.use("/api/cart", cartRouter);
 app.use("/api/order", orderRouter);
 app.use("/api/category", categoryRouter);
@@ -123,15 +194,17 @@ app.use("/api/accounting", accountingRouter);
 // Manufacturer system
 app.use("/api/manufacturer", manufacturerRouter);
 app.use("/api/manufacturer-inventory", manufacturerInventoryRouter);
+app.use("/api/manufacturer-production", manufacturerProductionRouter);
 app.use("/api/assignment", orderAssignmentRouter);
 app.use("/api/order-assignment", orderAssignmentRouter);
-app.use("/api/manufacturer-order", manufacturerDirectOrderRouter);
 app.use("/api/expense", expenseRouter);
 app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);
 app.use("/api/personalized-letter", personalizedLetterRouter);
 app.use("/api/admin/story-letter", storyLetterAdminRouter);
 app.use("/api/marketing-cards", marketingCardRouter);
+app.use("/api/features", platformFeatureRouter);
+app.use("/api/storefront-content", storefrontContentRouter);
 app.use("/webhooks", deliveryRouter);
 app.use("/api/ncm-webhook", deliveryRouter);
 

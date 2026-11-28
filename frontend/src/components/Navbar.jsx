@@ -18,6 +18,8 @@ const Navbar = () => {
     setToken,
     setCartItems,
     backendUrl,
+    platformFeatures,
+    storefrontContent,
   } = useContext(ShopContext);
 
   const [navigationGroups, setNavigationGroups] = useState([]);
@@ -48,6 +50,7 @@ const Navbar = () => {
   }, [categoryLinks, activeMobileCategory]);
 
   const activeMobileGroup = categoryLinks.find((group) => group.name === activeMobileCategory) || categoryLinks[0];
+  const announcement = storefrontContent || {};
 
   const handleSearchClick = () => {
     setShowSearch(true);
@@ -67,19 +70,23 @@ const Navbar = () => {
 
   return (
     <>
-      <div className="announcement-bar" aria-label="Store announcements">
-        <div className="announcement-track">
-          {[1, 2].map((copy) => (
-            <span className="announcement-copy" key={copy} aria-hidden={copy === 2}>
-              Free shipping on orders over Rs 3,000 <b>•</b> Made for everyday movement
-            </span>
-          ))}
+      {(announcement.announcementPrimary || announcement.announcementSecondary) && (
+        <div className="announcement-bar" aria-label="Store announcements">
+          <div className="announcement-track">
+            {[1, 2].map((copy) => (
+              <span className="announcement-copy" key={copy} aria-hidden={copy === 2}>
+                {announcement.announcementPrimary}
+                {announcement.announcementPrimary && announcement.announcementSecondary && <b>•</b>}
+                {announcement.announcementSecondary}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
       <nav className="relative z-40 border-b border-[var(--line)] bg-[var(--paper)] font-medium">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-4 py-4 sm:px-8 lg:px-12">
-      <Link to={"/"} className="z-10 flex items-center gap-3">
-        <img src={assets.logo} className="w-32 sm:w-36" alt="Logo" />
+      <Link to={"/"} className="z-10 flex min-w-0 items-center gap-2 sm:gap-3" aria-label="Aama Clothings home">
+        <img src={announcement.logoImage || assets.logo} className="w-28 sm:w-36" alt="Aama Clothings" />
         <span className="hidden border-l border-[#c9c6bc] pl-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#77776e] sm:block">
           Kathmandu / Nepal
         </span>
@@ -109,23 +116,24 @@ const Navbar = () => {
               <Link to={collectionDirectoryUrl(group)} className="mt-4 block border-t border-[var(--line)] pt-4 text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
                 Combo Bundles <span aria-hidden="true">→</span>
               </Link>
-              <Link to="/collaborations" className="mt-3 block text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
-                Collaboration <span aria-hidden="true">→</span>
-              </Link>
             </div>
           </li>
         ))}
-        <NavLink to="/shop?featured=new" className="transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
-        <NavLink to="/shop?featured=bestseller" className="transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
-        <NavLink to="/about" className="transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
+        <NavLink to="/shop?category=Unisex" className="flex items-center gap-1 py-2 font-extrabold text-[var(--accent)] transition-colors hover:text-[var(--ink)]">
+          <span>Unisex</span>
+          <span className="rounded-sm bg-[var(--accent)]/10 px-1 text-[9px] font-bold text-[var(--accent)]">UNISEX</span>
+        </NavLink>
+        <NavLink to="/shop?featured=new" className="py-2 transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
+        <NavLink to="/shop?featured=bestseller" className="py-2 transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
+        <NavLink to="/about" className="py-2 transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
       </ul>
 
-      <div className="z-10 flex items-center gap-4 sm:gap-5">
-        <button onClick={handleSearchClick} className="icon-button" aria-label="Search products">
+      <div className="z-10 flex items-center gap-1 sm:gap-3">
+        <button onClick={handleSearchClick} className="icon-button h-11 w-11" aria-label="Search products">
           <Search size={19} strokeWidth={1.8} />
         </button>
-        <div className="group relative">
-          <button onClick={() => (token ? null : navigate("/login"))} className="icon-button" aria-label="Account">
+        <div className="group relative hidden sm:block">
+          <button onClick={() => (token ? null : navigate("/login"))} className="icon-button h-11 w-11" aria-label="Account">
             <UserRound size={19} strokeWidth={1.8} />
           </button>
           {token && (
@@ -133,20 +141,20 @@ const Navbar = () => {
               <div className="flex w-40 flex-col gap-3 border border-[var(--line)] bg-[var(--white)] px-5 py-4 text-sm text-[var(--muted)] shadow-xl">
                 <p onClick={() => navigate("/profile")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">My Profile</p>
                 <p onClick={() => navigate("/orders")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Orders</p>
-                <p onClick={() => navigate("/marketing-cards")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Marketing Cards</p>
+                {platformFeatures?.marketingCardsEnabled && <p onClick={() => navigate("/marketing-cards")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Marketing Cards</p>}
                 <p onClick={logout} className="cursor-pointer font-semibold text-[var(--accent)] transition-colors hover:text-[var(--ink)]">Logout</p>
               </div>
             </div>
           )}
         </div>
-        <button onClick={() => navigate("/wishlist")} className="icon-button" aria-label="Wishlist">
+        <button onClick={() => navigate("/wishlist")} className="icon-button hidden h-11 w-11 md:inline-flex" aria-label="Wishlist">
           <Heart size={19} strokeWidth={1.8} />
         </button>
-        <Link to="/cart" className="icon-button relative" aria-label="Shopping bag">
+        <Link to="/cart" className="icon-button relative h-11 w-11" aria-label={`Shopping bag, ${getCartCount()} items`}>
           <ShoppingBag size={20} strokeWidth={1.8} />
           <span className="cart-count">{getCartCount()}</span>
         </Link>
-        <button onClick={() => setVisible(true)} className="icon-button lg:hidden" aria-label="Open menu">
+        <button onClick={() => setVisible(true)} className="icon-button h-11 w-11 lg:hidden" aria-label="Open menu">
           <Menu size={21} strokeWidth={1.8} />
         </button>
       </div>
@@ -170,7 +178,7 @@ const Navbar = () => {
               key={group.name}
               type="button"
               onClick={() => setActiveMobileCategory(group.name)}
-              className={`flex-1 border-b-2 px-2 pb-4 text-center text-sm font-bold capitalize transition-colors ${activeMobileCategory === group.name ? "border-[var(--ink)] text-[var(--ink)]" : "border-transparent text-[var(--muted)] hover:text-[var(--ink)]"}`}
+              className={`min-h-11 flex-1 border-b-2 px-2 pb-3 text-center text-sm font-bold capitalize transition-colors ${activeMobileCategory === group.name ? "border-[var(--accent)] text-[var(--ink)]" : "border-transparent text-[var(--muted)] hover:text-[var(--ink)]"}`}
             >
               {group.name}
             </button>
@@ -188,16 +196,20 @@ const Navbar = () => {
               <Link onClick={() => setVisible(false)} to={collectionDirectoryUrl(activeMobileGroup)} className="flex items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
                 Combo Bundles <span className="text-xl">→</span>
               </Link>
-              <Link onClick={() => setVisible(false)} to="/collaborations" className="flex items-center justify-between px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
-                Collaboration <span className="text-xl">→</span>
-              </Link>
             </div>
           )}
+          <Link onClick={() => setVisible(false)} to="/shop?category=Unisex" className="flex min-h-14 items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--accent)]">
+            <span>Unisex Catalog</span>
+            <span className="rounded-sm bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-bold">UNISEX</span>
+          </Link>
           <Link onClick={() => setVisible(false)} to="/shop?featured=bestseller" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
             Best sellers
           </Link>
-          <Link onClick={() => setVisible(false)} to="/contact" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+          <Link onClick={() => setVisible(false)} to="/contact" className="min-h-14 border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
             Contact
+          </Link>
+          <Link onClick={() => setVisible(false)} to="/wishlist" className="min-h-14 border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+            Wishlist
           </Link>
         </div>
 

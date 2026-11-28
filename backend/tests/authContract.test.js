@@ -3,12 +3,24 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import "dotenv/config";
 import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
-import { resolvePassword, resolveTargetPortal } from "../services/authService.js";
+import {
+  getAccountWorkspaceRoles,
+  getActiveWorkspaceRoles,
+  isWorkspaceProfileActive,
+  resolvePassword,
+  resolveTargetPortal,
+} from "../services/authService.js";
+import { generateAccessToken, verifyAccessToken } from "../services/tokenService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
   setRefreshCookie,
 } from "../utils/refreshCookie.js";
+import {
+  createAuthenticate,
+  setDistributorContext,
+  setManufacturerContext,
+} from "../middleware/unifiedAuth.js";
 
 const encrypt = (value) => {
   const key = Buffer.from(process.env.AES_SECRET_KEY, "hex");
@@ -29,6 +41,129 @@ test("login request decrypts password and target portal without a request IV", (
   assert.equal(Object.hasOwn(body, "iv"), false);
 });
 
+test("workspace access includes only active role mappings with active profiles", () => {
+  const account = {
+    role: "MANUFACTURER",
+    manufacturerProfile: { id: "manufacturer-1" },
+    distributorProfile: { id: "distributor-1", status: "ACTIVE", isActive: true },
+    roleMappings: [
+      { isActive: true, role: { code: "MANUFACTURER", isActive: true } },
+      { isActive: true, role: { code: "DISTRIBUTOR", isActive: true } },
+      { isActive: true, role: { code: "ADMIN", isActive: false } },
+      { isActive: false, role: { code: "CUSTOMER", isActive: true } },
+    ],
+  };
+
+  assert.deepEqual(getAccountWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
+  assert.deepEqual(getActiveWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
+  assert.equal(isWorkspaceProfileActive(account, "MANUFACTURER"), true);
+  assert.equal(isWorkspaceProfileActive(account, "DISTRIBUTOR"), true);
+  const offlineAccount = {
+    ...account,
+    distributorProfile: { ...account.distributorProfile, isActive: false },
+  };
+  assert.equal(isWorkspaceProfileActive(offlineAccount, "DISTRIBUTOR"), true);
+  assert.deepEqual(getActiveWorkspaceRoles(offlineAccount), ["MANUFACTURER", "DISTRIBUTOR"]);
+  assert.equal(isWorkspaceProfileActive({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }, "DISTRIBUTOR"), false);
+  assert.equal(isWorkspaceProfileActive({ ...offlineAccount, distributorProfile: { ...offlineAccount.distributorProfile, status: "SUSPENDED" } }, "DISTRIBUTOR"), false);
+  assert.equal(isWorkspaceProfileActive({ ...account, manufacturerProfile: null }, "MANUFACTURER"), false);
+  assert.deepEqual(getActiveWorkspaceRoles({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }), ["MANUFACTURER"]);
+});
+
+test("offline distributor can authenticate and keep distributor workspace access", async () => {
+  const account = {
+    id: "account-1",
+    role: "DISTRIBUTOR",
+    status: "ACTIVE",
+    mustChangePassword: false,
+    customerProfile: null,
+    adminProfile: null,
+    manufacturerProfile: null,
+    distributorProfile: {
+      id: "distributor-1",
+      accountId: "account-1",
+      status: "ACTIVE",
+      isActive: false,
+    },
+    marketingPartnerProfile: null,
+    roleMappings: [{ isActive: true, role: { code: "DISTRIBUTOR", isActive: true } }],
+  };
+  const token = generateAccessToken({
+    accountId: account.id,
+    role: "DISTRIBUTOR",
+    profileId: account.distributorProfile.id,
+    portalAccess: ["DISTRIBUTOR"],
+  });
+  const claims = verifyAccessToken(token);
+  const client = {
+    authSession: {
+      findUnique: async () => ({
+        id: "session-1",
+        accountId: account.id,
+        tokenFamilyId: "family-1",
+        tokenType: "ACCESS",
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      }),
+    },
+    authAccount: { findUnique: async () => account },
+  };
+  const req = {
+    headers: { authorization: `Bearer ${token}` },
+    body: {},
+    originalUrl: "/api/distributor/availability",
+  };
+  let response;
+  let nextCalled = false;
+
+  await createAuthenticate(client, { MFA_ENABLED: "false" })(
+    req,
+    {
+      status: (code) => ({
+        json: (body) => {
+          response = { code, body };
+        },
+      }),
+    },
+    () => {
+      nextCalled = true;
+    },
+  );
+
+  assert.equal(claims.token_type, "access");
+  assert.equal(nextCalled, true);
+  assert.equal(response, undefined);
+  assert.equal(req.auth.distributorId, account.distributorProfile.id);
+});
+
+test("manufacturer login can attach both approved workspace contexts", () => {
+  const req = {
+    auth: {
+      accountId: "account-1",
+      profileId: "manufacturer-1",
+      roles: ["MANUFACTURER", "DISTRIBUTOR"],
+      manufacturerId: "manufacturer-1",
+      distributorId: "distributor-1",
+      manufacturer: { id: "manufacturer-1", name: "Factory" },
+      distributor: { id: "distributor-1", name: "Hub", status: "ACTIVE", isActive: true },
+    },
+    body: {},
+  };
+  const res = { status: () => { throw new Error("Unexpected response"); }, json: () => { throw new Error("Unexpected response"); } };
+  let nextCalls = 0;
+
+  setManufacturerContext(req, res, () => { nextCalls += 1; });
+  setDistributorContext(req, res, () => { nextCalls += 1; });
+
+  assert.equal(nextCalls, 2);
+  assert.equal(req.manufacturerId, "manufacturer-1");
+  assert.equal(req.distributorId, "distributor-1");
+  assert.equal(req.body.manufacturerId, "manufacturer-1");
+  assert.equal(req.body.distributorId, "distributor-1");
+  assert.equal(req.manufacturer.id, "manufacturer-1");
+  assert.equal(req.distributor.id, "distributor-1");
+});
+
 test("login response is an explicit allow-list", () => {
   const response = serializeLoginResponse({
     token: "access-token",
@@ -47,7 +182,16 @@ test("login response is an explicit allow-list", () => {
   });
 
   assert.deepEqual(Object.keys(response).sort(), ["accessToken", "account", "message", "refreshTokenExpiresAt", "success", "token"]);
-  assert.deepEqual(Object.keys(response.account).sort(), ["email", "id", "mustChangePassword", "phone", "role", "status"]);
+  assert.deepEqual(Object.keys(response.account).sort(), [
+    "availableWorkspaces",
+    "email",
+    "id",
+    "mustChangePassword",
+    "phone",
+    "primaryRole",
+    "role",
+    "status",
+  ]);
   assert.equal(response.account.mustChangePassword, true);
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);

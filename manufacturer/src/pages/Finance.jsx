@@ -2,6 +2,12 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { TrendingUp, Wallet, PackageCheck, RotateCcw, FileText } from "lucide-react";
+import {
+  absoluteDecimalString,
+  compareDecimalStrings,
+  formatNprAmount,
+  subtractDecimalStrings,
+} from "../utils/decimalDisplay";
 
 const rangeOptions = [
   { value: "day", label: "Today" },
@@ -11,15 +17,18 @@ const rangeOptions = [
   { value: "year", label: "Year" },
 ];
 
-const money = (value) => `Rs ${Number(value || 0).toLocaleString("en-NP", { maximumFractionDigits: 0 })}`;
+const money = (value) => `Rs ${formatNprAmount(value ?? "0")}`;
 
 const Finance = () => {
-  const { token, backendUrl, currency } = useManufacturer();
+  const { token, backendUrl } = useManufacturer();
   const [range, setRange] = useState("month");
   const [loading, setLoading] = useState(true);
-  const [savingCommission, setSavingCommission] = useState(false);
-  const [commissionProposal, setCommissionProposal] = useState(12);
   const [data, setData] = useState(null);
+  const [settlementPage, setSettlementPage] = useState(1);
+  const [settlementHistory, setSettlementHistory] = useState([]);
+  const [settlementPagination, setSettlementPagination] = useState(null);
+  const [settlementLoading, setSettlementLoading] = useState(true);
+  const [settlementError, setSettlementError] = useState("");
 
   useEffect(() => {
     const loadSummary = async () => {
@@ -33,8 +42,6 @@ const Finance = () => {
 
         if (res.data.success) {
           setData(res.data.data);
-          const current = res.data.data?.manufacturer?.proposedCommissionRate ?? res.data.data?.manufacturer?.agreedCommissionRate ?? 12;
-          setCommissionProposal(Number(current || 12));
         }
       } catch (error) {
         console.error("Failed to load manufacturer finance summary", error);
@@ -46,80 +53,36 @@ const Finance = () => {
     loadSummary();
   }, [backendUrl, range, token]);
 
+  useEffect(() => {
+    const loadSettlementHistory = async () => {
+      if (!token) return;
+      setSettlementLoading(true);
+      setSettlementError("");
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/finance/settlement-requests`, {
+          headers: { token },
+          params: { page: settlementPage, limit: 10 },
+        });
+        setSettlementHistory(response.data?.settlements || []);
+        setSettlementPagination(response.data?.pagination || null);
+      } catch (error) {
+        setSettlementError(error.response?.data?.message || "Unable to load settlement history.");
+      } finally {
+        setSettlementLoading(false);
+      }
+    };
+
+    loadSettlementHistory();
+  }, [backendUrl, settlementPage, token]);
+
   const summary = data?.summary || {};
   const orders = data?.orders || [];
   const transactions = data?.transactions || [];
-  const netOwed = Number(summary.remainingPayable ?? summary.payable ?? 0)
-    - Number(summary.remainingReceivable ?? summary.receivable ?? 0);
-  const isPendingCommission = (data?.manufacturer?.commissionStatus || "PENDING") === "PENDING";
-  const commissionLastProposedBy = (data?.manufacturer?.commissionLastProposedBy || "ADMIN").toUpperCase();
-  const commissionLockUntil = data?.manufacturer?.commissionLockUntil ? new Date(data.manufacturer.commissionLockUntil) : null;
-  const isCommissionLocked = data?.manufacturer?.commissionStatus === "APPROVED" && commissionLockUntil && commissionLockUntil > new Date();
-  const currentCommission = isPendingCommission
-    ? (data?.manufacturer?.proposedCommissionRate ?? data?.manufacturer?.agreedCommissionRate ?? 12)
-    : (data?.manufacturer?.agreedCommissionRate ?? data?.manufacturer?.proposedCommissionRate ?? 12);
-  const pendingDecisionForManufacturer = isPendingCommission && commissionLastProposedBy !== "MANUFACTURER";
-  const lockMessage = isCommissionLocked
-    ? `This commission has been finalized and is locked until ${commissionLockUntil.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}.`
-    : "";
-
-  const submitCommissionProposal = async () => {
-    try {
-      setSavingCommission(true);
-      const res = await axios.put(`${backendUrl}/api/manufacturer/commission`, {
-        proposedCommissionRate: Number(commissionProposal),
-      }, { headers: { token } });
-      if (res.data.success) {
-        await loadSummary();
-      }
-    } catch (error) {
-      console.error("Failed to propose commission", error);
-    } finally {
-      setSavingCommission(false);
-    }
-  };
-
-  const submitCommissionDecision = async (nextStatus) => {
-    try {
-      setSavingCommission(true);
-      const payload =
-        nextStatus === "APPROVED"
-          ? {
-              agreedCommissionRate: Number(currentCommission || 0),
-              commissionStatus: "APPROVED",
-            }
-          : {
-              commissionStatus: "REJECTED",
-              commissionNote: "Manufacturer rejected the proposed commission rate.",
-            };
-
-      const res = await axios.put(`${backendUrl}/api/manufacturer/commission`, payload, { headers: { token } });
-      if (res.data.success) {
-        await loadSummary();
-      }
-    } catch (error) {
-      console.error("Failed to update commission decision", error);
-    } finally {
-      setSavingCommission(false);
-    }
-  };
-
-  const loadSummary = async () => {
-    if (!token) return;
-    try {
-      const res = await axios.get(`${backendUrl}/api/finance/manufacturer-summary`, {
-        headers: { token },
-        params: { range },
-      });
-      if (res.data.success) {
-        setData(res.data.data);
-        const nextRate = res.data.data?.manufacturer?.proposedCommissionRate ?? res.data.data?.manufacturer?.agreedCommissionRate ?? 12;
-        setCommissionProposal(Number(nextRate || 12));
-      }
-    } catch (error) {
-      console.error("Failed to load manufacturer finance summary", error);
-    }
-  };
+  const netOwed = subtractDecimalStrings(
+    summary.remainingPayable ?? summary.payable ?? "0",
+    summary.remainingReceivable ?? summary.receivable ?? "0",
+  );
+  const netPayable = compareDecimalStrings(netOwed, "0") >= 0;
 
   return (
     <div className="space-y-6">
@@ -158,9 +121,9 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Approved COGS Earned</p>
                 <TrendingUp className="w-4 h-4 text-emerald-600" />
               </div>
-              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.receivable || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.receivable ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Gross COGS + commission · Remaining this period: {money(summary.remainingReceivable ?? summary.receivable ?? 0)}
+                COGS earned · Remaining this period: {money(summary.remainingReceivable ?? summary.receivable ?? "0")}
               </p>
             </div>
 
@@ -169,9 +132,9 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-red-500 font-bold">Direct Sales Due to Platform</p>
                 <Wallet className="w-4 h-4 text-red-500" />
               </div>
-              <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Received this period: {money(summary.collectedAmount || 0)} · Remaining this period: {money(summary.remainingPayable ?? summary.payable ?? 0)}
+                Received this period: {money(summary.collectedAmount ?? "0")} · Remaining this period: {money(summary.remainingPayable ?? summary.payable ?? "0")}
               </p>
             </div>
 
@@ -180,11 +143,11 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-blue-500 font-bold">Net Settlement Position</p>
                 <PackageCheck className="w-4 h-4 text-blue-500" />
               </div>
-              <p className={`mt-3 text-2xl font-black ${netOwed >= 0 ? "text-amber-700" : "text-blue-700"}`}>
-                {money(Math.abs(netOwed))}
+              <p className={`mt-3 text-2xl font-black ${netPayable ? "text-amber-700" : "text-blue-700"}`}>
+                {money(absoluteDecimalString(netOwed))}
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
-                {netOwed >= 0 ? "⚠️ Net payable owed to platform" : "✅ Net receivable owed to you"}
+                {netPayable ? "⚠️ Net payable owed to platform" : "✅ Net receivable owed to you"}
               </p>
             </div>
 
@@ -193,67 +156,12 @@ const Finance = () => {
                 <p className="text-[10px] uppercase tracking-wider text-emerald-500 font-bold">Payouts Received This Period</p>
                 <FileText className="w-4 h-4 text-emerald-500" />
               </div>
-              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.paidAmount || 0)}</p>
+              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.paidAmount ?? "0")}</p>
               <p className="mt-1 text-[11px] text-slate-500">{transactions.length} settlement transaction(s)</p>
             </div>
           </div>
 
           <div className="grid md:grid-cols-3 gap-4">
-            <div className="bg-white border border-slate-200 rounded-2xl p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">Commission agreement</span>
-                <FileText className="w-4 h-4 text-slate-500" />
-              </div>
-              <p className="mt-3 text-2xl font-black text-slate-900">{Number(currentCommission || 0).toFixed(2)}%</p>
-              <p className="mt-1 text-[11px] text-slate-500">
-                {isPendingCommission ? "Pending approval" : "Finalized rate"}: {Number(data?.manufacturer?.agreedCommissionRate ?? (currentCommission || 0)).toFixed(2)}% · Status: {data?.manufacturer?.commissionStatus || "PENDING"}
-              </p>
-
-              {isCommissionLocked && (
-                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800 font-medium">
-                  {lockMessage}
-                </div>
-              )}
-
-              <div className="mt-3 flex gap-2 flex-wrap">
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  value={commissionProposal}
-                  onChange={(e) => setCommissionProposal(parseFloat(e.target.value) || 0)}
-                  disabled={isCommissionLocked || savingCommission}
-                  className="w-24 px-2 py-1.5 border border-slate-300 rounded-lg text-sm disabled:bg-slate-100 disabled:text-slate-400"
-                />
-                <button
-                  onClick={submitCommissionProposal}
-                  disabled={isCommissionLocked || savingCommission}
-                  className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {savingCommission ? "Saving..." : pendingDecisionForManufacturer ? "Counter-offer" : "Propose"}
-                </button>
-                {pendingDecisionForManufacturer && !isCommissionLocked && (
-                  <>
-                    <button
-                      onClick={() => submitCommissionDecision("APPROVED")}
-                      disabled={savingCommission}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold border border-emerald-200 disabled:opacity-60"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => submitCommissionDecision("REJECTED")}
-                      disabled={savingCommission}
-                      className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold border border-rose-200 disabled:opacity-60"
-                    >
-                      Reject
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
             <div className="bg-slate-900 text-white rounded-2xl p-4">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-wider text-slate-300">Items sold</span>
@@ -282,7 +190,6 @@ const Finance = () => {
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-800">Order breakdown</h2>
-              <span className="text-[10px] uppercase tracking-wider text-slate-500">Commission rate: {summary.agreedCommissionRate || 12}%</span>
             </div>
 
             <div className="overflow-x-auto">
@@ -409,6 +316,89 @@ const Finance = () => {
               </table>
             </div>
           </div>
+
+          <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200">
+              <h2 className="text-sm font-bold text-slate-800">Settlement request history</h2>
+              <p className="mt-1 text-[11px] text-slate-500">Each request shows the amount requested, paid so far, and the remaining amount.</p>
+            </div>
+            {settlementLoading ? (
+              <p className="p-6 text-center text-sm text-slate-500">Loading settlement history…</p>
+            ) : settlementError ? (
+              <p role="alert" className="p-6 text-center text-sm text-rose-700">{settlementError}</p>
+            ) : settlementHistory.length === 0 ? (
+              <p className="p-6 text-center text-sm text-slate-500">No settlement requests have been submitted.</p>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Requested</th>
+                        <th className="px-4 py-3 font-semibold">Type</th>
+                        <th className="px-4 py-3 font-semibold text-right">Requested amount</th>
+                        <th className="px-4 py-3 font-semibold text-right">Paid</th>
+                        <th className="px-4 py-3 font-semibold text-right">Remaining</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold">Reference / notes</th>
+                        <th className="px-4 py-3 font-semibold">Payout trail</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {settlementHistory.map((settlement) => {
+                        const statusClass = settlement.status === "PAID"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : settlement.status === "PARTIALLY_PAID"
+                            ? "bg-blue-50 text-blue-700"
+                            : settlement.status === "REJECTED"
+                              ? "bg-rose-50 text-rose-700"
+                              : "bg-amber-50 text-amber-700";
+                        return (
+                          <tr key={settlement.id}>
+                            <td className="px-4 py-3 whitespace-nowrap">{new Date(settlement.requestedAt).toLocaleDateString("en-NP")}</td>
+                            <td className="px-4 py-3">{settlement.requestType}</td>
+                            <td className="px-4 py-3 text-right">{money(settlement.amount)}</td>
+                            <td className="px-4 py-3 text-right">{money(settlement.paidAmount)}</td>
+                            <td className="px-4 py-3 text-right font-semibold">{money(settlement.remainingAmount)}</td>
+                            <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusClass}`}>{settlement.status.replaceAll("_", " ")}</span></td>
+                            <td className="px-4 py-3 text-slate-600">{settlement.externalPaymentReference || settlement.notes || "—"}</td>
+                            <td className="px-4 py-3">
+                              {settlement.payoutHistory?.length ? (
+                                <details className="min-w-52">
+                                  <summary className="cursor-pointer font-semibold text-indigo-700">{settlement.payoutHistory.length} payout attempt(s)</summary>
+                                  <div className="mt-2 space-y-2">
+                                    {settlement.payoutHistory.map((payout) => (
+                                      <div key={payout.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px]">
+                                        <p className="font-bold">{payout.status.replaceAll("_", " ")} · Cash {money(payout.amount)} · Settled {money(payout.settlementAmount)} · {new Date(payout.settledAt || payout.initiatedAt).toLocaleString("en-NP")}</p>
+                                        {payout.adjustmentType !== "NONE" && compareDecimalStrings(payout.adjustmentAmount ?? "0", "0") !== 0 ? (
+                                          <p>{payout.adjustmentType.replaceAll("_", " ")} adjustment: {money(payout.adjustmentAmount)}</p>
+                                        ) : null}
+                                        <p>Account: {payout.financialAccount?.accountName || "—"}</p>
+                                        <p>Transfer reference: {payout.externalPaymentReference || "—"} · Evidence reference: {payout.bankEvidenceReference || "—"}</p>
+                                        <p>Cash transaction: {payout.cashTransaction?.id || "Not posted"} · Journal: {payout.journalEntry?.journalNumber || "Not posted"}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              ) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs text-slate-600">
+                  <span>{settlementPagination?.total || 0} request(s)</span>
+                  <div className="flex items-center gap-2">
+                    <button type="button" disabled={settlementPage <= 1 || settlementLoading} onClick={() => setSettlementPage((page) => page - 1)} className="rounded-md border border-slate-300 px-3 py-1.5 disabled:opacity-40">Previous</button>
+                    <span>Page {settlementPagination?.page || settlementPage} of {Math.max(1, settlementPagination?.totalPages || 0)}</span>
+                    <button type="button" disabled={!settlementPagination?.hasNextPage || settlementLoading} onClick={() => setSettlementPage((page) => page + 1)} className="rounded-md border border-slate-300 px-3 py-1.5 disabled:opacity-40">Next</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
         </>
       )}
     </div>

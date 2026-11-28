@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER TABLE `accountingdecimalconversionevidence` RENAME INDEX `AccountingDecimalConversionEvidence_table_field_idx` TO `AccountingDecimalConversionEvidence_tableName_fieldName_idx`;

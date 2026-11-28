@@ -1,3 +1,18 @@
+import { Prisma } from "@prisma/client";
+import {
+  addDecimals,
+  allocateDecimal,
+  divideDecimals,
+  multiplyDecimals,
+  quantizeDecimal,
+  serializeAccountingDecimal,
+  subtractDecimals,
+} from "./accountingDecimal.js";
+import {
+  applyPercentagePriceDiscount,
+  decimalFromStoredFloat,
+} from "./checkoutPricingService.js";
+
 const parseArray = (value) => {
   if (Array.isArray(value)) return value;
   if (typeof value !== "string" || !value.trim()) return [];
@@ -10,7 +25,7 @@ const parseArray = (value) => {
 };
 
 const normalizeVariantLabel = (value) => String(value || "").trim();
-const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const roundMoneyDecimal = (value) => quantizeDecimal(value, 2, Prisma.Decimal.ROUND_HALF_UP);
 
 export const getSharedComboBundleVariants = (products = [], requestedQuantity = 1) => {
   if (!Array.isArray(products) || products.length === 0) return [];
@@ -91,38 +106,81 @@ export const calculateComboBundlePrice = ({
   manualPriceOverride = false,
   sellingPrice = 0,
 } = {}) => {
-  const calculatedPrice = roundMoney(products.reduce((total, product) => {
-    const price = Math.max(0, Number(product?.price || 0));
-    const discount = Math.min(100, Math.max(0, Number(product?.discount || 0)));
-    return total + Math.round(price * (1 - discount / 100));
-  }, 0));
-  const normalizedDiscount = Math.min(100, Math.max(0, Number(discountPercentage || 0)));
-  const discountedPrice = roundMoney(calculatedPrice * (1 - normalizedDiscount / 100));
-  const overridePrice = Math.max(0, Number(sellingPrice || 0));
-  const useManualPrice = Boolean(manualPriceOverride) && overridePrice > 0;
+  const componentPrices = products.map((product) => {
+    const price = decimalFromStoredFloat(product?.price, "Combo product price");
+    const discount = decimalFromStoredFloat(product?.discount || 0, "Combo product discount");
+    if (price.isNegative() || discount.isNegative() || discount.greaterThan(100)) {
+      throw Object.assign(new TypeError("Combo product prices and discounts must be non-negative with discount at most 100%."), {
+        code: "INVALID_ORDER_PRICE",
+      });
+    }
+    return applyPercentagePriceDiscount(price.toString(), discount.toString(), "Combo product discount");
+  });
+  const calculatedPrice = roundMoneyDecimal(addDecimals(...componentPrices));
+  const normalizedDiscount = decimalFromStoredFloat(discountPercentage || 0, "Combo discount percentage");
+  if (normalizedDiscount.isNegative() || normalizedDiscount.greaterThan(100)) {
+    throw Object.assign(new TypeError("Combo discount must be between 0 and 100%."), { code: "INVALID_ORDER_DISCOUNT" });
+  }
+  const discountedPrice = roundMoneyDecimal(divideDecimals(
+    multiplyDecimals(calculatedPrice, subtractDecimals("100", normalizedDiscount.toString())),
+    "100",
+    { significantDigits: 40, roundingMode: Prisma.Decimal.ROUND_HALF_UP },
+  ));
+  const overridePrice = decimalFromStoredFloat(sellingPrice || 0, "Combo selling price");
+  if (overridePrice.isNegative()) {
+    throw Object.assign(new TypeError("Combo selling price cannot be negative."), { code: "INVALID_ORDER_PRICE" });
+  }
+  const useManualPrice = Boolean(manualPriceOverride) && overridePrice.greaterThan(0);
+  const exactSellingPrice = useManualPrice ? overridePrice : discountedPrice;
 
   return {
-    calculatedPrice,
-    sellingPrice: useManualPrice ? overridePrice : discountedPrice,
-    discountPercentage: normalizedDiscount,
+    calculatedPrice: Number(calculatedPrice.toString()),
+    sellingPrice: Number(exactSellingPrice.toString()),
+    discountPercentage: Number(normalizedDiscount.toString()),
     manualPriceOverride: useManualPrice,
+    calculatedPriceDecimal: serializeAccountingDecimal(calculatedPrice),
+    sellingPriceDecimal: serializeAccountingDecimal(exactSellingPrice),
+    discountPercentageDecimal: serializeAccountingDecimal(normalizedDiscount),
   };
 };
 
-export const allocateComboBundleComponentPrices = (components = [], bundlePrice = 0) => {
+export const allocateComboBundleComponentPriceDecimals = (components = [], bundlePrice = "0") => {
   if (!components.length) return [];
-  const targetCents = Math.max(0, Math.round(Number(bundlePrice || 0) * 100));
-  const weights = components.map((component) => Math.max(0, Number(component?.purchasedUnitPrice || component?.price || 0)));
-  const weightTotal = weights.reduce((total, weight) => total + weight, 0);
-  let allocatedCents = 0;
-
-  return components.map((_, index) => {
-    const cents = index === components.length - 1
-      ? targetCents - allocatedCents
-      : weightTotal > 0
-      ? Math.round(targetCents * weights[index] / weightTotal)
-      : Math.floor(targetCents / components.length);
-    allocatedCents += cents;
-    return roundMoney(cents / 100);
+  const amount = decimalFromStoredFloat(bundlePrice, "Combo bundle price");
+  if (amount.isNegative()) {
+    throw Object.assign(new TypeError("Combo bundle price cannot be negative."), { code: "INVALID_ORDER_PRICE" });
+  }
+  const weights = components.map((component) => {
+    const weight = decimalFromStoredFloat(
+      component?._pricingDecimal?.unitPrice ??
+        component?.purchasedUnitPrice ??
+        component?.price ??
+        0,
+      "Combo component price",
+    );
+    if (weight.isNegative()) {
+      throw Object.assign(new TypeError("Combo component prices cannot be negative."), { code: "INVALID_ORDER_PRICE" });
+    }
+    return weight;
   });
+  const roundedAmount = roundMoneyDecimal(amount);
+
+  if (weights.every((weight) => weight.isZero())) {
+    const equalWeights = components.map(() => "1");
+    return allocateDecimal(roundedAmount, equalWeights, {
+      scale: 2,
+      roundingMode: Prisma.Decimal.ROUND_HALF_UP,
+      residualTargetIndex: components.length - 1,
+      divisionSignificantDigits: 40,
+    }).allocations.map(serializeAccountingDecimal);
+  }
+  return allocateDecimal(roundedAmount, weights, {
+    scale: 2,
+    roundingMode: Prisma.Decimal.ROUND_HALF_UP,
+    residualTargetIndex: components.length - 1,
+    divisionSignificantDigits: 40,
+  }).allocations.map(serializeAccountingDecimal);
 };
+
+export const allocateComboBundleComponentPrices = (components = [], bundlePrice = 0) =>
+  allocateComboBundleComponentPriceDecimals(components, bundlePrice).map(Number);

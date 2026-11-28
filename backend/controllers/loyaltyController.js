@@ -1,4 +1,14 @@
 import { prisma } from "../config/db.js";
+import {
+  addDecimals,
+  compareDecimals,
+  serializeAccountingDecimal,
+  subtractDecimals,
+} from "../services/accountingDecimal.js";
+import {
+  decimalFromStoredFloat,
+  pricingSnapshotAmounts,
+} from "../services/checkoutPricingService.js";
 
 // Default initial loyalty tiers with customizable combination perks
 const DEFAULT_LEVELS = [
@@ -68,8 +78,8 @@ const DEFAULT_LEVELS = [
     minOrders: 8,
     rewardType: "COMBO",
     rewardValue: 250,
-    rewardTitle: "Free Delivery + Rs. 250 Off + Gift up to Rs. 500",
-    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus a physical hub gift up to Rs. 500.",
+    rewardTitle: "Free Delivery + Rs. 250 Off + Rs. 500 Gift",
+    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus a physical gift valued at Rs. 500 when assigned distributor stock is available.",
     rewardOrderLimit: 3,
     freeShipping: true,
     discountAmount: 250,
@@ -125,6 +135,9 @@ export const buildPublicLoyaltySummary = (loyaltyData = {}) => {
 
   return {
     totalSpend: Number(loyaltyData.totalSpend || 0),
+    totalSpendDecimal: loyaltyData.totalSpendDecimal
+      ? serializeAccountingDecimal(loyaltyData.totalSpendDecimal)
+      : serializeAccountingDecimal(decimalFromStoredFloat(loyaltyData.totalSpend || 0, "Loyalty total spend")),
     totalOrders: Number(loyaltyData.totalOrders || 0),
     currentLevel,
     nextLevel,
@@ -176,7 +189,11 @@ export const calculateUserLoyalty = async (userId) => {
   });
 
   const totalOrders = eligibleOrders.length;
-  const totalSpend = eligibleOrders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
+  const totalSpendDecimal = eligibleOrders.reduce(
+    (total, order) => addDecimals(total, pricingSnapshotAmounts(order).finalPayableTotal),
+    "0",
+  );
+  const totalSpend = Number(totalSpendDecimal.toString());
 
   // Determine highest tier achieved where user meets BOTH minSpend AND minOrders
   let currentLevel = levels[0] || DEFAULT_LEVELS[0];
@@ -184,7 +201,10 @@ export const calculateUserLoyalty = async (userId) => {
 
   for (let i = 0; i < levels.length; i++) {
     const lvl = levels[i];
-    if (totalSpend >= Number(lvl.minSpend) && totalOrders >= Number(lvl.minOrders)) {
+    if (
+      compareDecimals(totalSpendDecimal, decimalFromStoredFloat(lvl.minSpend || 0, "Loyalty minimum spend")) >= 0 &&
+      totalOrders >= Number(lvl.minOrders)
+    ) {
       currentLevel = lvl;
       nextLevel = levels[i + 1] || null;
     }
@@ -192,7 +212,9 @@ export const calculateUserLoyalty = async (userId) => {
 
   if (!nextLevel && levels.length > 0) {
     const firstUnmet = levels.find(
-      (l) => totalSpend < Number(l.minSpend) || totalOrders < Number(l.minOrders)
+      (l) =>
+        compareDecimals(totalSpendDecimal, decimalFromStoredFloat(l.minSpend || 0, "Loyalty minimum spend")) < 0 ||
+        totalOrders < Number(l.minOrders)
     );
     if (firstUnmet && firstUnmet.levelNumber > currentLevel.levelNumber) {
       nextLevel = firstUnmet;
@@ -205,8 +227,13 @@ export const calculateUserLoyalty = async (userId) => {
   let remainingOrders = 0;
 
   if (nextLevel) {
-    const spendGap = Math.max(0, Number(nextLevel.minSpend) - Number(currentLevel.minSpend));
-    const userSpendProgress = Math.max(0, totalSpend - Number(currentLevel.minSpend));
+    const nextMinimumSpend = decimalFromStoredFloat(nextLevel.minSpend || 0, "Loyalty next-level spend");
+    const currentMinimumSpend = decimalFromStoredFloat(currentLevel.minSpend || 0, "Loyalty current-level spend");
+    const remainingSpendDecimal = compareDecimals(totalSpendDecimal, nextMinimumSpend) >= 0
+      ? decimalFromStoredFloat("0")
+      : subtractDecimals(nextMinimumSpend, totalSpendDecimal);
+    const spendGap = Math.max(0, Number(subtractDecimals(nextMinimumSpend, currentMinimumSpend).toString()));
+    const userSpendProgress = Math.max(0, Number(subtractDecimals(totalSpendDecimal, currentMinimumSpend).toString()));
     const spendRatio = spendGap > 0 ? Math.min(1, userSpendProgress / spendGap) : 1;
 
     const ordersGap = Math.max(0, Number(nextLevel.minOrders) - Number(currentLevel.minOrders));
@@ -214,7 +241,7 @@ export const calculateUserLoyalty = async (userId) => {
     const ordersRatio = ordersGap > 0 ? Math.min(1, userOrdersProgress / ordersGap) : 1;
 
     progressPercentage = Math.round(((spendRatio + ordersRatio) / 2) * 100);
-    remainingSpend = Math.max(0, Number(nextLevel.minSpend) - totalSpend);
+    remainingSpend = Number(remainingSpendDecimal.toString());
     remainingOrders = Math.max(0, Number(nextLevel.minOrders) - totalOrders);
   }
 
@@ -239,7 +266,7 @@ export const calculateUserLoyalty = async (userId) => {
   const customPerk = (currentLevel.customPerk || "").trim();
 
   // Has any active perk configured?
-  const hasPerks = isFreeShipping || discountAmount > 0 || giftAmount > 0 || giftDescription || letterIncluded || customPerk;
+  const hasPerks = isFreeShipping || discountAmount > 0 || giftAmount > 0 || letterIncluded || customPerk;
 
   const rewardOrderLimit = Number(currentLevel.rewardOrderLimit || 3);
   const loyaltyRewardOrderCount = eligibleOrders.filter((order) => {
@@ -259,7 +286,7 @@ export const calculateUserLoyalty = async (userId) => {
   const perkTags = [];
   if (isFreeShipping) perkTags.push("Free Delivery");
   if (discountAmount > 0) perkTags.push(`Rs. ${discountAmount} Off`);
-  if (giftAmount > 0 || giftDescription) perkTags.push(giftAmount > 0 ? `${giftDescription || "Loyalty gift"} up to Rs. ${giftAmount}` : giftDescription);
+  if (giftAmount > 0) perkTags.push(`${giftDescription || "Loyalty gift"} valued at Rs. ${giftAmount}`);
   if (letterIncluded) perkTags.push("Handwritten Letter");
   if (customPerk) perkTags.push(customPerk);
 
@@ -284,6 +311,7 @@ export const calculateUserLoyalty = async (userId) => {
 
   return {
     totalSpend,
+    totalSpendDecimal: serializeAccountingDecimal(totalSpendDecimal),
     totalOrders,
     currentLevel,
     nextLevel,
@@ -339,10 +367,10 @@ export const createOrUpdateLevel = async (req, res) => {
 
     const isFreeShipping = Boolean(freeShipping);
     const discAmt = Math.max(0, Number(discountAmount !== undefined ? discountAmount : (rewardValue || 0)));
-    const giftAmt = Math.max(0, Number(giftAmount || 0));
+    const giftAmt = Number(giftAmount || 0);
     const giftDesc = (giftDescription || "").trim();
-    if ((giftAmt > 0) !== Boolean(giftDesc)) {
-      return res.status(400).json({ success: false, message: "Set both a loyalty gift description and its maximum value, or leave both empty." });
+    if (!Number.isFinite(giftAmt) || giftAmt < 0 || (giftAmt === 0 && giftDesc)) {
+      return res.status(400).json({ success: false, message: "Set a valid positive exact gift value for a loyalty gift, or leave the gift fields empty." });
     }
     const isLetter = Boolean(letterIncluded);
     const cPerk = (customPerk || "").trim();
@@ -353,7 +381,7 @@ export const createOrUpdateLevel = async (req, res) => {
       const parts = [];
       if (isFreeShipping) parts.push("Free Delivery");
       if (discAmt > 0) parts.push(`Rs. ${discAmt} Off`);
-      if (giftAmt > 0 || giftDesc) parts.push(giftAmt > 0 ? `${giftDesc || "Gift"} up to Rs. ${giftAmt}` : giftDesc);
+      if (giftAmt > 0) parts.push(`${giftDesc || "Loyalty gift"} valued at Rs. ${giftAmt}`);
       if (isLetter) parts.push("Handwritten Letter");
       if (cPerk) parts.push(cPerk);
       title = parts.length > 0 ? parts.join(" + ") : "Entry Level";
@@ -472,22 +500,22 @@ export const getCustomerLoyaltyByPhone = async (req, res) => {
 
 /**
  * GET /api/loyalty/hub-customers?page=1&limit=20
- * Manufacturer: Get list of customers who have placed direct orders at this hub,
+ * Distributor: Get list of customers who have placed direct orders at this hub,
  * enriched with loyalty tier.
  */
 export const getHubCustomers = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
     const page = Math.max(1, Number(req.query.page || 1));
     const limit = Math.min(50, Math.max(5, Number(req.query.limit || 20)));
     const skip = (page - 1) * limit;
     const search = (req.query.search || "").trim().toLowerCase();
 
-    // Fetch direct orders for this hub
+    // Fetch distributor direct orders for this hub.
     const directOrders = await prisma.order.findMany({
       where: {
-        manufacturerId,
-        orderType: "DIRECT_MANUFACTURER",
+        distributorId,
+        orderType: "DIRECT_DISTRIBUTOR",
       },
       orderBy: { date: "desc" },
     });
@@ -508,12 +536,16 @@ export const getHubCustomers = async (req, res) => {
           visitCount: 0,
           lastVisit: 0,
           totalSpentAtHub: 0,
+          totalSpentAtHubDecimal: "0",
           orderIds: [],
         });
       }
       const entry = customerMap.get(phone);
       entry.visitCount += 1;
-      entry.totalSpentAtHub += Number(order.amount || 0);
+      entry.totalSpentAtHubDecimal = serializeAccountingDecimal(
+        addDecimals(entry.totalSpentAtHubDecimal, pricingSnapshotAmounts(order).finalPayableTotal),
+      );
+      entry.totalSpentAtHub = Number(entry.totalSpentAtHubDecimal);
       entry.orderIds.push(order.id);
       const orderDate = Number(order.date);
       if (orderDate > entry.lastVisit) entry.lastVisit = orderDate;
@@ -579,25 +611,25 @@ export const getHubCustomers = async (req, res) => {
 
 /**
  * POST /api/loyalty/hub-gift
- * Manufacturer: Record that a loyalty gift/perk was physically handed to a customer.
+ * Distributor: Record that a loyalty gift/perk was physically handed to a customer.
  * Body: { orderId, giftType, giftNote, customerPhone, customerName }
  */
 export const recordLoyaltyGift = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
     const { orderId, giftType, giftNote, customerPhone, customerName } = req.body;
 
     if (!giftType) {
       return res.json({ success: false, message: "Gift type is required" });
     }
 
-    // Verify order belongs to this manufacturer if orderId provided
+    // Verify order belongs to this distributor if orderId provided.
     if (orderId) {
       const order = await prisma.order.findFirst({
-        where: { id: orderId, manufacturerId },
+        where: { id: orderId, distributorId },
       });
       if (!order) {
-        return res.json({ success: false, message: "Order not found or not assigned to your hub" });
+        return res.json({ success: false, message: "Order not found or not assigned to your distributor hub." });
       }
     }
 
@@ -624,7 +656,7 @@ export const recordLoyaltyGift = async (req, res) => {
           giftNote: giftNote || "",
           customerPhone: customerPhone || "",
           customerName: customerName || "",
-          manufacturerId,
+          distributorId,
           handedOver: true,
           handedOverAt: new Date().toISOString(),
         }),
@@ -645,16 +677,16 @@ export const recordLoyaltyGift = async (req, res) => {
 
 /**
  * GET /api/loyalty/hub-gifts
- * Manufacturer: Get all gift records for this hub.
+ * Distributor: Get all gift records for this hub.
  */
 export const getHubGifts = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
 
     const gifts = await prisma.customerLetterImage.findMany({
       where: {
         title: { startsWith: "[HUB GIFT]" },
-        notes: { contains: manufacturerId },
+        notes: { contains: distributorId },
       },
       orderBy: { createdAt: "desc" },
     });

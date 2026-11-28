@@ -1,12 +1,21 @@
 # Notification Worker
 
-The notification subsystem is isolated from existing order, authentication, and OTP flows. No existing business flow automatically sends SMS or email.
+The notification subsystem is isolated from most order and business flows. Portal MFA and the SMS-only password-recovery flow explicitly enqueue notifications through its transactional outbox; no other business flow automatically sends SMS or email.
 
 ## Runtime configuration
 
 The API remains independent of RabbitMQ. Run the worker separately with `npm run worker:notifications`; the worker loads the standard backend `.env` and then `backend/.env.notifications`. Local secret files are ignored by Git. In production, inject configuration directly into a dedicated worker service through its secret manager. Never put real credentials in `.env.example` or frontend configuration.
 
 From the `backend` directory, run `npm run rabbitmq:check` to test broker connectivity and queue setup without publishing or consuming messages. `connected: true` confirms the broker and queues are reachable; each queue should also have a nonzero consumer count while the notification worker is running. Start the worker in a separate terminal with `npm run worker:notifications`.
+
+Run `npm run notifications:health` from `backend/` as a periodic operational
+check. It reports enabled-channel queue depth and consumer count, notification
+counts by channel/status, and the age of the oldest pending or queued
+notification. It exits unsuccessfully if the broker/database check fails or an
+enabled channel has no consumer. Schedule it from the deployment monitor or
+operations runner and alert on growing queue age, `FAILED`, `DEAD_LETTERED`, or
+`UNKNOWN` counts; those message states still require operator review and are
+not automatically retried by this check.
 
 The worker requires `NOTIFICATIONS_ENABLED=true` plus RabbitMQ connection values. TLS is required for production RabbitMQ. Enable SMS and email separately. Sparrow sending requires an HTTPS endpoint because credentials are sent to the provider. The current supplied endpoint uses HTTP, so SMS remains disabled until a secure endpoint is confirmed. SMTP sending requires a verified `SMTP_FROM` sender identity.
 
@@ -17,6 +26,8 @@ Generate the Prisma client after reviewing the schema, then apply the checked-in
 ## Delivery semantics
 
 A notification and outbox record are committed in one database transaction. The worker uses persistent RabbitMQ messages, durable exchanges and queues, publisher confirms, manual consumer acknowledgements, bounded retries, and dead-letter queues. Processing is at-least-once; duplicate publishes are possible and provider effects cannot be guaranteed exactly once. Provider acceptance is recorded as `ACCEPTED`, not `DELIVERED`.
+
+OTP and password-reset notifications are cancelled by the worker when their associated challenge is no longer pending or has expired, preventing delayed queue messages from sending unusable codes.
 
 If a provider request times out or a worker disappears after the provider may have accepted the request, the notification becomes `UNKNOWN`; it is not automatically resent because doing so could send duplicates. Operators must reconcile ambiguous outcomes before retrying.
 
@@ -29,6 +40,7 @@ The Sparrow incoming callback is disabled by default. It only accepts exact sour
 ## Current implementation limits
 
 - No API endpoint is exposed for general notification creation; the service layer is available to future explicitly approved flows.
+- Password recovery depends on the transactional SMS queue and requires the notification worker, Sparrow SMS, `OTP_SERVER_SECRET`, and SMS configuration to be available.
 - SMS delivery is disabled by default and the current provided URL is HTTP; the provider refuses to transmit the token to non-HTTPS endpoints.
 - SMTP is disabled by default until a verified sender is configured.
 - The email adapter uses SMTP and captures message IDs; it does not receive delivered/open/bounce callbacks.

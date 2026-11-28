@@ -12,7 +12,14 @@ test("OTP configuration supports validated environment values", () => {
     expiryMinutes: 7,
     length: 8,
   });
-  assert.equal(generateSecureOtp(8).length, 8);
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    assert.equal(generateSecureOtp(8).length, 8);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
   assert.throws(() => loadOtpConfig({ OTP_LENGTH: "2" }), /OTP_LENGTH/);
   assert.throws(() => loadOtpConfig({ OTP_EXPIRY_MINUTES: "0" }), /OTP_EXPIRY_MINUTES/);
 });

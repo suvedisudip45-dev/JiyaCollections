@@ -3,11 +3,8 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import PrintSheetModal from "../components/PrintSheetModal";
-import {
-  NEPAL_PROVINCES,
-  DISTRICTS_BY_PROVINCE,
-  ALL_DISTRICTS,
-} from "../data/nepalLocations";
+import MarketingPartnerOverview from "../components/marketing/MarketingPartnerOverview";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 const fmt = (n) => (n ?? 0).toLocaleString();
@@ -67,8 +64,6 @@ const createDefaultOffer = (overrides = {}) => ({
   expiresAt: "",
   ...overrides,
 });
-
-const emptyPartner = { code: "", name: "", description: "", email: "", password: "" };
 
 const createInitialCampaign = () => ({
   isOwnStore: false,
@@ -148,12 +143,14 @@ const TABS = [
 
 // ════════════════════════════════════════════════════════════════════════════
 const MarketingCards = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [tab, setTab] = useState("overview");
+  const [setupStep, setSetupStep] = useState(1);
 
   // Core data
   const [partners, setPartners] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
-  const [manufacturers, setManufacturers] = useState([]);
+  const [distributors, setDistributors] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [stats, setStats] = useState(null);
 
@@ -162,15 +159,14 @@ const MarketingCards = ({ token }) => {
   const [cardTotal, setCardTotal] = useState(0);
   const [cardTotalPages, setCardTotalPages] = useState(1);
   const [cardPage, setCardPage] = useState(1);
-  const [filters, setFilters] = useState({ partnerId: "", campaignId: "", manufacturerId: "", status: "all", search: "" });
+  const [filters, setFilters] = useState({ partnerId: "", campaignId: "", distributorId: "", status: "all", search: "" });
   const [selected, setSelected] = useState(new Set());
   const [showInvalidate, setShowInvalidate] = useState(false);
 
   // Setup forms
-  const [partner, setPartner] = useState(emptyPartner);
   const [campaign, setCampaign] = useState(createInitialCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
-  const [assignment, setAssignment] = useState({ campaignId: "", manufacturerId: "", quantity: 1 });
+  const [assignment, setAssignment] = useState({ campaignId: "", distributorId: "", quantity: 1 });
   const [organizationAssignment, setOrganizationAssignment] = useState({
     campaignId: "",
     destinationType: "CUSTOM",
@@ -200,16 +196,17 @@ const MarketingCards = ({ token }) => {
   const loadBase = useCallback(async () => {
     setLoading(true);
     try {
-      const [partnerRes, campaignRes, manufacturerRes, metricsRes, statsRes] = await Promise.all([
+      const [partnerRes, campaignRes, distributorRes, metricsRes, statsRes] = await Promise.all([
         axios.get(`${backendUrl}/api/marketing-cards/admin/partners`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/campaigns`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/manufacturer/admin/list`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/distributor-applications/coverage`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/metrics`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/stats`, { headers: { token } }),
       ]);
       setPartners(partnerRes.data.partners || []);
       setCampaigns(campaignRes.data.campaigns || []);
-      setManufacturers(manufacturerRes.data.manufacturers || []);
+      setDistributors((distributorRes.data.distributors || [])
+        .filter((distributor) => distributor.status === "ACTIVE" && distributor.isActive));
       setMetrics(metricsRes.data.metrics || null);
       setStats(statsRes.data.stats || null);
     } catch (err) {
@@ -225,7 +222,7 @@ const MarketingCards = ({ token }) => {
       const params = new URLSearchParams({ page, pageSize: 50 });
       if (f.partnerId) params.set("partnerId", f.partnerId);
       if (f.campaignId) params.set("campaignId", f.campaignId);
-      if (f.manufacturerId) params.set("manufacturerId", f.manufacturerId);
+      if (f.distributorId) params.set("distributorId", f.distributorId);
       if (f.status && f.status !== "all") params.set("status", f.status);
       if (f.search) params.set("search", f.search);
       const res = await axios.get(`${backendUrl}/api/marketing-cards/admin/cards?${params}`, { headers: { token } });
@@ -402,90 +399,17 @@ const MarketingCards = ({ token }) => {
       {/* ══ OVERVIEW TAB ══════════════════════════════════════════════════════ */}
       {!loading && tab === "overview" && (
         <div className="space-y-6">
-
-          {/* Partner breakdown */}
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-            <div className="border-b border-slate-100 px-5 py-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-black text-slate-900">Marketing Partner Breakdown</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Cards printed & distributed per partner.</p>
-              </div>
-              <span className="text-xs text-slate-400">{(stats?.partnerBreakdown || []).length} partners</span>
-            </div>
-            {(stats?.partnerBreakdown || []).length === 0 ? (
-              <p className="p-6 text-sm text-slate-500">No partner data yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
-                    <tr>
-                      <th className="px-5 py-3">Partner</th>
-                      <th className="px-5 py-3">Status</th>
-                      <th className="px-5 py-3 text-right">Total Cards</th>
-                      <th className="px-5 py-3 text-right">Generated</th>
-                      <th className="px-5 py-3 text-right">Assigned</th>
-                      <th className="px-5 py-3 text-right">Available</th>
-                      <th className="px-5 py-3 text-right">Attached</th>
-                      <th className="px-5 py-3 text-right">Cancelled</th>
-                      <th className="px-5 py-3">Distribution</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {(stats?.partnerBreakdown || []).map(({ partner, total, GENERATED, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
-                      <tr key={partner.id} className="hover:bg-slate-50/60">
-                        <td className="px-5 py-3">
-                          <p className="font-bold text-slate-800">{partner.name}</p>
-                          <p className="text-slate-400 font-mono">{partner.code}</p>
-                        </td>
-                        <td className="px-5 py-3">
-                          <Badge status={partner.status === "ACTIVE" ? "AVAILABLE" : "CANCELLED"} label={partner.status} />
-                        </td>
-                        <td className="px-5 py-3 text-right font-black text-slate-900">{fmt(total)}</td>
-                        <td className="px-5 py-3 text-right text-slate-600">{fmt(GENERATED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-amber-700 font-bold">{fmt(ASSIGNED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-sky-700 font-bold">{fmt(AVAILABLE || 0)}</td>
-                        <td className="px-5 py-3 text-right text-indigo-700 font-bold">{fmt(ATTACHED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-red-600 font-bold">{fmt(CANCELLED || 0)}</td>
-                        <td className="px-5 py-3 min-w-[120px]">
-                          <MiniBar value={ATTACHED || 0} total={total} color="bg-indigo-500" />
-                          <MiniBar value={CANCELLED || 0} total={total} color="bg-red-400" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          {/* Pending partner approvals */}
-          {(partners.filter((p) => p.status === "PENDING").length > 0) && (
-            <section className="rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm overflow-hidden">
-              <div className="border-b border-amber-200 px-5 py-4">
-                <h2 className="text-sm font-black text-amber-950">Pending Partner Approvals</h2>
-                <p className="text-xs text-amber-800 mt-0.5">Verify the business, assign a permanent code, and activate portal access.</p>
-              </div>
-              <div className="divide-y divide-amber-100">
-                {partners.filter((p) => p.status === "PENDING").map((pendingPartner) => (
-                  <div key={pendingPartner.id} className="flex flex-col md:flex-row md:items-center gap-3 px-5 py-4">
-                    <div className="flex-1">
-                      <p className="text-sm font-bold text-slate-900">{pendingPartner.name}</p>
-                      <p className="text-xs text-slate-600">{pendingPartner.email || "No email"}</p>
-                    </div>
-                    <div className="flex gap-2 w-full md:w-auto">
-                      <input
-                        value={approvalCodes[pendingPartner.id] || ""}
-                        onChange={(e) => setApprovalCodes((prev) => ({ ...prev, [pendingPartner.id]: e.target.value.toUpperCase() }))}
-                        placeholder="Permanent code"
-                        className="flex-1 md:w-44 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-mono uppercase"
-                      />
-                      <button type="button" disabled={working} onClick={() => handleApprovePartner(pendingPartner.id)} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">Approve</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          <MarketingPartnerOverview
+            partners={partners}
+            partnerBreakdown={stats?.partnerBreakdown || []}
+            approvalCodes={approvalCodes}
+            onApprovalCodeChange={(partnerId, code) => setApprovalCodes((previous) => ({
+              ...previous,
+              [partnerId]: code.toUpperCase(),
+            }))}
+            onApprove={handleApprovePartner}
+            working={working}
+          />
 
           {/* Campaign breakdown */}
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -578,20 +502,20 @@ const MarketingCards = ({ token }) => {
             </div>
           </section>
 
-          {/* Manufacturer breakdown */}
+          {/* Distributor breakdown */}
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div className="border-b border-slate-100 px-5 py-4">
-              <h2 className="text-sm font-black text-slate-900">Manufacturer Card Inventory</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Which manufacturer has how many cards, and their status.</p>
+              <h2 className="text-sm font-black text-slate-900">Distributor Card Inventory</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Which distributor has how many cards, and their status.</p>
             </div>
-            {(stats?.manufacturerBreakdown || []).length === 0 ? (
-              <p className="p-6 text-sm text-slate-500">No cards assigned to manufacturers yet.</p>
+            {(stats?.distributorBreakdown || []).length === 0 ? (
+              <p className="p-6 text-sm text-slate-500">No cards assigned to distributors yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-xs text-left">
                   <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
                     <tr>
-                      <th className="px-5 py-3">Manufacturer</th>
+                      <th className="px-5 py-3">Distributor</th>
                       <th className="px-5 py-3 text-right">Total Assigned</th>
                       <th className="px-5 py-3 text-right">Assigned (Pending)</th>
                       <th className="px-5 py-3 text-right">Available</th>
@@ -601,11 +525,11 @@ const MarketingCards = ({ token }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(stats?.manufacturerBreakdown || []).map(({ manufacturer, total, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
-                      <tr key={manufacturer.id} className="hover:bg-slate-50/60">
+                    {(stats?.distributorBreakdown || []).map(({ distributor, total, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
+                      <tr key={distributor.id} className="hover:bg-slate-50/60">
                         <td className="px-5 py-3">
-                          <p className="font-bold text-slate-800">{manufacturer.name}</p>
-                          <p className="text-slate-400 text-[10px]">{manufacturer.city || "—"}</p>
+                          <p className="font-bold text-slate-800">{distributor.name}</p>
+                          <p className="text-slate-400 text-[10px]">{distributor.city || "—"}</p>
                         </td>
                         <td className="px-5 py-3 text-right font-black text-slate-900">{fmt(total)}</td>
                         <td className="px-5 py-3 text-right text-amber-700 font-bold">{fmt(ASSIGNED || 0)}</td>
@@ -654,14 +578,14 @@ const MarketingCards = ({ token }) => {
                 {filteredCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
               </select>
 
-              {/* Manufacturer filter */}
+              {/* Distributor filter */}
               <select
-                value={filters.manufacturerId}
-                onChange={(e) => handleFilterChange("manufacturerId", e.target.value)}
+                value={filters.distributorId}
+                onChange={(e) => handleFilterChange("distributorId", e.target.value)}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
               >
-                <option value="">All Manufacturers</option>
-                {manufacturers.filter((m) => m.isActive).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                <option value="">All Distributors</option>
+                {distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name}</option>)}
               </select>
 
               {/* Status filter */}
@@ -747,7 +671,7 @@ const MarketingCards = ({ token }) => {
                         <th className="px-4 py-3">Card Code</th>
                         <th className="px-4 py-3">Partner / Campaign</th>
                         <th className="px-4 py-3">Scope</th>
-                        <th className="px-4 py-3">Manufacturer</th>
+                        <th className="px-4 py-3">Distributor</th>
                         <th className="px-4 py-3">Benefit / Offer</th>
                         <th className="px-4 py-3">Status</th>
                         <th className="px-4 py-3">Created</th>
@@ -773,7 +697,7 @@ const MarketingCards = ({ token }) => {
                               <p className="text-slate-500">{card.campaign?.name || "—"}</p>
                             </td>
                             <td className="px-4 py-3 text-slate-600">{card.campaign?.targetScopeType || "—"}</td>
-                            <td className="px-4 py-3 text-slate-600">{card.assignedManufacturer?.name || <span className="text-slate-300">Unassigned</span>}</td>
+                            <td className="px-4 py-3 text-slate-600">{card.assignedDistributor?.name || <span className="text-slate-300">Unassigned</span>}</td>
                             <td className="px-4 py-3">
                               {card.hasBenefit && card.benefit ? (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800">
@@ -803,38 +727,53 @@ const MarketingCards = ({ token }) => {
       {/* ══ SETUP TAB ════════════════════════════════════════════════════════ */}
       {!loading && tab === "setup" && (
         <div className="space-y-6">
-          <div className="grid gap-6 lg:grid-cols-12">
-            {/* Left column: Partner + Generate */}
-            <div className="lg:col-span-4 space-y-6">
-              {/* 1. Create Partner */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">1. Create Partner</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Create an active partner with initial login credentials.</p>
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Partner Code (3–6 chars)</label>
-                    <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm uppercase" placeholder="e.g. NIKE, AAMA, REDB" value={partner.code} onChange={(e) => setPartner({ ...partner, code: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Partner Name</label>
-                    <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Nike Nepal, RedBull" value={partner.name} onChange={(e) => setPartner({ ...partner, name: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Login Email</label>
-                    <input type="email" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="partner@company.com" value={partner.email} onChange={(e) => setPartner({ ...partner, email: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Initial Password</label>
-                    <input type="password" minLength="8" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="At least 8 characters" value={partner.password} onChange={(e) => setPartner({ ...partner, password: e.target.value })} />
-                  </div>
-                  <button disabled={working} onClick={async () => { const r = await submit("/api/marketing-cards/admin/partners", partner, "Partner created."); if (r) setPartner(emptyPartner); }} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-50">Create partner</button>
-                </div>
-              </section>
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-black text-slate-900">Set up marketing cards</h2>
+                <p className="mt-1 text-xs text-slate-500">Follow the steps in order. You can return to any step without losing your current campaign setup.</p>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                Step {setupStep} of 3
+              </span>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {[
+                { number: 1, title: "Campaign", description: "Name, audience, offers" },
+                { number: 2, title: "Generate", description: "Create and print cards" },
+                { number: 3, title: "Distribute", description: "Assign card batches" },
+              ].map((step) => (
+                <button
+                  key={step.number}
+                  type="button"
+                  onClick={() => setSetupStep(step.number)}
+                  aria-current={setupStep === step.number ? "step" : undefined}
+                  className={`flex items-center gap-3 rounded-xl border p-3 text-left transition-colors ${
+                    setupStep === step.number
+                      ? "border-emerald-500 bg-emerald-50"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                    setupStep === step.number ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                  }`}>{step.number}</span>
+                  <span>
+                    <span className="block text-xs font-bold text-slate-900">{step.title}</span>
+                    <span className="mt-0.5 block text-[10px] text-slate-500">{step.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
 
-              {/* 3. Generate Inventory */}
+          <div className="grid gap-6 lg:grid-cols-12">
+            {/* Step 2: Generate cards */}
+            <div className={setupStep === 2 ? "lg:col-span-6 lg:col-start-4" : "hidden"}>
+              {/* Generate Inventory */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">3. Generate Inventory &amp; Print QR</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Generates batch with randomly shuffled prize cards.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 2 · Generate</p>
+                <h2 className="mt-1 text-sm font-black text-slate-900">Create card batch &amp; print QR codes</h2>
+                <p className="mt-1 text-xs text-slate-500">Choose a saved campaign and batch size. Prize cards are shuffled automatically.</p>
                 <div className="mt-4 space-y-3">
                   <div>
                     <label className="text-[11px] font-bold uppercase text-slate-500">Select Campaign</label>
@@ -843,6 +782,14 @@ const MarketingCards = ({ token }) => {
                       {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Aama Own Store"})</option>)}
                     </select>
                   </div>
+                  {campaigns.length === 0 && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      Create a campaign before generating cards.{" "}
+                      <button type="button" onClick={() => setSetupStep(1)} className="font-bold underline">
+                        Go to Campaign
+                      </button>
+                    </div>
+                  )}
                   {selectedCampaignForBatch && (
                     <div className="rounded-xl bg-slate-50 p-3 border border-slate-200 text-xs space-y-1.5">
                       <p className="font-bold text-slate-800">Distribution for this campaign:</p>
@@ -882,11 +829,15 @@ const MarketingCards = ({ token }) => {
                   </button>
                 </div>
               </section>
+            </div>
 
+            {/* Step 3: Distribute generated card batches */}
+            <div className={setupStep === 3 ? "grid gap-6 lg:col-span-12 lg:grid-cols-2" : "hidden"}>
               {/* 4. Assign Own Store cards publicly, to a partner, or to a custom organization */}
               <section className="rounded-2xl border border-[#e6c5ba] bg-[#f8f7f4] p-5 shadow-sm">
-                <h2 className="text-sm font-black text-[#171717]">4. Assign Own Store Cards</h2>
-                <p className="mt-0.5 text-xs text-slate-600">Track cards as public, assigned to a Marketing Partner, or assigned to a custom organization. All Own Store cards can be scanned by any signed-in customer. Manufacturer distribution remains separate.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[#bd4c34]">Step 3 · Customer access</p>
+                <h2 className="mt-1 text-sm font-black text-[#171717]">Assign Own Store cards</h2>
+                <p className="mt-1 text-xs text-slate-600">Make cards public or assign them to a partner or organization. The campaign account cap applies to these cards; distributor stock is managed separately for repeat rewards on delivered orders.</p>
                 <div className="mt-4 space-y-3">
                   <select
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -898,7 +849,7 @@ const MarketingCards = ({ token }) => {
                   </select>
                   {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId)?.maxScansPerCustomer && (
                       <p className="rounded-lg bg-orange-50 px-3 py-2 text-[11px] text-orange-900">
-                        Own Store campaign cap: {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId).maxScansPerCustomer} scan(s) per account.
+                        Own Store campaign cap: {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId).maxScansPerCustomer} scan(s) per account for this assignment type.
                     </p>
                   )}
                   <select
@@ -973,18 +924,19 @@ const MarketingCards = ({ token }) => {
                 </div>
               </section>
 
-              {/* 5. Assign to Manufacturer */}
+              {/* 5. Assign to Distributor */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">4. Assign Cards to Manufacturer</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Allocate generated cards to manufacturing hubs.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 3 · Physical distribution</p>
+                <h2 className="mt-1 text-sm font-black text-slate-900">Send cards to a distributor</h2>
+                <p className="mt-1 text-xs text-slate-500">Assign generated physical cards to a distributor hub. Each attached card is tied to one delivered order; the same customer can claim rewards from cards on multiple orders without Own Store campaign scan quotas.</p>
                 <div className="mt-4 space-y-3">
                   <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}>
                     <option value="">Select campaign</option>
                     {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.manufacturerId} onChange={(e) => setAssignment({ ...assignment, manufacturerId: e.target.value })}>
-                    <option value="">Select manufacturer</option>
-                    {manufacturers.filter((m) => m.isActive).map((m) => <option key={m.id} value={m.id}>{m.name} – {m.city}</option>)}
+                  <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.distributorId} onChange={(e) => setAssignment({ ...assignment, distributorId: e.target.value })}>
+                    <option value="">Select distributor</option>
+                    {distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name} – {distributor.city || distributor.address || "Location not set"}</option>)}
                   </select>
                   <input type="number" min="1" max="5000" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono" value={assignment.quantity} onChange={(e) => setAssignment({ ...assignment, quantity: Number(e.target.value) })} />
                   <button disabled={working} onClick={async () => { const r = await submit("/api/marketing-cards/admin/assignments", assignment, "Cards assigned."); if (r) setAssignment({ ...assignment, quantity: 1 }); }} className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Assign cards</button>
@@ -992,12 +944,13 @@ const MarketingCards = ({ token }) => {
               </section>
             </div>
 
-            {/* Right column: Campaign builder */}
-            <div className="lg:col-span-8">
+            {/* Step 1: Campaign builder */}
+            <div className={setupStep === 1 ? "lg:col-span-12" : "hidden"}>
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                   <div>
-                    <h2 className="text-sm font-black text-slate-900">2. Create Campaign &amp; Configure Custom Offers</h2>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 1 · Campaign</p>
+                    <h2 className="mt-1 text-sm font-black text-slate-900">Create campaign &amp; configure offers</h2>
                     <p className="mt-0.5 text-xs text-slate-500">Define discount tiers, gifts, and random distribution probabilities.</p>
                   </div>
                   <button type="button" onClick={loadExampleStrategy} className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100">
@@ -1006,6 +959,7 @@ const MarketingCards = ({ token }) => {
                 </div>
 
                 <div className="mt-4 space-y-4">
+                  {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
                   {/* Basic info */}
                   <label className="flex items-start gap-3 rounded-xl border border-[#e6c5ba] bg-[#f8f7f4] p-3">
                     <input
@@ -1039,7 +993,7 @@ const MarketingCards = ({ token }) => {
                         Own Store campaign cap per account
                       </label>
                       <p className="mt-1 text-[10px] text-orange-800">
-                        Maximum Own Store cards one customer can scan during this campaign, regardless of distribution. Defaults to one.
+                        Maximum cards one customer can scan for partner, Everyone, or custom-organization assignments. Distributor-issued cards attached to delivered orders are exempt. Defaults to one.
                       </p>
                       <input
                         id="maxScansPerCustomer"
@@ -1074,9 +1028,9 @@ const MarketingCards = ({ token }) => {
                         <div>
                           <label className="text-[11px] font-bold uppercase text-slate-500">Target Province</label>
                           <select className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" value={campaign.targetProvince || ""}
-                            onChange={(e) => { const p = e.target.value; const allowed = DISTRICTS_BY_PROVINCE[p] || []; setCampaign({ ...campaign, targetProvince: p, targetDistrict: allowed.includes(campaign.targetDistrict) ? campaign.targetDistrict : "" }); }}>
+                            onChange={(e) => { const p = e.target.value; const allowed = getDistrictsForProvince(locationLookups, p); setCampaign({ ...campaign, targetProvince: p, targetDistrict: allowed.includes(campaign.targetDistrict) ? campaign.targetDistrict : "" }); }}>
                             <option value="">-- Select Province --</option>
-                            {NEPAL_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                            {(locationLookups?.provinces || []).map((p) => <option key={p} value={p}>{p}</option>)}
                           </select>
                         </div>
                       )}
@@ -1084,9 +1038,11 @@ const MarketingCards = ({ token }) => {
                         <div>
                           <label className="text-[11px] font-bold uppercase text-slate-500">Target District</label>
                           <select className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" value={campaign.targetDistrict || ""}
-                            onChange={(e) => { const d = e.target.value; let prov = campaign.targetProvince; if (!prov && d) { for (const [pName, dList] of Object.entries(DISTRICTS_BY_PROVINCE)) { if (dList.includes(d)) { prov = pName; break; } } } setCampaign({ ...campaign, targetProvince: prov, targetDistrict: d }); }}>
+                            onChange={(e) => { const d = e.target.value; const prov = campaign.targetProvince || locationLookups?.districts?.find((district) => district.name === d)?.province || ""; setCampaign({ ...campaign, targetProvince: prov, targetDistrict: d }); }}>
                             <option value="">{campaign.targetProvince ? `-- District in ${campaign.targetProvince} --` : "-- Select District --"}</option>
-                            {(campaign.targetProvince ? DISTRICTS_BY_PROVINCE[campaign.targetProvince] || [] : ALL_DISTRICTS).map((d) => <option key={d} value={d}>{d}</option>)}
+                            {(campaign.targetProvince
+                              ? getDistrictsForProvince(locationLookups, campaign.targetProvince)
+                              : locationLookups?.districts?.map(({ name }) => name) || []).map((d) => <option key={d} value={d}>{d}</option>)}
                           </select>
                         </div>
                       )}
@@ -1150,6 +1106,21 @@ const MarketingCards = ({ token }) => {
                               <label className="text-[11px] font-bold uppercase text-slate-500">Reward Value</label>
                               <input type="number" min="0" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={offer.value} onChange={(e) => updateOffer(index, "value", Number(e.target.value))} />
                             </div>
+                            {campaign.isOwnStore && offer.benefitType === "DISCOUNT" && (
+                              <div className="sm:col-span-3">
+                                <label className="text-[11px] font-bold uppercase text-slate-500">Maximum Discount (Rs)</label>
+                                <input
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                                  placeholder="No limit"
+                                  value={offer.maxDiscountAmount ?? ""}
+                                  onChange={(e) => updateOffer(index, "maxDiscountAmount", e.target.value === "" ? null : Number(e.target.value))}
+                                />
+                                <p className="mt-1 text-[10px] text-slate-500">Optional cap for the percentage discount.</p>
+                              </div>
+                            )}
                             <div className="sm:col-span-4">
                               <label className="text-[11px] font-bold uppercase text-slate-500">Distribution Mode</label>
                               <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={offer.allocationMode} onChange={(e) => updateOffer(index, "allocationMode", e.target.value)}>
@@ -1186,6 +1157,16 @@ const MarketingCards = ({ token }) => {
                     </div>
                   </div>
 
+                  <details className="group rounded-xl border border-slate-200 bg-white">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4">
+                      <span>
+                        <span className="block text-xs font-bold text-slate-800">Advanced settings</span>
+                        <span className="mt-0.5 block text-[11px] text-slate-500">Campaign dates and optional customer promo media</span>
+                      </span>
+                      <span className="text-xs font-bold text-emerald-700 group-open:hidden">Show</span>
+                      <span className="hidden text-xs font-bold text-emerald-700 group-open:inline">Hide</span>
+                    </summary>
+                    <div className="space-y-4 border-t border-slate-100 p-4">
                   {/* Campaign dates */}
                   <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 space-y-3">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Campaign &amp; Card Dates</p>
@@ -1323,6 +1304,8 @@ const MarketingCards = ({ token }) => {
                       )}
                     </div>
                   </div>
+                    </div>
+                  </details>
 
                   {/* Submit campaign */}
                   <button disabled={working || adMediaUploading}
@@ -1332,6 +1315,7 @@ const MarketingCards = ({ token }) => {
                       if (campaign.targetScopeType === "PROVINCE" && !campaign.targetProvince) return toast.error("Please select a target province.");
                       if (campaign.targetScopeType === "DISTRICT" && !campaign.targetDistrict) return toast.error("Please select a target district.");
                       if (campaign.offers.length === 0 || campaign.offers.some((o) => !o.name.trim())) return toast.error("Please name all offers.");
+                      if (campaign.isOwnStore && campaign.offers.some((offer) => offer.benefitType === "DISCOUNT" && offer.maxDiscountAmount !== null && offer.maxDiscountAmount !== undefined && (!Number.isFinite(Number(offer.maxDiscountAmount)) || Number(offer.maxDiscountAmount) <= 0))) return toast.error("Maximum discount must be greater than zero.");
                       if (campaign.adMediaType !== "NONE" && !campaign.adMediaUrl) return toast.error("Please upload the selected promo media.");
                       if (totalPct > 100) return toast.error("Total percentage cannot exceed 100%.");
                       if (campaign.isOwnStore && (!Number.isInteger(Number(campaign.maxScansPerCustomer)) || Number(campaign.maxScansPerCustomer) < 1 || Number(campaign.maxScansPerCustomer) > 5000)) return toast.error("Own Store campaign cap must be an integer between 1 and 5000.");
@@ -1343,7 +1327,7 @@ const MarketingCards = ({ token }) => {
                         const minExpiry = new Date(end.getTime() + 86400000);
                         if (expiry < minExpiry) return toast.error("Card expiry date must be at least 1 day after the campaign end date.");
                       }
-                      const formattedBenefits = campaign.offers.map((o) => ({ name: o.name.trim(), description: o.description || null, benefitType: o.benefitType, value: Number(o.value || 0), percentage: o.allocationMode === "PERCENTAGE" ? Number(o.percentage || 0) : 0, quantity: o.allocationMode === "QUANTITY" ? Number(o.quantity || 0) : 0, terms: o.terms || null, expiresAt: o.expiresAt || null }));
+                      const formattedBenefits = campaign.offers.map((o) => ({ name: o.name.trim(), description: o.description || null, benefitType: o.benefitType, value: Number(o.value || 0), ...(campaign.isOwnStore && o.benefitType === "DISCOUNT" && o.maxDiscountAmount ? { maxDiscountAmount: Number(o.maxDiscountAmount) } : {}), percentage: o.allocationMode === "PERCENTAGE" ? Number(o.percentage || 0) : 0, quantity: o.allocationMode === "QUANTITY" ? Number(o.quantity || 0) : 0, terms: o.terms || null, expiresAt: o.expiresAt || null }));
                       const payload = {
                         isOwnStore: campaign.isOwnStore,
                         maxScansPerCustomer: campaign.isOwnStore ? Number(campaign.maxScansPerCustomer) : 1,
@@ -1366,7 +1350,13 @@ const MarketingCards = ({ token }) => {
                         ? "/api/marketing-cards/admin/own-store/campaigns"
                         : "/api/marketing-cards/admin/campaigns";
                       const r = await submit(endpoint, payload, `Campaign created with ${formattedBenefits.length} offer(s).`);
-                      if (r) setCampaign(createInitialCampaign());
+                      if (r) {
+                        if (r.campaign?.id) {
+                          setBatch((current) => ({ ...current, campaignId: r.campaign.id }));
+                        }
+                        setCampaign(createInitialCampaign());
+                        setSetupStep(2);
+                      }
                     }}
                     className="w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50">
                     Create Campaign with Configured Offers
@@ -1374,6 +1364,24 @@ const MarketingCards = ({ token }) => {
                 </div>
               </section>
             </div>
+          </div>
+
+          <div className="flex justify-between gap-3">
+            {setupStep > 1 ? (
+              <button type="button" onClick={() => setSetupStep((step) => step - 1)} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+                Back
+              </button>
+            ) : <span />}
+            {setupStep < 3 && (
+              <button
+                type="button"
+                onClick={() => setSetupStep((step) => step + 1)}
+                disabled={setupStep === 2 && campaigns.length === 0}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {setupStep === 1 ? "Continue to Generate" : "Continue to Distribute"}
+              </button>
+            )}
           </div>
         </div>
       )}

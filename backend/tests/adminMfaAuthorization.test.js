@@ -3,8 +3,9 @@ import test from "node:test";
 import "dotenv/config";
 import { generateAccessToken } from "../services/tokenService.js";
 import { createAuthenticate } from "../middleware/unifiedAuth.js";
+import { isMfaEnabled, isMfaEnforced } from "../security/mfaPolicy.js";
 
-const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
+const invoke = async ({ role, mfaVerified = false, authMethods = [], env = { NOTIFICATIONS_ENABLED: "false" } }) => {
   const accountId = `account-${role.toLowerCase()}`;
   const profileId = `profile-${role.toLowerCase()}`;
   const token = generateAccessToken({ accountId, profileId, role, mfaVerified, authMethods });
@@ -27,6 +28,7 @@ const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
         customerProfile: role === "CUSTOMER" ? { id: profileId } : null,
         adminProfile: role === "ADMIN" ? { id: profileId } : null,
         manufacturerProfile: role === "MANUFACTURER" ? { id: profileId } : null,
+        distributorProfile: role === "DISTRIBUTOR" ? { id: profileId, status: "ACTIVE", isActive: true } : null,
         marketingPartnerProfile: role === "MARKETING_PARTNER" ? { id: profileId } : null,
         roleMappings: [],
       }),
@@ -35,14 +37,14 @@ const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
   const req = { headers: { authorization: `Bearer ${token}` }, body: {} };
   let response;
   let nextCalled = false;
-  await createAuthenticate(client)(req, {
+  await createAuthenticate(client, env)(req, {
     status: (code) => ({ json: (body) => { response = { code, body }; } }),
   }, () => { nextCalled = true; });
   return { req, response, nextCalled };
 };
 
-test("all privileged portal access requires signed password and OTP evidence", async () => {
-  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER"]) {
+test("all privileged portal access requires signed password and OTP evidence even when notifications are disabled", async () => {
+  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER", "DISTRIBUTOR"]) {
     const result = await invoke({ role });
     assert.equal(result.nextCalled, false);
     assert.equal(result.response.code, 401);
@@ -61,4 +63,21 @@ test("verified privileged access passes and CUSTOMER access remains unchanged", 
   assert.equal(marketing.nextCalled, true);
   assert.equal(customer.nextCalled, true);
   assert.equal(customer.req.auth.mfaVerified, false);
+});
+
+test("MFA_ENABLED=false permits password-only privileged sessions and disables MFA enforcement", async () => {
+  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER", "DISTRIBUTOR"]) {
+    const result = await invoke({ role, env: { MFA_ENABLED: "false" } });
+    assert.equal(result.nextCalled, true);
+    assert.equal(result.req.auth.mfaVerified, false);
+  }
+  assert.equal(isMfaEnforced("ADMIN", { MFA_ENABLED: "false" }), false);
+  assert.equal(isMfaEnforced("ADMIN", { MFA_ENABLED: "true" }), true);
+});
+
+test("MFA is enabled by default and rejects invalid environment values", () => {
+  assert.equal(isMfaEnabled({}), true);
+  assert.equal(isMfaEnabled({ MFA_ENABLED: " TRUE " }), true);
+  assert.equal(isMfaEnabled({ MFA_ENABLED: "false" }), false);
+  assert.throws(() => isMfaEnabled({ MFA_ENABLED: "yes" }), /MFA_ENABLED must be set to true or false/);
 });

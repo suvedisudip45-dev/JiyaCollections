@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import { PrismaClient } from "@prisma/client";
 import { postInboundShipmentAccounting, postFixedAssetPurchaseAccounting } from "../services/accountingPostingEngine.js";
 

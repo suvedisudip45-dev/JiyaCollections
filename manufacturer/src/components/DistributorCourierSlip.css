@@ -1,0 +1,313 @@
+.courier-slip-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(15 23 42 / 65%);
+}
+
+.courier-slip-dialog {
+  display: flex;
+  width: min(760px, 100%);
+  max-height: 92vh;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #f1f5f9;
+  color: #111827;
+  font: 13px/1.35 Arial, sans-serif;
+}
+
+.courier-slip-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  background: white;
+}
+
+.courier-slip-controls h2,
+.courier-slip-controls p {
+  margin: 0;
+}
+
+.courier-slip-controls h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.courier-slip-controls p {
+  margin-top: 3px;
+  color: #475569;
+  font-size: 11px;
+}
+
+.courier-slip-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: white;
+  padding: 0 12px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.courier-slip-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding: 16px;
+}
+
+.courier-slip {
+  box-sizing: border-box;
+  width: 76mm;
+  margin: 0 auto;
+  background: white;
+  padding: 3mm;
+  color: #000;
+  font: 9pt/1.25 Arial, Helvetica, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.courier-slip,
+.courier-slip * {
+  color: #000 !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+.thermal-shipping-label {
+  color: #000 !important;
+  background: #fff !important;
+  border-color: #000 !important;
+  border-radius: 0 !important;
+}
+
+.thermal-shipping-label,
+.thermal-shipping-label * {
+  color: #000 !important;
+  border-color: #000 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+.thermal-shipping-label * {
+  background-color: transparent !important;
+}
+
+.thermal-shipping-label .thermal-payment {
+  border: 1px solid #000;
+  border-radius: 0;
+  background: #fff !important;
+}
+
+.courier-slip-brand {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 2mm;
+}
+
+.courier-slip-brand strong {
+  font-size: 15pt;
+  letter-spacing: -0.4px;
+}
+
+.courier-slip-brand span,
+.courier-slip-order span,
+.courier-slip-section > strong,
+.courier-slip-item-header,
+.courier-slip-gift > b {
+  font-size: 7pt;
+  font-weight: 700;
+}
+
+.courier-slip-order {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1mm 0;
+}
+
+.courier-slip-ref {
+  padding-top: 1mm;
+  font-size: 7pt;
+}
+
+.courier-slip-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2mm 0;
+}
+
+.courier-slip-section b {
+  font-size: 11pt;
+}
+
+.courier-slip-items {
+  padding: 2mm 0;
+}
+
+.courier-slip-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10mm 19mm;
+  gap: 1mm;
+  align-items: start;
+  padding: 1mm 0;
+}
+
+.courier-slip-item > :nth-child(2) {
+  text-align: center;
+}
+
+.courier-slip-item > :last-child {
+  text-align: right;
+}
+
+.courier-slip-item span:first-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.courier-slip-item small {
+  font-size: 7pt;
+}
+
+.courier-slip-item-header {
+  padding-bottom: 1mm;
+}
+
+.courier-slip-gift {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  padding-top: 1.5mm;
+}
+
+.courier-slip-totals {
+  padding: 2mm 0;
+}
+
+.courier-slip-totals > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0.5mm 0;
+}
+
+.courier-slip-total {
+  margin-top: 1mm;
+  padding-top: 1mm !important;
+  font-size: 10pt;
+}
+
+.courier-slip-payment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2mm;
+  text-align: center;
+}
+
+.courier-slip-payment span {
+  font-size: 7pt;
+  font-weight: 700;
+}
+
+.courier-slip-payment strong {
+  font-size: 11pt;
+}
+
+.courier-slip-sender {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 2mm;
+  font-size: 7pt;
+}
+
+.courier-slip-actions {
+  justify-content: flex-end;
+  border-top: 1px solid #e2e8f0;
+}
+
+.courier-slip-print-button {
+  border-color: #111827 !important;
+  background: #111827 !important;
+  color: white !important;
+}
+
+@page {
+  size: 80mm auto;
+  margin: 2mm;
+}
+
+@media print {
+  html,
+  body {
+    width: 80mm !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .courier-slip-overlay,
+  .courier-slip-overlay * {
+    visibility: visible !important;
+  }
+
+  .courier-slip-overlay {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    display: block !important;
+    width: 76mm !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  .courier-slip-dialog,
+  .courier-slip-preview-list {
+    display: block !important;
+    width: 76mm !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  .courier-slip-controls {
+    display: none !important;
+  }
+
+  .courier-slip {
+    width: 76mm !important;
+    margin: 0 !important;
+    border: 0 !important;
+    padding: 2mm !important;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .courier-slip:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}

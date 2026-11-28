@@ -1,3 +1,4 @@
+import "../utils/requireIntegrationDatabaseSafety.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -8,7 +9,7 @@ import { createAuthenticate } from "../middleware/unifiedAuth.js";
 import { authenticateAccount } from "../services/authService.js";
 import { generateAccessToken } from "../services/tokenService.js";
 
-const invokeAuthenticate = async (token, account, path = "/api/order/list") => {
+const invokeAuthenticate = async (token, account, path = "/api/order/list", env = { NOTIFICATIONS_ENABLED: "true" }) => {
   const claims = jwt.decode(token);
   const client = {
     authSession: {
@@ -30,7 +31,7 @@ const invokeAuthenticate = async (token, account, path = "/api/order/list") => {
   };
   let response;
   let nextCalled = false;
-  const result = await createAuthenticate(client)(
+  const result = await createAuthenticate(client, env)(
     request,
     {
       status: (code) => ({
@@ -59,6 +60,25 @@ test("ADMIN access token without MFA is rejected after session validation", asyn
   };
   const token = generateAccessToken({ accountId: account.id, profileId: "admin-profile", role: "ADMIN" });
   const result = await invokeAuthenticate(token, account);
+
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 401);
+  assert.equal(result.response.body.code, "ADMIN_MFA_REQUIRED");
+});
+
+test("privileged access tokens without MFA are rejected when notifications are disabled", async () => {
+  const account = {
+    id: "admin-account",
+    role: "ADMIN",
+    status: "ACTIVE",
+    customerProfile: null,
+    adminProfile: { id: "admin-profile" },
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "admin-profile", role: "ADMIN" });
+  const result = await invokeAuthenticate(token, account, "/api/order/list", { NOTIFICATIONS_ENABLED: "false" });
 
   assert.equal(result.nextCalled, false);
   assert.equal(result.response.code, 401);
@@ -128,6 +148,26 @@ test("inactive accounts are rejected", async () => {
   assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
 });
 
+test("disabled customer profiles reject already-issued access tokens", async () => {
+  const account = {
+    id: "customer-account",
+    role: "CUSTOMER",
+    status: "ACTIVE",
+    customerProfile: { id: "customer-profile", isDisabled: true },
+    adminProfile: null,
+    manufacturerProfile: null,
+    distributorProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "customer-profile", role: "CUSTOMER" });
+  const result = await invokeAuthenticate(token, account);
+
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 403);
+  assert.equal(result.response.body.code, "WORKSPACE_INACTIVE");
+});
+
 test("forced Admin password rotation blocks APIs except session inspection and password change", async () => {
   const account = {
     id: "admin-account",
@@ -161,7 +201,7 @@ test("forced Admin password rotation blocks APIs except session inspection and p
   assert.equal(passwordChange.nextCalled, true);
 });
 
-test("approved marketing partner login requires MFA when profile is active even if auth account was left pending", async () => {
+test("privileged login still requires MFA when notifications are disabled and the profile is active", async () => {
   const unique = crypto.randomUUID().slice(0, 8);
   const email = `partner-approval-sync-${unique}@example.test`;
   const account = await prisma.authAccount.create({
@@ -188,10 +228,21 @@ test("approved marketing partner login requires MFA when profile is active even 
   });
 
   try {
+    const notificationsDisabledResult = await authenticateAccount({
+      identifier: email,
+      password: "StrongPass123!",
+      targetPortal: "MARKETING_PARTNER",
+      env: { ...process.env, NOTIFICATIONS_ENABLED: "false" },
+    });
+
+    assert.equal(notificationsDisabledResult.requiresTwoFactor, true);
+    assert.equal(notificationsDisabledResult.token, undefined);
+
     const result = await authenticateAccount({
       identifier: email,
       password: "StrongPass123!",
       targetPortal: "MARKETING_PARTNER",
+      env: { ...process.env, NOTIFICATIONS_ENABLED: "true" },
     });
 
     assert.equal(result.requiresTwoFactor, true);

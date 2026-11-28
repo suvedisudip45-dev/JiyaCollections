@@ -6,6 +6,7 @@ import {
   allocatePaymentToDocuments,
   reconcileSubledgerToControl,
 } from "../services/accountingSubledgerService.js";
+import { applyManufacturerCreditToBill } from "../services/supplierCreditApplicationService.js";
 
 const createSubledgerHarness = () => {
   const parties = new Map();
@@ -26,6 +27,18 @@ const createSubledgerHarness = () => {
           id: `doc-${documents.size + 1}`,
           ...data,
           party: parties.get(data.partyId) || { id: data.partyId, name: "Party" },
+          allocations: [],
+        };
+        documents.set(doc.id, doc);
+        return doc;
+      },
+      upsert: async ({ where, create }) => {
+        const existing = [...documents.values()].find((doc) => doc.idempotencyKey === where.idempotencyKey);
+        if (existing) return existing;
+        const doc = {
+          id: `doc-${documents.size + 1}`,
+          ...create,
+          party: parties.get(create.partyId) || { id: create.partyId, name: "Party" },
           allocations: [],
         };
         documents.set(doc.id, doc);
@@ -55,8 +68,20 @@ const createSubledgerHarness = () => {
         Object.assign(doc, data);
         return doc;
       },
+      updateMany: async ({ where, data }) => {
+        const doc = documents.get(where.id);
+        if (
+          !doc ||
+          !new Prisma.Decimal(String(doc.allocatedAmount)).equals(where.allocatedAmount) ||
+          !new Prisma.Decimal(String(doc.remainingAmount)).equals(where.remainingAmount) ||
+          doc.status !== where.status
+        ) return { count: 0 };
+        Object.assign(doc, data);
+        return { count: 1 };
+      },
     },
     accountingAllocation: {
+      findUnique: async ({ where }) => allocations.find((allocation) => allocation.idempotencyKey === where.idempotencyKey) || null,
       create: async ({ data }) => {
         const alloc = { id: `alloc-${allocations.length + 1}`, ...data };
         allocations.push(alloc);
@@ -92,6 +117,55 @@ test("createAccountingDocument creates open document with positive Decimal amoun
   assert.equal(doc.originalAmount.toFixed(2), "15000.00");
   assert.equal(doc.allocatedAmount.toFixed(2), "0.00");
   assert.equal(doc.remainingAmount.toFixed(2), "15000.00");
+});
+
+test("manufacturer payable bill preserves the supplier's PAN/VAT identity snapshot", async () => {
+  const { client, parties } = createSubledgerHarness();
+  parties.set("party-1", { id: "party-1", displayName: "Aama Fashions", partyType: "MANUFACTURER" });
+
+  const doc = await createAccountingDocument({
+    documentType: "BILL",
+    documentNumber: "MFG-BILL-TAX-001",
+    partyId: "party-1",
+    partyTaxIdType: "VAT",
+    partyTaxIdNumber: "123456789",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: "production-001",
+    amount: "1130.00",
+  }, { client });
+
+  assert.equal(doc.partyTaxIdType, "VAT");
+  assert.equal(doc.partyTaxIdNumber, "123456789");
+  await assert.rejects(createAccountingDocument({
+    documentType: "BILL",
+    documentNumber: "MFG-BILL-TAX-002",
+    partyId: "party-1",
+    partyTaxIdType: "VAT",
+    partyTaxIdNumber: "1234",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: "production-002",
+    amount: "1130.00",
+  }, { client }), /exactly nine digits/);
+});
+
+test("createAccountingDocument idempotency prevents duplicate distributor COD invoices", async () => {
+  const { client, parties, documents } = createSubledgerHarness();
+  parties.set("party-1", { id: "party-1", displayName: "Distributor", partyType: "DISTRIBUTOR" });
+  const input = {
+    documentType: "INVOICE",
+    documentNumber: "DCO-order-1",
+    partyId: "party-1",
+    side: "RECEIVABLE",
+    sourceType: "DISTRIBUTOR_COD_SALE",
+    sourceId: "order-1",
+    amount: "1500.00",
+    idempotencyKey: "DISTRIBUTOR_COD_SALE:order-1",
+  };
+  await createAccountingDocument(input, { client });
+  await createAccountingDocument(input, { client });
+  assert.equal(documents.size, 1);
 });
 
 test("allocatePaymentToDocuments correctly applies partial payment and updates remaining balance", async () => {
@@ -212,4 +286,118 @@ test("reconcileSubledgerToControl verifies balance against GL control account an
   assert.equal(reconciliation.glBalance, "10000.00");
   assert.equal(reconciliation.subledgerTotal, "10000.00");
   assert.equal(reconciliation.variance, "0.00");
+});
+
+test("manufacturer credit application reduces credit and linked bill without posting a second journal", async () => {
+  const credit = {
+    id: "credit-1",
+    documentType: "CREDIT_NOTE",
+    side: "RECEIVABLE",
+    sourceType: "MANUFACTURER_DELIVERY_RETURN",
+    sourceId: "return-1",
+    partyId: "party-1",
+    currency: "NPR",
+    originalAmount: new Prisma.Decimal("20.00"),
+    allocatedAmount: new Prisma.Decimal("0.00"),
+    remainingAmount: new Prisma.Decimal("20.00"),
+    status: "OPEN",
+    party: { id: "party-1", partyType: "MANUFACTURER", sourceEntityId: "manufacturer-1" },
+  };
+  const bill = {
+    id: "bill-1",
+    documentType: "BILL",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_DELIVERY_COGS",
+    sourceId: "order-1",
+    partyId: "party-1",
+    currency: "NPR",
+    originalAmount: new Prisma.Decimal("100.00"),
+    allocatedAmount: new Prisma.Decimal("10.00"),
+    remainingAmount: new Prisma.Decimal("90.00"),
+    status: "PARTIALLY_PAID",
+    party: { id: "party-1", partyType: "MANUFACTURER", sourceEntityId: "manufacturer-1" },
+  };
+  const updates = [];
+  const applicationAllocations = [];
+  let applicationRecord;
+  let journalLookupCount = 0;
+  const client = {
+    $transaction: async (callback) => callback(client),
+    supplierCreditApplication: {
+      findUnique: async () => applicationRecord || null,
+      create: async ({ data }) => {
+        applicationRecord = { id: "app-1", ...data };
+        return applicationRecord;
+      },
+    },
+    accountingDocument: {
+      findUnique: async ({ where }) => where.id === credit.id ? credit : where.id === bill.id ? bill : null,
+      updateMany: async ({ where, data }) => {
+        updates.push({ where, data });
+        return { count: 1 };
+      },
+    },
+    customerReturn: {
+      findUnique: async () => ({ id: "return-1", orderId: "order-1", manufacturerId: "manufacturer-1" }),
+    },
+    journalEntry: {
+      findFirst: async () => {
+        journalLookupCount += 1;
+        return {
+          id: "return-journal-1",
+          lines: [{
+            supplierId: "manufacturer-1",
+            debit: new Prisma.Decimal("20.00"),
+            account: { accountCode: "2160" },
+            accountingParty: null,
+          }],
+        };
+      },
+    },
+    accountingAllocation: {
+      createMany: async ({ data }) => { applicationAllocations.push(...data); return { count: data.length }; },
+    },
+  };
+  const auditEvents = [];
+  const input = {
+    manufacturerId: "manufacturer-1",
+    creditDocumentId: credit.id,
+    billDocumentId: bill.id,
+    amount: "12.50",
+    idempotencyKey: "credit-app-1",
+    appliedByAccountId: "admin-1",
+    notes: "Apply confirmed return credit.",
+    client,
+    writeAudit: async (_actor, payload) => auditEvents.push(payload),
+  };
+
+  const result = await applyManufacturerCreditToBill(input);
+
+  assert.equal(result.application.journalEntryId, "return-journal-1");
+  assert.equal(result.journalEntryId, "return-journal-1");
+  assert.equal(result.journalPostedForApplication, false);
+  assert.equal(updates[0].data.remainingAmount.toFixed(2), "7.50");
+  assert.equal(updates[1].data.remainingAmount.toFixed(2), "77.50");
+  assert.equal(applicationAllocations.length, 2);
+  assert.deepEqual(applicationAllocations.map((allocation) => allocation.journalEntryId), [
+    "return-journal-1",
+    "return-journal-1",
+  ]);
+  assert.equal(journalLookupCount, 1);
+  assert.equal(auditEvents[0].action, "MANUFACTURER_SUPPLIER_CREDIT_APPLIED");
+
+  const replay = await applyManufacturerCreditToBill(input);
+  assert.equal(replay.isReplay, true);
+  assert.equal(updates.length, 2);
+  assert.equal(journalLookupCount, 1);
+
+  await assert.rejects(
+    applyManufacturerCreditToBill({
+      ...input,
+      manufacturerId: "different-manufacturer",
+      idempotencyKey: "credit-app-wrong-manufacturer",
+    }),
+    (error) => error.code === "CREDIT_BILL_PARTY_MISMATCH",
+  );
+  assert.equal(updates.length, 2);
 });

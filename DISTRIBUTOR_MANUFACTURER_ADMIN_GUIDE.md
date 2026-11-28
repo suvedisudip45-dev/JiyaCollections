@@ -1,0 +1,1180 @@
+# Manufacturer, Distributor, and Admin Operations Guide
+
+This guide documents the current implementation in this repository. The API is a
+Node.js/Express service using Prisma and MySQL. Database models and relations are
+defined in [`backend/prisma/schema.prisma`](./backend/prisma/schema.prisma), route
+mounts in [`backend/server.js`](./backend/server.js), and route-level permission
+checks in `backend/routes/` and `backend/middleware/unifiedAuth.js`.
+
+> **Scope note:** “Distributor requests goods from manufacturer” is currently a
+> bulk stock-transfer workflow, not a distributor purchase-order/payment
+> workflow. The distributor submits a request, an admin approves quantities,
+> the manufacturer dispatches the approved goods, and the distributor records
+> receipt. The code does not expose a manufacturer accept/reject step for these
+> bulk requests.
+
+## Nepal location lookups
+
+Province and district selections across the storefront and operational portals
+come from `GET /api/lookups/nepal`, backed by `LocationMapping`. Active NCM
+branches and each branch's covered areas come from `NcmBranch`. The backend
+caches these combined lookups for ten minutes and clears the cache after an NCM
+branch synchronization. NCM province and district labels are normalized to
+the canonical lookup names before branches are filtered or returned.
+Registration and profile APIs validate submitted branch/covered-area
+selections against the active lookup records.
+
+## Physical PAN/VAT bill books
+
+Admin registers each physical PAN bill or VAT tax-invoice book under `/tax`,
+then allocates non-overlapping serial ranges to active distributors. A new
+allocation remains pending until that distributor opens **Physical Bill Books**
+in its portal and confirms it physically received and checked the range. Until
+accepted, the range cannot be used to record a bill on an order. Returned
+allocations remain in history and their numbers cannot be reassigned. During
+the distributor packing checklist, record whether the customer requested a
+physical copy; when requested, enter the attached book number. The backend
+derives the document type from the company's effective tax registration,
+validates distributor/range ownership and number uniqueness, and blocks packing
+or delivery handoff until the choice is stored. A “no physical copy” choice
+does not remove the internal sale/tax record.
+
+The Admin Tax page reports distributor orders by order-placement date as “with
+VAT bill” or “without VAT bill”; the latter can include PAN bills and orders
+with no physical copy, which are distinguished in the table. Returns and
+exchanges append adjustments to the original invoice and mark note follow-up.
+Same-value exchanges retain the original bill; an unequal-value exchange for an
+order with a requested physical copy requires a new allocated number before
+replacement dispatch. For NCM exchanges, Admin must record that number from the
+settlement distributor's allocation before approval because approval submits
+the exchange to NCM immediately; the distributor portal is limited to recording
+the NCM cash settlement and must not run distributor-only inspection or dispatch
+actions. Admin approval records an explicit confirmation that the replacement
+bill is physically attached before NCM submission. The original bill remains in the audit trail and the
+accounting adjustment is recorded; replacement number capture does not itself
+generate a replacement invoice document or formally void the original paper
+invoice. The original bill number is never reused. This is physical-number
+recordkeeping, not statutory document generation, printing, IRD submission, or
+legal advice.
+Have a Nepal tax practitioner confirm when a bill/credit/debit note must be
+issued, who may issue it, and which numbering/retention rules apply.
+
+## Admin distributor directory and details
+
+The Admin portal has a separate `/distributors` searchable directory and a
+dedicated `/distributors/:distributorId` profile. The directory is server
+paginated. The detail route loads Profile, Finance, Inventory, Stock transfers,
+Orders & delivery, Returns, Exchanges, and Login history as separate
+on-demand sections; it does not combine those operational records into a
+single warehouse-style view.
+
+The detail API is mounted at `/api/admin/distributors`. Profile, login history,
+inventory, returns, exchanges, finance summary, paginated finance transactions,
+paginated settlement requests, and COD remittance reviews have distinct
+endpoints and `distributor:admin_*` permissions; remittance verification also
+requires `finance:receivable_collect`. Every detail endpoint requires the
+`ADMIN` role. The distributor
+profile editor reuses the existing audited application-profile update flow,
+while delivery, return, stock-transfer, commission, and VAT values reuse the
+approved distributor rate-card workflow. Per-unit stock-transfer compensation
+is accrued as a separate payable after each product unit is successfully
+delivered by NCM, self-delivery, phone order, or hub sale. It is additional to
+channel-specific delivery or counter-sale compensation and is not the NCM
+carrier fee.
+Monthly target bonuses are configured separately and apply to completed
+distributor deliveries after the month closes.
+
+The Inventory section supports a separate distributor-stock-return
+authorization workflow. `GET /:id/stock-returns` lists requests;
+`GET /:id/stock-returns/:returnId/audit-report` returns the complete return
+history, including all workflow events and linked operating expenses for CSV
+export from the Admin page;
+`POST /:id/stock-returns` creates an idempotent request; and
+`PATCH /:id/stock-returns/:returnId/review` approves per-SKU quantities or
+rejects the request. Reading requires `distributor:admin_inventory_read`;
+mutations require `distributor:admin_stock_return`. Approval revalidates
+unreserved quantities and moves approved units into a distributor-scoped,
+non-sellable return-hold location while retaining cost-layer references where
+available. Uncosted quantities are exposed, not assigned guessed costs. This
+can be followed by `POST /:id/stock-returns/:returnId/collections` to record
+partial/full physical handovers and move handed-over quantities into a
+collection-specific transit location. Record warehouse counts at
+`POST /:id/stock-returns/:returnId/collections/:collectionId/receipt`; good
+and damaged units are moved into return quarantine, and damaged/missing counts
+open inventory discrepancies. Missing units remain in transit pending
+investigation rather than being written off. Then record a count-reconciled
+warehouse condition assessment at
+`POST /:id/stock-returns/:returnId/collections/:collectionId/inspection`.
+Restock, repair, sale, donation, disposal, and unresolved values are proposed
+review routes only; inspection does not move stock or authorize the action.
+Received units remain quarantined. These steps do not post an impairment,
+donation, disposal, sale, or GL journal. Inventory remains platform/admin-owned
+throughout; these movements record custody only. Production cost layers are
+the carrying-cost source where available. Do not assign new inventory cost
+when a later cash payment settles an already-recognized manufacturer payable;
+generic Treasury outflows post to expense/drawings and do not update cost
+layers. Costless stock remains explicitly uncosted until a source-backed
+valuation adjustment is implemented. Before accounting disposition is
+automated, the applicable Nepal financial-reporting framework, NRV/write-down
+rules, and Nepal tax treatment must be encoded and versioned.
+Open damaged/missing discrepancies can receive investigation notes and
+evidence at
+`POST /:id/stock-returns/:returnId/discrepancies/:discrepancyId/reviews`.
+Each note is idempotent and appended with the admin actor and timestamp. This
+only moves `OPEN` discrepancies to `UNDER_REVIEW`; it cannot close the case,
+assign financial responsibility, adjust stock, or post a journal. The CSV
+audit export includes each investigation record.
+Routine, non-tax storage or handling outflows can be entered in Finance >
+Treasury Cash as `Direct Operating Expense`; include the stock-return ID in
+the optional Stock return ID field to link the cash transaction to that return.
+The return detail displays linked outflows and their total. This records cash
+and an operating expense, not inventory value. The reference is validated
+against an existing stock return and stored for traceability; it does not
+change the amount or GL treatment. Do not use it to record acquisition,
+VAT-bearing, or capitalizable inventory costs.
+
+Manufacturer and distributor profiles remain independent when they share an
+`AuthAccount`; the distributor page links to the existing manufacturer detail
+page rather than mixing their inventory, production, or financial history.
+Inventory totals include current on-hand and available units and estimate
+retail/cost value from current product prices. These estimates are not a
+historical cost-layer valuation. The Finance tab shows the distributor's NPR
+accounting-party subledger: gross open receivables, gross open payables, the
+signed net due to/from the company, and pending COD remittance review. It
+itemizes open accounting documents on both sides, including COD, verified
+refunds, service earnings, delivery charges, incentives, and bonuses. The net
+position is derived from remaining document balances and allocations, not a
+manually maintained counter.
+
+## Distributor COD and customer refund cash
+
+For unpaid distributor self-delivery, when notifications and SMS are enabled,
+a customer OTP is required before the parcel can be marked delivered. The OTP
+is bound to the assigned order, distributor, and authoritative COD amount. For
+current checkout orders, the amount comes from the accepted pricing snapshot's
+final payable total, which already includes delivery; legacy orders without a
+valid snapshot use order amount plus delivery fee. If either notification
+setting is disabled, the distributor must explicitly confirm that the full COD
+amount was collected; the cash event is recorded as pending verification, not
+as OTP verified. Delivery and the distributor COD receivable are still
+recorded, but this does not mark the company as having received cash. In the Distributor
+Finance dashboard, submit COD remittances with
+the transfer reference and a JPG/PNG image of the transfer evidence. Admins
+review the evidence in the distributor detail Finance tab, select the receiving
+NPR treasury account, and verify or reject the batch. Verification posts
+company cash, clears the distributor receivable, and records the allocation
+and audit event atomically.
+
+Admin return approval snapshots the configured customer return charge
+percentage against returned product value; the original delivery fee is not
+refunded. A distributor must receive and inspect the return, then record the
+customer refund amount, payment method, reference (except cash), and a JPG/PNG
+image of the refund evidence in Self-Delivery Management. The distributor may
+adjust the approved amount up to the returned product value; a reason is
+required for any change, and Admin reviews the amount, reason, and evidence
+before recording the verified amount. Return
+inspection also requires a JPG/PNG photo of the returned goods. Admin verification completes
+the return and creates a distributor payable. Rejected evidence reopens the
+refund task. The Admin Returns page can settle that payable from an active NPR
+treasury account and displays the distributor assigned to the order, its
+delivery status, and return-received date beside the refund evidence. Admins
+can also post a unified settlement from the distributor Finance detail on any
+day. It offsets the lower gross balance first (FIFO against open documents),
+then records the partial or full net cash receipt/payment in the selected
+active NPR treasury account. Cash is posted only after the Admin confirms the
+transfer is complete and enters its reference. An offset requires a set-off
+agreement reference and explicit Admin confirmation; gross receivable/payable
+documents remain separately visible and allocations identify cash versus
+offset applications. One balanced journal, Treasury movement, document
+allocations, settlement record, and audit event are committed in a serializable
+transaction. Pending COD remittance reviews and older pending settlement
+requests must be resolved first to prevent double settlement. Legacy refund
+offset and payout workflows remain available for historical records and
+pending items. Return/exchange logistics payables still recorded only in the
+legacy Accounts Payable register are included in the gross payable and net
+position, shown separately, and block unified settlement until paid there.
+Set-off approval is an operational control, not a substitute for confirming
+that the parties' agreement and applicable accounting rules permit offsetting.
+The Admin `/payables` page also provides a distributor-wise gross receivable,
+gross payable, and net position overview. Aggregate net receivables and
+payables are summed per distributor and are never cross-offset between
+different distributors.
+
+For an active NCM customer return, Admin can use **Refresh return status from
+NCM** in Returns Management to poll the carrier's documented status history
+when a webhook is delayed or missed. The backend applies timestamped events in
+chronological order and ignores statuses older than the return request. This
+refresh does not infer a refund, restock, or accounting entry. `Sent to Vendor`
+is currently treated as a receipt milestone for enabling inspection, but its
+exact meaning and webhook availability must be confirmed with NCM.
+
+The Logistics sidebar also exposes `/ncm-deliveries` and
+`/self-deliveries` as separate admin monitoring views. The first lists local
+NCM delivery records; the second lists only explicit `SELF_DELIVERY`
+assignments and can be filtered by distributor. Both provide Kathmandu-local
+date filters and load return/exchange and order detail only on demand. The
+self-delivery view is not a directory of direct distributor phone/walk-in
+orders. NCM COD settlement requests use the existing NCM ticket and local
+settlement workflow; no carrier-wide payable/receivable ledger is exposed in
+the supplied NCM contract.
+
+## Admin manufacturer directory and details
+
+The existing `/manufacturers` directory retains server-side search and
+pagination. Its detail link opens `/manufacturers/:manufacturerId`, where
+Profile, Factory inventory, Production, Distributor transfers, Finance,
+Transactions, and Payable requests are separate sections. History sections
+load on demand and are paginated.
+
+The page reuses `GET /api/manufacturer/admin/list`,
+`PUT /api/manufacturer/admin/update/:id`,
+`GET /api/manufacturer-production/admin/requests?manufacturerId=...`,
+`GET /api/stock-transfers/admin?manufacturerId=...`, and
+`GET /api/admin/finance/settlements?manufacturerId=...`. Additional
+manufacturer-scoped reads are `GET /api/admin/manufacturers/:id/inventory`,
+`GET /api/admin/manufacturers/:id/finance`, and
+`GET /api/admin/manufacturers/:id/finance/transactions`. Detail APIs enforce
+the `ADMIN` role and focused `manufacturer:admin_*` permissions; the seed does
+not grant these permissions to manufacturer workspaces.
+
+Factory quantities come from current `InventoryBalance` records at platform
+factory locations. Production history displays material/GSM and batch plan,
+MOQ, approved unit COGS, overhead, actual/good quantities, and QA. Finance
+combines the existing manufacturer settlement summary with receivables linked
+to the manufacturer accounting party; transaction history uses journal lines.
+The profile editor reuses the existing update API for business/contact,
+pickup, and contract-date fields. Email updates also synchronize the linked
+login account; contract/account status changes remain on the existing
+contract-status endpoint to avoid an inconsistent account state.
+
+## 1. System architecture
+
+```mermaid
+flowchart LR
+    A[Admin portal] -->|JWT + permission checks| API[Express API]
+    M[Manufacturer portal] -->|JWT + manufacturer context| API
+    D[Distributor portal] -->|JWT + distributor context| API
+    API --> S[Services: inventory ledger, transfers, production, gifts, letters]
+    S --> P[Prisma]
+    P --> DB[(MySQL)]
+    API --> NCM[NCM delivery integration, where enabled]
+    API --> C[Cloudinary / uploaded media]
+```
+
+- `backend/server.js` mounts the business API beneath `/api`.
+- Authentication resolves an `AuthAccount` and its active role grants. Route
+  handlers generally use `authorize("<permission-code>")`.
+- Manufacturer/distributor routes additionally bind the request to the
+  authenticated account's profile using `setManufacturerContext` or
+  `setDistributorContext`; client-supplied profile IDs are not trusted as the
+  acting identity.
+- `InventorySku`, `InventoryLocation`, `InventoryBalance`, and
+  `InventoryLedgerEntry` form the location-based stock ledger used by
+  distributor transfers and production receipts. `StockLog` and
+  `ManufacturerInventory` are also present as older/product-level inventory
+  structures. They should not be interpreted as equivalent to the SKU/location
+  ledger.
+- This repository contains separate customer-order fulfillment assignments
+  (`OrderAssignment`) and bulk distributor stock transfers (`StockTransfer`).
+  The two flows have different actors, statuses, and endpoints.
+
+## 2. Roles, authentication, and permissions
+
+### Roles and grants
+
+`AuthAccount.role` is a legacy primary-role value. The effective grants can be
+stored in:
+
+| Table | Purpose |
+|---|---|
+| `AuthAccount` | Login identity, password hash, account status and security state. |
+| `Role` | Named role code, portal scope and active flag. Typical portal role codes are `ADMIN`, `MANUFACTURER`, `DISTRIBUTOR`, `CUSTOMER`, and `MARKETING_PARTNER`. |
+| `Permission` | Individual permission code (for example, `transfer:admin_review`). |
+| `RolePermissionMapping` | Many-to-many mapping of roles to permissions. |
+| `AuthAccountRoleMapping` | Active role grants attached to an account. |
+| `AccessManagementAuditLog` / system audit tables | Record access-management and system actions. |
+
+Permissions are checked by the middleware and are configurable through the
+database-backed role/permission administration APIs. The strings in the API
+tables below are the permission codes required by the route declarations; they
+are not a promise that every role has every listed grant by default.
+
+The `MANUFACTURER` role has `manufacturer:inventory_read` for its factory
+inventory and product-level production dashboard. It is a read-only grant;
+inventory changes continue to use their separately protected operations.
+
+### Operational boundaries
+
+- A manufacturer is scoped to its own `Manufacturer` profile and stock.
+- A distributor is scoped to its own `Distributor` profile. `setDistributorContext`
+  requires a linked approved distributor profile.
+- Admin middleware can be accepted by manufacturer/distributor context helpers
+  for operational support, but access to a route still depends on that route's
+  permission check.
+- `/api/admin/access/*` additionally requires the `ADMIN` role and a specific
+  access-management permission.
+- Distributor registration creates an application with the same business,
+  province/district, NCM branch and covered area, address, pickup contact,
+  return-instruction, and contract-date fields as manufacturer registration.
+  The selected base district is added as the distributor's initial exact
+  `DistributorLocation`; admins can manage additional service districts in the
+  Service-area coverage tab. Admin review controls activation. Status values
+  include `PENDING_APPROVAL`, `ACTIVE`, `SUSPENDED`, and `REJECTED`.
+  An approved `ACTIVE` status controls distributor workspace access; `isActive`
+  controls whether the distributor is currently available for order allocation.
+  Going offline therefore does not block the distributor from signing in or
+  switching availability back on. The availability update requires the
+  `distributor:availability_update` permission.
+- Admins can edit the distributor registration profile from Distributor
+  Management. `PUT /api/admin/distributor-applications/:id/profile` updates the
+  account email/phone and stored location, NCM, pickup, and contract fields in
+one audited transaction; changed contact values are marked unverified, and
+service-area districts remain managed separately.
+- Manufacturer registration and admin management support contracts,
+  availability, pickup branch details, and quality/performance data. Admins
+  can change pickup status at any time. Manufacturer settlements use approved
+  COGS and recorded production/logistics payables; open requests reserve their
+  unpaid remainder, including partially paid requests. Manufacturer finance
+  history is paginated and shows requested, paid, and remaining amounts; Admin
+  settlement history can be filtered by partial-payment status. No future
+  manufacturer commission rates are configured or accrued.
+- A manufacturer can apply for distributor access through
+  `POST /api/manufacturer/apply-distributor`. The application remains attached
+  to the manufacturer profile until an admin reviews it through
+  `/api/admin/distributor-applications`; approval activates/provisions the
+  linked distributor profile and grants the account the `DISTRIBUTOR` role.
+  Approval copies the manufacturer business name, phone, business address,
+  city, NCM pickup branch, pickup address/contact/window, and return
+  instructions into the distributor profile, keeping business and pickup
+  addresses separate. Every active manufacturer province/district location is
+  carried into distributor service areas, along with the registered origin;
+  distributor pickup verification starts as `UNVERIFIED`. The registered
+  origin is resolved from the manufacturer's NCM pickup branch first, then its
+  canonical city or first active manufacturer location; an existing
+  distributor origin is used only when no manufacturer origin can be resolved.
+  The origin is added as the
+  initial distributor service area. Admins can edit the distributor
+  registration profile in Distributor Management, and distributors can edit
+  their business address/contact and operational pickup profile in the
+  distributor workspace's Pickup Profile page.
+  Existing linked profiles without a stored origin can still resolve it from
+  their manufacturer's district city or pickup branch during allocation; update
+  the registered distributor province/district to make that origin explicit.
+  In Distributor Management, these requests appear in the dedicated
+  **Manufacturer requests** tab, separate from distributor sign-up applications.
+  A dual-role account continues to log in with MANUFACTURER as its primary
+  workspace, while authenticated requests carry both active workspace roles
+  and profiles.
+- New automatic customer-order allocation requires an active distributor with
+  a valid registered province/district shipping origin and every requested SKU
+  variant available in its distributor inventory balances. The registered
+  district is preferred first so a local stocked hub is not displaced by a
+  remote hub that merely lists the customer district as a service area.
+  Candidates then fall back by exact configured service-district coverage
+  (or registered province/district when no service areas are configured),
+  matching NCM pickup branch, same province, and finally nationwide. Within
+  each tier, higher distributor quality rating wins, then rating count, then a
+  stable ID tie-break. Service-area coverage does not replace the registered
+  origin used to calculate shipment rates. Routing uses only province,
+  district, and NCM branch; it does not infer proximity from street addresses
+  or free-form city names. Assignment and stock reservation are committed
+  transactionally; no manufacturer is a fallback hub.
+- Configure a distributor's exact service districts in the
+  **Service-area coverage** tab under Distributor Management. The
+  `GET /api/admin/distributor-applications/coverage` endpoint returns active
+  distributors and canonical Nepal province/district options; the
+  `PUT /api/admin/distributor-applications/:id/coverage` endpoint replaces a
+  distributor's coverage list after server-side geography validation. Coverage
+  edits are audited. Storefront and admin order creation wait for the automatic
+  allocation attempt and return an explicit pending reason when no active hub
+  has the required inventory. Existing pending orders can be retried from
+  **Order Allocation & Routing Engine** after inventory is fixed. Retry
+  responses include each affected product variant's required and currently
+  available quantity. Admins with `order:control` may also assign a failed,
+  unassigned online order to a selected active distributor. The Admin must
+  provide a reason; the selected hub must have every required SKU quantity in
+  available platform-owned ledger stock, reserved in the same transaction as
+  assignment creation. This explicit override does not fall back to another
+  distributor and is recorded in the system audit outbox. This failed-order
+  assignment action is unavailable after assignment, acceptance, cancellation,
+  or delivery handoff.
+  Before a distributor accepts an order and before a delivery record exists,
+  Admins with `order:control` may reroute an existing distributor assignment.
+  The action requires a reason and transfers the exact reservation from the
+  source hub to the selected active hub atomically. A stock shortage,
+  reservation mismatch, or concurrent fulfillment change prevents the
+  reassignment; manufacturer assignments and orders already in fulfillment or
+  delivery are not eligible.
+- Admins with `order:control` may advance an assignment to its next validated
+  fulfillment stage from the order control history. Acceptance reuses the
+  regular acceptance transaction and its manufacturer cost/production-layer
+  checks; later stages retain the assigned hub's checklist, marketing-card,
+  gift, and packing rules. A reason is mandatory. This control does not roll
+  stages backward or alter carrier/delivery states and is unavailable once a
+  delivery record exists.
+- Authorized Admins can open an order's control history from **Orders** to
+  review checkout sibling shipments, current assignment, delivery events and
+  bounded NCM attempt summaries, order audit events, and distributor cash/
+  accounting records. Carrier request/response payloads are not included.
+- An Admin may cancel an unpaid order before carrier handoff from its detail
+  page. A reason is mandatory, and stock, gift, card, and assignment
+  reservations are released within the existing cancellation transaction.
+  Cancellation is rejected after confirmed or ambiguous NCM submission and
+  for paid orders; paid-order refunds must use the refund workflow.
+- Customers can submit or edit one 1-5 star review for each delivered
+  distributor-fulfilled order from the storefront Orders page. The review API
+  verifies customer ownership and delivery, then updates the distributor's
+  aggregate rating used to rank candidates within each eligible location tier.
+
+## 3. Core database tables and schema
+
+The following are the principal tables for the manufacturer/distributor/admin
+relationship. Fields are grouped for readability; the Prisma schema is the
+authoritative source for exact database types, defaults, unique keys, indexes,
+and foreign-key delete behavior.
+
+### Accounts, portal profiles, and products
+
+| Table | Important columns and links |
+|---|---|
+| `AuthAccount` | `id`, `email`, `phone`, `passwordHash`, legacy `role`, `status`, login/lock and verification fields. One-to-one optional profile relations to `Manufacturer`, `Distributor`, `Admin`, `User`, and marketing partner. |
+| `Role` | `id`, unique `code`, `name`, `description`, `portalScope`, `isActive`. |
+| `Permission` | `id`, unique `code`, `description`, `isActive`. |
+| `RolePermissionMapping` | Unique `(roleId, permissionId)`. |
+| `AuthAccountRoleMapping` | Unique `(accountId, roleId)`, plus `isActive`. |
+| `Manufacturer` | `id`, optional unique `accountId`, `name`, unique `email`, phone/city/address; pickup branch/contact fields; `isActive`, `isAvailable`; contract status/document/dates; rating and fulfillment counters. |
+| `Distributor` | `id`, optional unique `accountId`, `name`, phone/address/city; `status`, `isActive`, application/approval timestamps and `approvedBy`. |
+| `Product` | Product identity and storefront fields, price/cost, categories, JSON variants/sizes/colors, publication/deletion flags, plus relations to inventory SKUs and production requests. |
+| `InventorySku` | Unique SKU variant per `(productId, sizeKey, colorKey)`, with display `size`, `color`, optional unique `skuCode`, and active flag. |
+
+### Stock locations, current balances, and movement history
+
+| Table | Important columns and purpose |
+|---|---|
+| `InventoryLocation` | Unique `locationKey`; `kind` such as `FACTORY`, `DISTRIBUTOR`, `IN_TRANSIT`, `QUARANTINE`, `DAMAGED`, or `LOST`; `inventoryOwner`; optional `manufacturerId` and `distributorId`. |
+| `InventoryBalance` | Unique `(locationId, inventorySkuId)`, `quantityOnHand`, `reservedQuantity`, and update timestamp. Available stock is on-hand less reserved. |
+| `InventoryLedgerEntry` | SKU, source/destination locations, positive movement quantity, `movementType`, owner, reference type/ID, idempotency key, actor ID/role, reason, timestamp. Movement types include `OPENING_BALANCE`, `PRODUCTION_RECEIPT`, `TRANSFER_DISPATCH`, `TRANSFER_RECEIPT`, `FULFILLMENT`, `RETURN`, `DAMAGE`, `LOSS`, and `ADJUSTMENT`. |
+| `InventoryDiscrepancy` | Transfer/shipment/receipt/SKU references; discrepancy type and custody stage; quantity, evidence/details, reporter and role; status (`OPEN`, `UNDER_REVIEW`, `RESOLVED`, `REJECTED`); financial-responsibility and resolution fields. |
+| `StockLog` | Legacy product-level quantity change record (`previousQty`, `newQty`, `changeQty`, reason/note/order/source). |
+| `ManufacturerInventory` | Legacy manufacturer/product aggregate and JSON `variantsStock`, quantity/reserved quantity, proposed/agreed cost, and pricing status. The location ledger is the newer variant-level transfer source. |
+
+### Distributor transfers and shipment lifecycle
+
+| Table | Important columns and purpose |
+|---|---|
+| `StockTransfer` | Manufacturer, distributor, source/destination locations, transfer `status`, requesting/reviewing account IDs and timestamps, admin note, dispatch/completion timestamps. |
+| `StockTransferLine` | One row per transfer/SKU; `requestedQuantity`, admin-set `approvedQuantity`, `dispatchedQuantity`, and `reservedShipmentQuantity`. |
+| `StockTransferShipment` | Transfer, shipment status and booking mode (`MANUAL` or `NCM`), idempotency/hash, carrier/tracking/external reference, freight charge and settlement status, booked/dispatched/delivered timestamps. |
+| `StockTransferShipmentLine` | SKU transfer line and quantity in each shipment. |
+| `StockTransferShipmentLineCostLayer` | Allocated manufacturer production cost layer and quantity; allocation status (`RESERVED`, `DISPATCHED`, `RELEASED`). |
+| `StockTransferReceipt` | Shipment, idempotency key/request hash, `CONFIRMED` or `DISPUTED`, receiver, receipt time and notes. |
+| `StockTransferReceiptLine` | Per shipment line: `goodQuantity`, `damagedQuantity`, `missingQuantity`, damage type, evidence URLs and note. |
+
+Transfer statuses include `PENDING_ADMIN_APPROVAL`, `APPROVED`, `REJECTED`,
+`IN_TRANSIT`, `PARTIALLY_RECEIVED`, `RECEIVED`, `DISCREPANCY`, and `CANCELLED`.
+Shipment states additionally cover booking, dispatch, delivery, discrepancy,
+loss, and cancellation outcomes; exact strings are in the Prisma schema and
+transfer service.
+
+NCM booking follows NCM's documented order-creation contract and omits the
+optional `vref_id` (the full internal transfer ID exceeds NCM's accepted length).
+The confirmed NCM order ID is stored in the dedicated shipment field and mirrored
+to the compatibility external reference. Booking acceptance sets `BOOKED` but
+does not move stock: factory quantity, reservations, and cost layers remain
+reserved until the first pickup/custody webhook. That event atomically moves
+stock to transit exactly once. Carrier delivery is a separate NCM status; the
+distributor must still inspect the shipment and record good, damaged, and missing
+quantities through the receipt workflow.
+
+Manufacturer and distributor shipment views show database-persisted NCM events
+and do not poll the carrier. Only admins can explicitly reconcile using
+`POST /api/stock-transfers/admin/shipments/:shipmentId/ncm-sync`; this can also
+recover a missed pickup event. Only the manufacturer that booked the shipment
+can request an NCM return through
+`POST /api/stock-transfers/manufacturer/shipments/:shipmentId/ncm-return`.
+A carrier return request/status does not confirm that goods have physically
+arrived. The NCM delivery charge is tracked for platform/admin settlement and
+must not create a manufacturer or distributor payable.
+The admin stock-transfer view includes an **NCM shipments (all statuses)**
+filter for direct carrier tracking and return-request review.
+
+### Production, order fulfillment, gifts, marketing cards, and letters
+
+| Table(s) | Purpose |
+|---|---|
+| `ManufacturerProductionRequest`, `ManufacturerProductionRequestLine` | Admin production order or legacy manufacturer proposal, SKU variants/planned and actual quantities, fabric/GSM, target date and batch plan, pre/post QA checklists, approved COGS/MOQ/delivery cost, notes and lifecycle timestamps. |
+| `ManufacturerSettlementRequest` | Manufacturer-requested production or logistics payout, idempotency key, amount, status, reviewing admin, payment account and settlement timestamps. |
+| `ManufacturerInventoryCostLayer`, `ManufacturerInventoryCostAllocation` | Track produced quantity and unit costs by production batch/variant; reserve/consume/release quantities for shipment or customer-order fulfillment. |
+| `Order` | Customer purchase: items/address JSON, amount/payment/order status, fulfillment status, order type, manufacturer or distributor ownership, and optional gift/marketing-card/letter relations. |
+| `OrderAssignment` | Customer order assignment; the owning manufacturer or distributor is explicit, with statuses from `PENDING_ACCEPTANCE` through `READY_FOR_PICKUP`/`PICKED_UP`, or `REJECTED`. |
+| `GiftCatalog` | Gift SKU/name/category/value/description and active flag. |
+| `DistributorGiftInventory` | Distributor's accepted/awaiting/rejected allocated gift quantity and reserved quantity for hub orders. |
+| `DistributorGiftMovementLog` | Distributor gift allocation/reservation/deduction/restock/loss events and quantities. |
+| `ManufacturerGiftInventory`, `GiftMovementLog` | Legacy manufacturer-owned gift stock and movement history retained for historical records; not used for new distributor hub activity. |
+| `MarketingCardAssignment` | Card stock allocation with distributor ownership for current hub flows; manufacturer ownership remains nullable for historical records. |
+| `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard` | Campaign configuration; generated card batches; unique card/QR token, distributor hub assignment (with legacy manufacturer and partner/organization allocations retained), benefit, and physical state. |
+| `MarketingCardAssignment`, `MarketingCardReceipt`, `MarketingCardOrder`, `MarketingCardEvent` | Assignment history, distributor or legacy manufacturer receipt confirmation, card-to-order attachment, and event history. |
+| `Story`, `StoryLetter`, `LetterTemplate`, `LetterTemplateVersion`, `CustomerStoryAssignment`, `LetterDelivery` | Admin-managed letter content/versioning and customer/order-specific reservation, rendering, printing, packing, shipment and delivery statuses. |
+| `CustomerLetterImage` | Separate uploaded handwritten/customer-letter image record optionally linked to an order. |
+
+## 4. How a distributor requests and receives goods
+
+### Step 1: Apply and become active
+
+1. Distributor submits `POST /api/distributor/register`.
+2. The account/profile remains subject to admin review.
+3. Admin reviews an application using
+   `PATCH /api/distributor/admin/applications/:id/review`.
+4. Transfer operations require a valid active distributor context.
+
+### Step 2: See available factory stock and request it
+
+1. Distributor loads `GET /api/stock-transfers/catalog`. The catalog is based
+   on active, published products and available balances at active manufacturer
+   factory locations.
+2. Distributor submits `POST /api/distributor/stock-requests` (legacy alias:
+   `POST /api/stock-transfers/requests`) with
+   `manufacturerId` and 1–100 unique SKU lines, each containing either
+   `inventorySkuId` or `productId`, `size`, and `color`, plus a positive
+   whole-number `quantity`. Variant labels are resolved to active inventory
+   SKUs by the server.
+3. The API checks that the distributor is active, the manufacturer is active,
+   each SKU/product is valid, a platform-owned factory location exists, and
+   each requested quantity is no greater than the SKU's current unreserved
+   factory balance. The API repeats this check in the request transaction;
+   catalog values and browser-side quantity limits are only guidance.
+4. It creates a `StockTransfer` in `PENDING_ADMIN_APPROVAL`, with a
+   `StockTransferLine` for each requested SKU and the distributor's own
+   destination location. Request creation uses a serializable transaction.
+
+### Step 3: Admin reviews/approves
+
+1. Admin reviews transfers in `GET /api/stock-transfers/admin` (optionally
+   filtered by status).
+2. Admin calls `PATCH /api/stock-transfers/admin/:id/review` with status
+   `APPROVED` or `REJECTED`, optional `adminNote`, and, for approval, one
+   approved quantity per request line.
+3. An approved quantity may be lower than requested but cannot be higher than
+   the request or current available factory balance. At least one unit must be
+   approved.
+4. Rejected requests get approved quantity zeroed and enter `REJECTED`. Approval
+   records the reviewing account/time and moves the transfer to `APPROVED`.
+   The approved demand then appears in the manufacturer's **Distributor
+   Demands** page; unapproved requests are not shown in the manufacturer queue.
+5. Before all five manufacturer preparation checks pass, the distributor,
+   assigned manufacturer, or Admin may edit the request's SKU lines and
+   quantities. Saving an edit clears prior checks and approved quantities and
+   returns the request to `PENDING_ADMIN_APPROVAL`; Admin must review it again.
+   Edits are rejected once all preparation checks pass or shipment activity
+   begins.
+
+### Step 4: Manufacturer dispatches the approved goods
+
+In the manufacturer portal, the transfer detail page follows a four-stage
+workflow: review the approved SKU lines and dispatch quantities; open the
+preparation checklist modal and save the five physical checks; choose local
+freight or NCM and submit delivery details; then monitor shipment events and
+await distributor receipt QA. The checklist modal can be dismissed without
+saving, and dispatch remains blocked until all checks have been saved as passed.
+
+1. Manufacturer checks `GET /api/stock-transfers/manufacturer` and records a
+   passing preparation checklist at
+   `PATCH /api/stock-transfers/:id/preparation`: current product availability,
+   quality inspection, requested color, requested size, and packaging. Every
+   check must be explicitly saved as passed before shipment booking.
+   Until all checks pass, the distributor, manufacturer, and Admin can edit the
+   request. Each edit clears the checklist and requires a new Admin review.
+2. Manufacturer dispatches approved quantities, selecting NCM or local freight.
+   Before NCM booking, the form requires package type, product type and
+   contents, weight, and dimensions; delivery instructions, fragile handling,
+   and packaging notes are also captured. The backend stores these details and
+   maps them to NCM's documented `package`, `instruction`, and `weight` fields.
+   Package type/dimensions are not sent as undocumented API fields. The local
+   path requires an `Idempotency-Key`, carrier name, optional
+   tracking/external reference/freight, and lines/quantities. Both paths check
+   the request belongs to the logged-in manufacturer and quantities remain
+   approved/available.
+   NCM origin and destination branches are checked against the active
+   synchronized NCM branch catalog. A matching `UNVERIFIED` selection is
+   automatically marked verified; an explicitly `REJECTED` branch or a branch
+   absent from the active catalog remains blocked. A street address or pickup
+   contact alone does not establish a carrier branch.
+3. Dispatch moves units out of the factory stock and into in-transit stock using
+   ledger entries; cost layers may also be allocated to shipment lines.
+4. `StockTransferShipment` records the carrier/booking, package details,
+   tracking data, freight, and shipment state. NCM booking and uncertain
+   booking outcomes have a separate admin-resolution endpoint. Saved package
+   details are visible to admin, manufacturer, and distributor users.
+5. If the distributor and manufacturer profiles belong to the same account,
+   the portal automatically selects own-store delivery. This bypasses NCM and
+   local freight, records NPR 0 freight, and atomically dispatches and receives
+   good units into that distributor's inventory location.
+
+### Step 5: Distributor records receipt
+
+1. Distributor reads its transfers from `GET /api/stock-transfers/distributor`.
+2. On delivery, it posts to `POST /api/distributor/stock-requests/:id/receive`
+   with the transfer ID, an `Idempotency-Key`, a `shipmentId` when the request
+   has multiple dispatched shipments, and an overall `qualityPassed: true`
+   checklist containing every remaining shipment size/color variant. Good,
+   damaged, and lost counts must account for every unit in that variant.
+   The request is mapped into the same audited receipt flow as the existing
+   shipment-level route:
+   `POST /api/stock-transfers/shipments/:shipmentId/receipt` with an
+   `Idempotency-Key`, receipt notes and one or more shipment lines. For each
+   line, the submitted good, damaged, and missing quantities must be
+   non-negative whole numbers within the outstanding shipped quantity.
+3. For damaged quantities, `damageType` must be one of `STITCH_DAMAGE`,
+   `DELIVERY_DAMAGE`, or `OTHER_DAMAGE`. Evidence accepts up to 10 HTTP(S) URLs
+   per line.
+4. Good goods move from `IN_TRANSIT` to the distributor location as
+   `TRANSFER_RECEIPT`; damaged goods move to a `DAMAGED` location as `DAMAGE`;
+   missing goods are booked to a `LOST` location as `LOSS`.
+5. Damage/missing receipt details create `InventoryDiscrepancy` records.
+   Receipt idempotency keys are bound to a request hash, so reusing a key for
+   different details is rejected.
+6. The transfer/shipment becomes received, partially received, or discrepancy
+   state based on dispatched and accounted quantities and open damage/missing
+   quantities. Further partial receipts can be submitted for the remaining
+   shipment quantity.
+7. For post-receipt damage or loss, the distributor calls
+   `POST /api/distributor/inventory/decrease` with `inventorySkuId`, positive
+   `quantity`, `adjustmentType` (`DAMAGED` or `LOST`), a reason, HTTP(S)
+   `evidenceUrl`, and `Idempotency-Key`. This can only move available quantity
+   out of the distributor stock location into its damaged/lost location. It
+   creates an open `InventoryDiscrepancy` and an admin audit event; there is no
+   distributor stock-increase endpoint.
+
+### Transfer API map
+
+All paths below are mounted under `/api`; all listed endpoints require
+authentication and the permission shown.
+
+| Method and path | Actor | Permission | Action |
+|---|---|---|---|
+| `GET /stock-transfers/catalog` | Distributor | `transfer:distributor_request` | Read available factory SKU stock grouped by manufacturer. |
+| `GET /stock-transfers/manufacturer/catalog` | Manufacturer | `transfer:manufacturer_read` | Read available factory SKUs for adding lines to an editable transfer. |
+| `GET /stock-transfers/admin/catalog?manufacturerId=:id` | Admin | `transfer:admin_review` | Read available factory SKUs for the selected manufacturer when editing a transfer. |
+| `POST /stock-transfers/requests` | Distributor | `transfer:distributor_request` | Create bulk stock request. |
+| `PATCH /stock-transfers/distributor/:id` | Distributor | `transfer:distributor_request` | Edit request SKU lines/quantities before manufacturer preparation passes; resets checks and requires Admin review. |
+| `PATCH /stock-transfers/manufacturer/:id` | Manufacturer | `transfer:manufacturer_dispatch` | Edit assigned request SKU lines/quantities before preparation passes; resets checks and requires Admin review. |
+| `PATCH /stock-transfers/admin/:id` | Admin | `transfer:admin_review` | Edit request SKU lines/quantities before preparation passes; resets checks and requires Admin review. |
+| `POST /distributor/stock-requests` | Distributor | `transfer:distributor_request` | Create a manufacturer supply request (same-handler alias). Manufacturer/distributor profiles remain separate even when owned by one account. |
+| `PATCH /distributor/stock-requests/:id` | Distributor | `transfer:distributor_request` | Edit through the distributor route alias; subject to the same checklist cutoff and re-review. |
+| `POST /manufacturer/stock-requests/:id/dispatch` | Manufacturer | `transfer:manufacturer_dispatch` | Dispatch an approved request by NCM or manufacturer-paid local logistics. |
+| `GET /stock-transfers/distributor` | Distributor | `transfer:distributor_read` | List only the authenticated distributor's transfers. |
+| `POST /stock-transfers/shipments/:shipmentId/receipt` | Distributor | `transfer:distributor_receive` | Record good/damaged/missing receipt quantities. |
+| `POST /distributor/stock-requests/:id/receive` | Distributor | `transfer:distributor_receive` | Submit overall QA and complete size/color good/damaged/lost counts for a dispatched shipment. |
+| `POST /distributor/inventory/decrease` | Distributor | `distributor:inventory_decrease` | Record an evidence-backed post-receipt damage/loss decrease; increments are not accepted. |
+| `GET /stock-transfers/manufacturer` | Manufacturer | `transfer:manufacturer_read` | List only transfers for the authenticated manufacturer. |
+| `POST /stock-transfers/:id/dispatch` | Manufacturer | `transfer:manufacturer_dispatch` | Create/dispatch manual shipment. |
+| `POST /stock-transfers/:id/ncm-booking` | Manufacturer | `transfer:manufacturer_dispatch` | Book an NCM shipment. |
+| `GET /stock-transfers/admin` | Admin | `transfer:admin_read` | List transfers; optional `status`, `page`, and `limit`. |
+| `GET /stock-transfers/admin/discrepancies` | Admin | `transfer:admin_read` | Review damage/loss discrepancy alerts; supports status, distributorId, page, and limit filters. |
+
+The distributor request screen presents the selected manufacturer's available
+stock as product cards with the product name, featured image, variant count, and
+available unit total. Selecting a product reveals its in-stock size/color SKUs
+and remaining quantities; distributors can add variants from multiple products
+to a request summary before submitting. The catalog response includes the
+product's existing image value as `productImage`; the portal uses its first
+available image URL and falls back to a neutral placeholder when no usable photo
+is available. Submission continues to use the existing
+`manufacturerId` plus `{ inventorySkuId, quantity }` lines contract; server-side
+availability checks and approval workflow are unchanged.
+| `PATCH /stock-transfers/admin/:id/review` | Admin | `transfer:admin_review` | Approve/reject and set per-line approved quantities. |
+| `PATCH /stock-transfers/admin/shipments/:shipmentId/ncm-resolution` | Admin | `transfer:admin_review` | Resolve supported uncertain NCM booking outcomes. |
+| `GET /admin/inventory-ledger` | Admin | `ADMIN` role and `inventory:ledger_read` | Read ledger entries. |
+| `GET /admin/inventory-ledger/options` | Admin | `ADMIN` role and `inventory:ledger_read` | Read ledger filters/options. |
+| `GET /admin/inventory-ledger/reconciliation` | Admin | `ADMIN` role and `inventory:ledger_read` | Compare balances with ledger for reconciliation. |
+
+## 5. Manufacturer production and customer-order fulfillment
+
+This flow is related to manufacturer inventory but is not the distributor bulk
+transfer flow:
+
+1. Admin selects an active manufacturer, product, size/color SKU quantities,
+   fabric type/GSM, target completion date, and batch plan in the Admin
+   Manufacturer Production screen. The order is created through
+   `POST /api/manufacturer/production/create` and waits for a manufacturer quote.
+   Admin may edit the order until the manufacturer passes the pre-production
+   checklist. Editing clears the quote and checklist and returns the request
+   for a new manufacturer quote and Admin approval.
+2. The assigned manufacturer submits a per-piece price, other production
+   expenses for the order, VAT terms, and an optional note through
+   `PATCH /api/manufacturer/production/:id/quote`. The Admin reviews and may
+   adjust the quoted terms before approving or rejecting the quote through
+   `POST /api/manufacturer-production/admin/requests/:id/review`.
+   An empty VAT rate is treated as zero for an exempt quote; VAT-inclusive or
+   VAT-exclusive quotes require a positive rate and invoice reference.
+3. Only an Admin-approved order can pass the required fabric, sample-quality,
+   and color-shade pre-production checks through
+   `PATCH /api/manufacturer/production/:id/pre-check`. Production can start
+   only after both Admin approval and a passed pre-check, using
+   `POST /api/manufacturer/production/:id/start`.
+4. Manufacturer submits stitching, quality, color, and size/color actual-count
+   checks through `PATCH /api/manufacturer/production/:id/post-check`.
+   The submission records actual and damaged quantities in
+   `PENDING_ADMIN_ACCEPTANCE`; it does not create inventory or cost layers.
+   Admin reviews the reported good units through
+   `POST /api/manufacturer-production/admin/requests/:id/acceptance`, accepting
+   the count or rejecting it for rework. Only acceptance transactionally
+   receives accepted good units into factory `InventoryBalance`,
+   `InventoryLedgerEntry`, SKU/cost-layer, and legacy inventory records. The
+   legacy `POST /api/manufacturer-production/requests/:id/complete` route
+   submits for this same Admin acceptance; it does not complete receipt itself.
+5. For local/manual transfer dispatch, a positive freight charge is recorded
+   as a manufacturer logistics expense and payable. NCM booking remains a
+   separate carrier flow. Manufacturer finance is available from
+   `GET /api/manufacturer/finance/dashboard`; payout requests are submitted to
+   `POST /api/manufacturer/finance/settlement-request`, and admins pay pending
+   requests listed at `GET /api/admin/finance/settlements` through
+   `PATCH /api/admin/finance/settlements/:id/pay` with a `financialAccountId`
+   and external transfer reference. Delivered goods create manufacturer bills;
+   production payouts allocate to open bills, while legacy payable amounts not
+   represented by bills remain explicitly flagged for reconciliation. Payout
+   Treasury accounts must be active, NPR-denominated, and mapped to the
+   matching GL cash/bank/wallet account.
+6. Customer orders use `Order` and `OrderAssignment`. Automatic allocation
+   targets an approved distributor covering the destination district and holding all
+   requested variants in local stock.
+7. Distributor fulfillment is a dispatch workflow, not a production workflow:
+   accept the order, inspect product/variant quality, include the compulsory
+   customer letter, complete the packing checklist, pack and enter parcel
+   details, then choose self-delivery when eligible or select NCM and place
+   the order on hold. Held orders are excluded from the ordinary hub queue.
+   Self-delivery orders resume in Self-Delivery Management. NCM orders appear
+   in the NCM Deliveries sidebar page, where the distributor can review held,
+   failed NCM, active booked, delivered, and all-NCM orders and submit a
+   checklist-selected batch. Each selected parcel receives a separate NCM
+   booking and per-order result; this is not a carrier-side combined booking.
+   Booked and all-order views can be filtered by the carrier's pickup,
+   transit, delivery, and return statuses. Alias labels that normalize to the
+   same stored NCM state intentionally return the same matching orders.
+   A failed NCM submission can be reapplied directly from its order row by the
+   distributor without admin review.
+   The assigned distributor's NCM pickup branch is used as the NCM pickup
+   origin; the customer's selected NCM branch is the destination, with
+   customer city/location as a fallback for older orders. Manufacturer-to-
+   distributor replenishment continues using the manufacturer's and
+   distributor's pickup branches, respectively.
+   Distributor
+   checklist and transition validation do not require stitching or branding
+   checks. The user-entered product description and the NCM `package` field
+   must each be no longer than 50 characters; the backend rejects longer
+   values before making an NCM request.
+8. Distributor fulfillment provides two delivery channels:
+   - **NCM Courier Path**: Uses automated NCM booking, carrier tracking, and webhook sync. A distributor first holds package-complete orders in the NCM desk, then submits selected held orders for individual bookings.
+   - The Distributor Hub Orders list retains assignments after they enter the delivery queue, are booked with NCM, or are delivered. Open these records to review order, customer, delivery, and saved packaging details; fulfillment/package fields become read-only once queued or handed to the delivery partner.
+   - A delivery-level NCM return request through `POST /api/delivery/manufacturer/return` records `RETURN_REQUESTED`; it is not proof of physical receipt or a completed customer return. The order is not marked fully returned, delivered COD/payment and any settled COD journal remain intact, and no refund, restock, sales/VAT/COGS reversal, or manufacturer credit is inferred. Use the customer-return workflow for receipt, inspection, and approved refund/accounting actions.
+   - **Distributor Self-Delivery Path**:
+     - `GET /api/distributor/orders/assigned`: List orders allocated to the distributor hub.
+     - `PATCH /api/distributor/orders/:id/status`: Updates status sequentially (`Dispatched` → `On the Way` → `Delivered`). Upon delivery, reserved inventory balances and on-hand stock are deducted transactionally, recording `FULFILLMENT` ledger entries and booking delivery accounting.
+       Accepted production cost-layer provenance is carried from a stock-transfer receipt into distributor inventory and attached to these fulfillment movements. At delivery, both self-delivery and NCM accounting debit account 5100 for the exact consumed accepted unit COGS and credit inventory; only legacy version-1 delivery/other per-unit cost is posted separately as overhead. New version-2 batch other cost is already included in unit COGS. Production approval alone does not recognize a sale's COGS. Previously received legacy stock without layer IDs remains uncosted by this provenance path.
+     - Customer return requests remain pending until admin approval. The Admin panel shows the original delivery route and responsible handler: NCM-delivered returns are submitted to NCM for reverse pickup, while approved self-delivery returns are routed to the original distributor hub for receipt and QA. The distributor endpoint rejects returns without the matching approved request. Partial returns leave the original order and assignment in their delivered state; they are marked `Returned` only after cumulative completed returns cover every purchased variant quantity.
+     - Exchanges follow the same delivery-route rule. NCM handles NCM-delivered return and replacement legs; the original distributor handles approved self-delivery exchanges by receiving/inspecting the return and dispatching/delivering the reserved replacement.
+     - Admin-approved self-delivery exchanges are listed for the original distributor hub and reserve replacement stock from its platform-owned inventory ledger. The distributor must receive and inspect the returned items before dispatching the replacement; dispatched stock is consumed from its reservation and the exchange is closed only after the distributor confirms delivery.
+     - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. Inspection posts the cost journal immediately and idempotently: restockable cost debits inventory (1140), while defective cost debits damaged/scrap loss (5500); both credit sold COGS (5100). Inspection is blocked if the original unit cost is absent or invalid. The journal ID is recorded separately from the later refund/credit-note journal. Admin review of distributor refund evidence posts the sales/VAT reversal and distributor payable only, so it cannot post the item cost twice.
+     - Admin Shipping Rate Settings include separate company-paid settlement rates for NCM and distributor returns and exchanges. The selected rate is fixed on admin approval. On completion, distributor logistics charges are recorded as source-linked bills in the distributor accounting balance; NCM charges remain in Accounts Payable and use a reported carrier charge when available, otherwise the configured rate estimate. NCM return charges assigned to the customer do not accrue as company payables. These amounts do not affect customer shipping charges.
+     - Return and exchange accounting uses the current period rather than backdating to the original sale. NCM/manufacturer return inspection posts the sales/VAT and cost adjustments together; distributor return inspection posts its inventory/COGS or damaged-loss/COGS journal immediately, while verified distributor refund accounting posts sales/VAT and distributor payable separately. Both journal references and the credit-note reference are retained on the return. Distributor-paid exchange downgrades remain distributor payables for settlement; distributor exchange upgrades remain COD receivables. For both NCM and self-delivery exchanges, the responsible distributor submits exact-amount customer collection/refund evidence and a JPG/PNG screenshot in Self-Delivery Management; Admin verifies or rejects it in the Exchange Requests panel. Self-delivery replacement dispatch may proceed, but delivery/completion is blocked until Admin verifies the evidence. Rejected evidence can be corrected and resubmitted. Verification records the evidence status but does not itself clear the distributor receivable/payable. The NCM exchange-create request accepts `pk` only and does not transmit a COD amount.
+   - Admins can enter the same package details used by the fulfillment workflow
+     from Order Assignments and request NCM booking for a distributor-assigned
+     order. The confirmed NCM order and carrier webhook events are stored in
+     the database; customer-order tracking reads that state without polling
+     NCM status/detail endpoints. The webhook is acknowledged only after the
+     event and status update are persisted.
+9. Negotiated Charge & Rate Card Engine:
+   - Admin controls distributor self-delivery/phone-delivery compensation, hub counter-sale compensation, per-product stock-transfer compensation, and return service charges through `POST /api/admin/distributor-rates`. Stock-transfer compensation is paid per product unit only after successful delivery through NCM, self-delivery, phone order, or hub sale, and is additive to the channel-specific compensation. Phone-order compensation is earned when delivery completes; hub counter-sale compensation is earned when the walk-in sale completes. New delivery earnings do not include a per-delivery incentive; previously posted earning snapshots remain unchanged.
+   - Admin configures additive monthly completed-self-delivery bonus tiers through `POST /api/admin/distributor-rates/bonus-plans`. Only full Kathmandu-time calendar months covered by the plan qualify. Each reached tier adds its configured amount, and closed periods are accrued idempotently when a distributor requests settlement.
+   - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
+10. Distributor Financial Dashboard & Accounting:
+   - `GET /api/distributor/finance/statement`: Itemized self-delivery, phone-delivery, stock-transfer, hub counter-sale, return, and exchange earnings, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. Stock-transfer compensation snapshots delivered unit counts and per-unit rates; historical NCM-only earnings display in the same category. A later merchandise return does not reverse a completed delivery earning. A verified return of a hub counter sale reverses the counter-sale earning proportionally to the returned merchandise value; a payable credit note offsets open service-earning bills and any unapplied credit remains in the subledger for future service-earning documents. The Rate Card return charge is an additional distributor earning, and a completed distributor exchange settlement is included in the distributor's net settlement. The separately configured company-paid return logistics settlement remains its own payable. New service charges and return reversals use immutable `DistributorServiceEarning` snapshots.
+   - Admin issues a partial or full net-settlement request from the distributor profile after reviewing the open receivable/payable position. Distributors cannot initiate a settlement or submit unsolicited remittance evidence.
+   - For `COMPANY_COLLECTS` requests, the distributor submits the bank/wallet reference and proof against the issued request; Admin verifies it and the settlement is then posted. For `COMPANY_PAYS`, Admin records the completed payout and proof; the distributor acknowledges receipt. A request is not an accounting settlement until the corresponding transfer is verified/recorded.
+   - Before creating a new request, missing delivery earnings are accrued from completed self-delivery assignments using the rate card effective at delivery; missing return charges are accrued from completed returns. Older requests without accounting documents remain reconciliation-required: Admin can explicitly backfill only earnings supported by completed delivery/return records, then link the resulting documents. No payable is created from a requested amount alone.
+   - Open, subledger-backed distributor settlement requests are displayed in Payables & Receivables and can be paid through the standard distributor payout lifecycle. A non-VAT request excludes VAT from the requested amount; any VAT portion on its source earning documents is not paid by that request.
+   - Admin distributor Finance derives gross receivable/payable and net due from all open NPR accounting-party documents. It creates one active net-settlement request at a time; requests may be partial but cannot exceed the current net balance. Settlement applies FIFO allocations, requires an agreement reference plus explicit Admin confirmation for offsets, and records completed cash movement against an active NPR treasury account. Pending legacy remittance reviews and older settlement requests block a new request. The legacy earnings payout request and unified net-balance request remain distinct workflows, but cannot be active together; request creation and direct balance posting are serialized per distributor, and legacy payout initiation/recording rechecks for an active unified request to prevent overlapping settlement. The paginated Settlement activity history combines both request types and direct balance settlements with cash/journal references, payout evidence where recorded, and requested/paid/remaining amounts. Rate-card revisions create new versions; closing an approved card preserves history.
+   - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
+
+Relevant endpoints:
+
+| Method and path | Actor | Permission | Action |
+|---|---|---|---|
+| `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
+| `POST /api/distributor/logistics/manifests/:manifestId/optimize` | Distributor | `distributor:logistics_manage` | Preview a stop-order proposal without changing the manifest; currently uses deterministic fallback because no road-routing provider is configured. |
+| `PATCH /api/distributor/logistics/manifests/:manifestId/optimize` | Distributor | `distributor:logistics_manage` | Apply a reviewed fallback order only if the manifest remains undispatched and its source stop order is unchanged. |
+| `GET /api/driver/profile` | Driver | `driver:delivery_read` | Read the authenticated driver's minimal active profile. |
+| `GET /api/driver/manifests` | Driver | `driver:delivery_read` | List only active or recently completed manifests assigned to the authenticated driver, with stops and limited delivery details. |
+| `POST /api/driver/manifests/:manifestId/stops/:stopId/delivery-otp` | Driver | `driver:delivery_complete` | Request COD verification only for a stop assigned to the authenticated driver on an in-transit manifest. |
+| `POST /api/driver/manifests/:manifestId/stops/:stopId/complete` | Driver | `driver:delivery_complete` | Record POD through the existing canonical self-delivery/COD completion service. |
+| `GET /api/driver/manifests/:manifestId/stops/:stopId/evidence/:kind` | Driver | `driver:delivery_read` | Retrieve private evidence after verifying the driver's manifest and stop assignment. |
+| `GET /api/admin/access/driver-provisioning/distributors` | Admin | `access:driver_users_manage` | List active distributors for driver-account onboarding. |
+| `GET /api/admin/access/driver-provisioning/drivers` | Admin | `access:driver_users_manage` | List active, unlinked drivers for a selected distributor. |
+| `POST /api/admin/access/driver-provisioning/accounts` | Admin | `access:driver_users_manage` | In development/test, link an existing active driver to a dedicated DRIVER account; the driver sets a password through recovery. This operation remains disabled in other environments pending verified HTTPS SMS delivery, shared rate limiting, staging checks, and documented recovery operations. |
+| `GET /api/distributor/orders/ncm` | Distributor | `distributor:assignments_read` | List NCM orders by hold, failed, booked (excluding delivered), delivered, or all-NCM filter, optionally filtered by carrier status; includes persisted carrier status and any provided ETA. |
+| `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings, with an optional per-assignment `deliveryTypes` map (`Door2Door` or `Door2Branch`); local distributor destinations only allow door-to-door. |
+| `POST /api/distributor/orders/:id/hold` | Distributor | `distributor:assignments_read` | Select self-delivery or NCM and place a package-complete order on hold. |
+| `GET /api/order-assignment/distributor/:id` | Distributor | `distributor:assignment_detail` | Read an assignment through the active distributor profile, including dual-role manufacturer/distributor accounts. |
+| `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; customer and distributor must share a district (registered or active coverage), or have an exact same-city match within the same province. |
+| `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
+| `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process QA and inventory movements for an admin-approved self-delivery return request. |
+| `GET /api/returns/customer/manufacturer` | Distributor | `distributor:delivery_return` | List admin-approved return requests assigned to this distributor hub. |
+| `GET /api/returns/exchange/distributor` | Distributor | `distributor:delivery_return` | List admin-approved self-delivery exchange requests assigned to this distributor hub. |
+| `POST /api/returns/exchange/distributor/:id/process` | Distributor | `distributor:delivery_return` | Receive and inspect the approved return, dispatch reserved replacement inventory, or confirm replacement delivery. |
+| `POST /api/returns/exchange/distributor/:id/payment-evidence` | Distributor | `distributor:delivery_return` | Submit exact-amount collection/refund evidence for an NCM or self-delivery exchange price difference. |
+| `POST /api/returns/exchange/admin/:id/payment-review` | Admin | `exchange:admin_review` | Verify or reject distributor-submitted exchange price-difference evidence. |
+| `POST /api/delivery/admin/assignment/:id/ncm` | Admin | `assignment:admin_list` | Enter/validate package details and request NCM delivery for an assigned order. |
+| `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
+| `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Set effective-dated delivery/return charges, commission deduction, and VAT terms; no new per-delivery incentive is recorded. |
+| `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
+| `POST /api/admin/distributor-rates/bonus-plans` | Admin | `distributor:admin_review` | Create a monthly completed-self-delivery target plan with incremental bonus tiers. |
+| `GET /api/admin/distributor-rates/bonus-plans` | Admin | `distributor:admin_list` | List monthly target bonus plans, optionally filtered by distributor. |
+| `PATCH /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Create an immutable revised rate-card version. |
+| `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
+| `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
+| `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
+| `GET /api/distributor/finance/remittances` | Distributor | `distributor:profile_read` | View COD remittances, unified gross/net subledger balances, open documents, and settlement history. |
+| `GET /api/admin/distributors/settlement-positions` | Admin | `finance:payables_read` | View paginated distributor-wise open receivable/payable/net balances and company-wide gross/per-distributor net totals. |
+| `POST /api/admin/distributors/:id/finance/settlements` | Admin | `finance:receivable_collect` and `finance:payable_settle` | Issue an idempotent partial/full request for the distributor's current net balance; does not post an accounting settlement. |
+| `POST /api/distributor/finance/settlement-requests/:requestId/evidence` | Distributor | `distributor:profile_read` | Submit transfer reference and evidence for an open company-collection request issued by Admin. |
+| `POST /api/distributor/finance/settlement-requests/:requestId/acknowledge` | Distributor | `distributor:profile_read` | Acknowledge receipt of a company payout after Admin records the transfer and evidence. |
+| `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/review` | Admin | `finance:receivable_collect` | Verify or reject distributor-submitted evidence for a company-collection request. |
+| `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/payout` | Admin | `finance:payable_settle` | Record a company payout using an active NPR treasury account, transfer reference, and evidence. |
+| `GET /api/admin/distributors/:id/finance/activity` | Admin | `distributor:admin_finance_read` | Read paginated settlement activity across earnings requests, unified net-balance requests, and direct balance settlements. |
+| `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
+| `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
+| `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
+| `POST /api/finance/vat-rates` | Admin | `finance:tax_configure` | Schedule a future VAT rate; only future effective dates are accepted. |
+| `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
+| `GET /api/finance/corporate-tax-policies` | Admin | `finance:tax_report_read` | Read effective-dated corporate income tax policies. |
+| `POST /api/finance/corporate-tax-policies` | Admin | `finance:tax_configure` | Schedule a validated base rate, progressive brackets, and context-based rate/discount/penalty rules. |
+| `POST /api/finance/corporate-tax-policies/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future corporate tax policy. |
+| `GET /api/finance/paper-bill-books` | Admin | `finance:tax_report_read` | List bill books, distributor allocations, and active distributor choices. |
+| `POST /api/finance/paper-bill-books` | Admin | `finance:tax_configure` | Register a PAN/VAT serial book; overlapping series ranges are rejected. |
+| `POST /api/finance/paper-bill-allocations` | Admin | `finance:tax_configure` | Allocate a non-overlapping book range to an active distributor. |
+| `POST /api/finance/paper-bill-allocations/:id/return` | Admin | `finance:tax_configure` | Close an allocation; returned numbers remain permanently unavailable. |
+| `GET /api/finance/paper-bill-orders` | Admin | `finance:tax_report_read` | Paginate distributor orders by placement date and physical VAT bill status. |
+| `GET /api/distributor/paper-bills/allocations` | Distributor | `distributor:profile_read` | List this distributor's pending and active physical bill ranges. |
+| `POST /api/distributor/paper-bills/allocations/:id/accept` | Distributor | `distributor:profile_read` | Confirm physical receipt of an assigned range; the range becomes active for billing. |
+| `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
+| `POST /manufacturer-production/requests/:id/start` | Manufacturer | `manufacturer:production_manage` | Start approved request. |
+| `POST /manufacturer-production/requests/:id/complete` | Manufacturer | `manufacturer:production_manage` | Submit post-production counts for Admin acceptance; no stock receipt is recorded yet. |
+| `GET /manufacturer-production/admin/requests` | Admin | `manufacturer:production_admin` | Review queue. |
+| `POST /manufacturer-production/admin/requests/:id/acceptance` | Admin | `manufacturer:production_admin` | Accept reported good-unit counts to receive stock/cost layers, or reject for manufacturer rework. |
+| `GET /manufacturer-production/admin/options` | Admin | `manufacturer:production_admin` | Paginated active manufacturers and published products/SKUs for creating production orders (`type=manufacturers` or `type=products`). |
+| `POST /manufacturer-production/admin/requests/:id/review` | Admin | `manufacturer:production_admin` | Approve/reject and set terms. |
+| `PATCH /manufacturer-production/admin/requests/:id` | Admin | `manufacturer:production_admin` | Edit an order until its pre-production checklist passes; clears quote/checklist and requests a new manufacturer quote. |
+| `POST /manufacturer/production/create` | Admin | `manufacturer:production_admin` | Create a specification- and batch-backed production order. |
+| `PATCH /manufacturer/production/:id/pre-check` | Manufacturer | `manufacturer:production_manage` | Record pre-production gates. |
+| `PATCH /manufacturer/production/:id/quote` | Manufacturer | `manufacturer:production_manage` | Submit per-piece price, order-level production expenses, VAT terms, and note for Admin approval. |
+| `POST /manufacturer/production/:id/start` | Manufacturer | `manufacturer:production_manage` | Start after checklist and terms gates pass. |
+| `PATCH /manufacturer/production/:id/post-check` | Manufacturer | `manufacturer:production_manage` | QA actual counts and receive good units into inventory. |
+| `GET /manufacturer/finance/dashboard` | Manufacturer | `manufacturer:finance_dashboard` | Read production value, logistics reimbursements, outstanding and paid settlements. |
+| `GET /manufacturer/finance/settlement-requests` | Manufacturer | `manufacturer:finance_dashboard` | Read paginated settlement-request history with requested, paid, and remaining amounts and linked payout, transfer-evidence, treasury, cash-transaction, and journal details. |
+| `POST /manufacturer/finance/settlement-request` | Manufacturer | `manufacturer:settlement_request` | Submit a decimal-string amount for available production or logistics payable with a stable `Idempotency-Key` header or `idempotencyKey` body field. Exact retries replay; changed payloads conflict. |
+| `GET /admin/finance/settlements` | Admin | `finance:payables_read` | List manufacturer settlement requests with linked payout attempts and accounting/cash records; supports `PENDING`, `PARTIALLY_PAID`, `PAID`, and `REJECTED` status, manufacturerId, page, and limit filters. |
+| `PATCH /admin/finance/settlements/:id/pay` | Admin | `finance:payable_settle` | Pay a pending manufacturer settlement from a financial account. |
+| `POST /assignment/assign` | Admin/internal | `assignment:create` | Assign customer order. |
+| `GET /assignment/all` | Admin | `assignment:admin_list` | List assignments. |
+| `POST /assignment/manual-assign` | Admin | `assignment:manual_assign` | Legacy route; rejects manufacturer-targeted assignments with HTTP 409. |
+| `GET /assignment/my` | Manufacturer | `manufacturer:assignments_read` | Read historical own assignments only. |
+| `GET /assignment/distributor/my` | Distributor | `distributor:assignments_read` | List customer orders assigned to the authenticated distributor. |
+| `GET /assignment/distributor/:id` | Distributor | `distributor:assignments_read` | Read one own distributor assignment. |
+
+Manufacturer profile and administration APIs are mounted at `/api/manufacturer`.
+They include `/register`, `/profile`, `/availability`, `/stats`,
+`/pickup-profile`, `/list`, and admin operations for registration, profile
+updates, ratings, contracts, and NCM branch synchronization. Manufacturer
+commission endpoints and rate fields have been removed.
+Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
+
+## 6. How admin controls loss, damage, gifts, cards, and letters
+
+### Loss, damage, and discrepancy handling
+
+- Distributor receipt captures the quantities and creates `DAMAGE`/`LOSS` ledger
+  movements plus discrepancy records. This preserves where the units went and
+  who reported the issue.
+- The discrepancy model can store evidence, custody stage, responsible party,
+  financial responsibility, platform loss amount, reviewer, resolution and
+  resolution timestamp.
+- Admin can inspect transfers (`GET /api/stock-transfers/admin`) and ledger
+  data/reconciliation (`/api/admin/inventory-ledger/*`).
+- A distributor's post-receipt write-off is persisted as an open
+  `InventoryDiscrepancy` tied to the distributor and stock location, with
+  evidence and an audit event for admin monitoring. Admins can inspect these
+  alerts using `GET /api/stock-transfers/admin/discrepancies`. A full
+  investigation or financial-resolution workflow is separate from creating
+  and listing this alert.
+- Manufacturer and Admin transfer screens show production terms separately from
+  delivery-to-distributor freight. Production terms identify unit goods cost
+  before VAT, VAT per unit, goods total including VAT, and batch other production
+  charges. Local freight is shown per shipment with paid and outstanding
+  reimbursement amounts; NCM charges remain separately identified as payable
+  to NCM, not the manufacturer or distributor.
+- Freight has a `freightSettlementStatus` on the shipment, initially
+  `PENDING_ADMIN_SETTLEMENT`; manufacturer settlement payments update this
+  state and the cumulative paid freight amount.
+- Dispatched manufacturer-paid local freight posts to GL 6430/2160 and creates
+  an idempotent payable bill linked to the shipment. Logistics payouts allocate
+  to these bills; Accounting Health shows the source-scoped journal-to-bill
+  match while leaving legacy and other manufacturer payable balances flagged.
+- Accepted production receipt posts inventory/VAT/manufacturer payable and
+  creates an idempotent bill linked to the production request. Accounting Health
+  separately checks posted production payable journals against those bills;
+  this does not clear historical or other manufacturer payable gaps.
+- NCM freight quotes/charges are platform/admin settlement amounts only. NCM
+  return status, return reason, carrier status, carrier payment status, and
+  event timeline are visible in the admin, distributor, and manufacturer stock
+  transfer views; only the manufacturer can submit the NCM return request.
+- The admin stock-transfer view opens on NCM shipments. If a booking outcome or
+  webhook is uncertain, an administrator can reconcile the carrier booking or
+  carrier status. Booking reconciliation alone does not move stock; pickup
+  confirmation or admin carrier-status reconciliation triggers the same
+  idempotent custody transition.
+
+### Gifts
+
+Admins create, edit, and archive gift catalog items; configure exact-value
+order-value rules; and allocate catalog stock to active distributors.
+Distributor allocations start `PENDING_ACCEPTANCE`; acceptance requires the
+distributor to enter the quantity actually received, which becomes the
+available count. Only acknowledged, accepted stock can be selected.
+
+At `letter_ready`, the backend automatically selects one physical gift for the
+entire checkout group. The reward value must match exactly to the cent, and
+selection is limited to accepted stock at distributors already assigned to the
+group. It prefers a distributor in the customer's district, then province,
+then another assigned distributor, randomizing equivalent candidates. If no
+matching stock exists, the entitlement remains pending for a later order. The
+packing checklist confirms the selected gift; reservation, delivery deduction,
+return/restock, and loss are recorded in the distributor movement log.
+
+Own Store card gifts become eligible only after customers scan and claim them.
+When a customer selects a loyalty reward with a gift, checkout creates a
+same-value gift entitlement and tries to fulfill it from accepted inventory at
+the assigned distributors. Any gift category may match, but the catalog value
+must match exactly. If none of the assigned distributors can fulfill it, the
+order proceeds normally; after every shipment is packed, the gift returns to
+the pending queue for a later checkout. Order-value rules do not attach
+physical gifts.
+Admins can replace an assigned gift only before packing, using accepted stock
+of exactly the same value at the same distributor. Catalog value edits are
+blocked while that gift is attached to an unfulfilled order. Manufacturer gift
+records are retained for history, but new gift allocation and customer-order
+fulfillment are distributor-scoped.
+Admins can also reconcile acknowledged distributor stock with a non-zero whole
+number adjustment and a required reason. Adjustments change available units
+only, cannot reduce stock below zero or alter reserved units, and write both an
+inventory movement and an admin audit event in the same transaction. Stock
+records are server-paginated so the Admin view is not limited to the newest
+200 allocations. Catalog creation, updates and archival, order-value rule
+changes, distributor stock dispatch, stock adjustments, and order gift
+replacements are recorded in the system audit outbox in the same transaction
+as their corresponding data changes.
+An Admin can cancel an unacknowledged distributor allocation with a reason;
+the cancellation is conditional on the allocation still being pending and
+unreserved, and it remains visible in stock and movement history.
+
+| Method and path | Actor | Permission | Action |
+|---|---|---|---|
+| `GET /admin/gifts/catalog`, `POST /admin/gifts/catalog`, `DELETE /admin/gifts/catalog/:id` | Admin | `loyalty:level_manage` | Maintain catalog. |
+| `GET/POST /admin/gifts/tiers`, `DELETE /admin/gifts/tiers/:id` | Admin | `loyalty:level_manage` | Maintain, archive, and reactivate order-value gift rules; deletion is soft archival. |
+| `POST /admin/gifts/assign-distributor` | Admin | `loyalty:level_manage` | Allocate gifts to distributor inventory. |
+| `GET /admin/gifts/stock` | Admin | `loyalty:level_manage` | Review sent, acknowledged, available, and reserved counts. |
+| `POST /admin/gifts/stock/:inventoryId/adjust` | Admin | `loyalty:level_manage` | Reconcile acknowledged available stock with a required reason and audit trail. |
+| `POST /admin/gifts/stock/:inventoryId/cancel` | Admin | `loyalty:level_manage` | Cancel a pending, unreserved distribution with a required reason. |
+| `GET /admin/gifts/orders` | Admin | `loyalty:level_manage` | Review eligible un-packed gift assignments. |
+| `GET /admin/gifts/orders/:orderId/options`, `PUT /admin/gifts/orders/:orderId/gift` | Admin | `loyalty:level_manage` | Replace an assigned gift with same-value accepted stock before packing. |
+| `GET /distributor/gifts/inbound` | Distributor | `distributor:hub_gifts_read` | View allocations awaiting/recorded by distributor. |
+| `POST /distributor/gifts/:id/respond` | Distributor | `distributor:hub_gift_record` | Accept with counted received quantity or reject allocation. |
+| `GET /distributor/gifts/order-options/:orderId` | Distributor | `distributor:assignment_status_update` | Read gift eligibility and assignment state for an own order. |
+| `POST /admin/gifts/returned/:orderId` | Admin | `returns:admin_review` | Record returned gift outcome. |
+| `POST /distributor/gifts/returned/:orderId` | Distributor | `distributor:delivery_return` | Record gift return/loss in the distributor workflow. |
+
+Direct hub orders and hub stock are likewise distributor-only. The distributor
+portal reads ledger-backed stock at `GET /api/distributor/inventory`, creates
+orders at `POST /api/distributor/orders/direct`, and updates their status at
+`PATCH /api/distributor/orders/direct/status`. Their item deductions, order
+creation, and distributor-owned assignment are transactional. No
+`ManufacturerInventory` fallback is used for these flows.
+
+| Method and path | Actor | Permission | Action |
+|---|---|---|---|
+| `GET /api/distributor/inventory` | Distributor | `distributor:inventory_read` | Read paginated SKU stock for existing workflows; `?groupBy=product` returns product-level totals with size/color SKU quantities. |
+| `GET /api/distributor/inventory/:inventorySkuId/details` | Distributor | `distributor:inventory_read` | Read an owned SKU's current quantities and paginated ledger movement history. |
+| `GET /api/distributor/orders/direct` | Distributor | `distributor:direct_order_read` | List the active hub's direct orders. |
+| `POST /api/distributor/orders/direct` | Distributor | `distributor:direct_order_create` | Create a direct order, snapshot FIFO inventory cost allocations, and deduct the active hub's unreserved ledger stock transactionally. |
+| `PATCH /api/distributor/orders/direct/status` | Distributor | `distributor:direct_order_status_update` | Update an order owned by the active distributor; delivered sales post allocated COGS and payment confirmations clear customer receivables. |
+
+### Marketing cards
+
+Admin manages marketing partners, campaigns, batches, card assignment/invalidation
+and metrics. Physical card stock is assigned to active distributors with receipt
+confirmation; distributors can record receipt, update card status in bulk, and
+attach eligible cards to orders. Card states include `GENERATED`, `ASSIGNED`, `RECEIVED`,
+`AVAILABLE`, `RESERVED`, `ATTACHED`, and `CANCELLED`. Customer and partner
+endpoints handle linking/scanning/redeeming; they are downstream of admin's
+campaign/card setup.
+
+Admin API prefix: `/api/marketing-cards/admin/*`; key operations include
+`GET/POST /partners`, `PATCH /partners/:partnerId/approve`,
+`GET/POST /campaigns`, `POST /batches`, `POST /assignments`,
+`POST /own-store/assignments`, `GET /cards`, `POST /cards/invalidate`, and
+`GET /metrics` or `/stats`. Most require `marketing_card:admin_manage`;
+own-store campaign/assignment routes use `marketing_card:own_store_manage` or
+`marketing_card:custom_assign`.
+
+Distributor operations include:
+
+- `GET /api/marketing-cards/distributor/cards`
+- `POST /api/marketing-cards/distributor/cards/bulk-status`
+- `POST /api/marketing-cards/distributor/cards/:cardId/receive`
+- `POST /api/marketing-cards/distributor/orders/:orderId/attach`
+
+All require `marketing_card:distributor_manage` and distributor context.
+Marketing-card assignment and receipt use the related assignment/receipt tables,
+and card/order attachment is unique per card and per order. The old
+manufacturer-owned routes are no longer mounted; legacy records remain intact.
+For Own Store campaigns, distributor stock is an order-reward channel: attaching
+a card binds it to that order, and after delivery only the account on the order
+can scan and claim the reward. A customer may claim separate cards attached to
+multiple delivered orders; these distributor-issued cards bypass campaign,
+organization, and weekly scan caps, while each physical card remains single-use.
+The configured Own Store per-account cap and the other scan caps continue to
+apply to public, marketing-partner, and custom-organization assignments.
+
+### Letters
+
+Admin manages story letter content, ordering, archive state and letter templates
+under `/api/admin/story-letter/*` with `storyletter:admin_manage`. This includes
+stories, story letters and templates; template versions preserve the text
+version used for a delivery.
+
+For an order, `LetterDelivery` stores the chosen customer/story/template
+references and rendered content/document URL. Its states are
+`RESERVED`, `PRINTED`, `PACKED`, `SHIPPED`, `DELIVERED`, `CANCELLED`, and
+`VOIDED`. The assigned distributor checks
+`GET /api/personalized-letter/:orderId` (`distributor:letter_status_read`) and
+prints with `POST /api/personalized-letter/:orderId/print`
+(`distributor:letter_print`). This print permission is granted only to the
+DISTRIBUTOR role; it is not granted to MANUFACTURER or ADMIN. The endpoint
+validates that the distributor owns the direct order or its active assignment.
+`CustomerLetterImage` is an independent record
+for uploaded handwritten letter images and should not be confused with generated
+story/template delivery records.
+
+## 7. Admin responsibilities and operating checklist
+
+1. Review distributor applications and only activate legitimate businesses.
+2. Maintain manufacturer accounts, contracts, active/availability status,
+   pickup details, and approved product COGS.
+3. Review production requests and control approved cost/minimum quantities.
+4. Review distributor transfer requests against current factory availability;
+   approve only quantities that can be fulfilled and leave an auditable note.
+5. Monitor dispatch/tracking and reconcile transfer receipts against shipped
+   quantities.
+6. Review discrepancy evidence and ledger balances. The current implementation
+   captures discrepancies but lacks a general discrepancy-resolution and
+   financial-settlement API; investigation/resolution must not be represented as
+   an automated capability.
+7. Manage gift allocations, marketing campaigns/cards, and letter content
+   through their separate role-protected APIs.
+8. Review role and permission assignments under `/api/admin/access/*`; follow
+   least privilege and use the access-management audit records.
+9. Use `/platform-features` (permission `platform:features_manage`) to enable or
+   disable loyalty, marketing cards, and customer letters. Disabled operations
+   are hidden from customer/distributor interfaces and rejected by their
+   feature-sensitive APIs. Disabling letters pauses printing without deleting
+   the existing letter/story assignment, so re-enabling resumes the existing
+   sequence. Disabling loyalty does not erase customer history or reward
+   configuration.
+10. Distributor operators can use `/distributor/operations` to run bounded
+    reconciliation and review scoped stock-transfer, inventory discrepancy,
+    delivered-without-POD, and stale/conflicted offline-sync findings. Finding
+    history is separate control metadata with `OPEN`, `ACKNOWLEDGED`,
+    `RESOLVED`, and `NO_LONGER_PRESENT` states; acknowledgement does not resolve
+    a discrepancy, and failed/partial runs cannot mark absent findings closed.
+    Apply the reconciliation-finding migration before enabling this dashboard.
+    Dedicated `distributor:operations_read`,
+    `distributor:operations_run`, and `distributor:operations_acknowledge`
+    permissions protect the dashboard, manual run, and acknowledgement paths.
+    Acknowledging records lifecycle metadata and an audit event; it does not
+    resolve findings or alter inventory, delivery, COD, wholesale, or accounting
+    source records.
+
+## 8. Important distinctions and implementation gaps
+
+- A bulk distributor stock request is not currently a conventional purchase
+  order: no transfer pricing, invoice/payment, accounts-receivable, or
+  distributor/manufacturer commercial acceptance step is part of the
+  `StockTransfer` schema/route flow described above.
+- Customer `Order` fulfillment is not the same as distributor replenishment.
+  Customer orders go through `OrderAssignment`; distributor restocking goes
+  through `StockTransfer`.
+- Stock snapshots (`InventoryBalance`) and movement history
+  (`InventoryLedgerEntry`) are distinct. The ledger records auditable movement
+  references and idempotency keys; the balance stores current quantities.
+- Damage/loss reporting exists at distributor receipt, but a full admin
+  discrepancy investigation/resolution/financial settlement endpoint was not
+  found in the mounted routes.
+- The distributor operations reconciliation dashboard reuses stock-transfer
+  reconciliation evidence and checks inventory discrepancies, delivered manifest
+  stops without POD, and aged/conflicted offline drafts. It does not reconcile
+  inventory-wide balances, dealer receivables, COD settlement, or the general
+  ledger. Incomplete/capped sources are reported as partial; do not treat a
+  partial run as proof that no other exception exists.
+- `DAMAGED`, `LOST`, and `QUARANTINE` are location kinds in the ledger. They
+  represent segregated stock states, not proof that compensation or vendor
+  recovery has been completed.
+- Admins can approve/reject transfer requests and inspect stock; the manufacturer
+  dispatches. The code does not currently make manufacturer confirmation a
+  prerequisite between admin approval and dispatch.
+
+## 9. Frontend Architecture, Single-Dashboard Switcher & UI/UX
+
+### Design System & Styling Tokens
+- **Typography**: Primary body font is `DM Sans`, and headings use `Space Grotesk`.
+- **Palette**: Paper background (`#f8f7f4`), ink typography (`#171717`), and border tokens (`#dedbd3`).
+- **Feedback**: Integrated `react-toastify` for reactive, asynchronous user notifications.
+
+### Dynamic Navigation & Role Switcher
+- **Single-Dashboard Dual-Role Switcher (`manufacturer/src/components/Sidebar.jsx` & `Navbar.jsx`)**:
+  - Automatically identifies whether the active authenticated user has dual roles (`MANUFACTURER` + `DISTRIBUTOR`).
+  - Renders **Manufacturer Navigation** routes by default.
+  - If the user holds `DISTRIBUTOR` authorization, dynamically exposes the **Distributor Operations Hub** section and a top-bar **[ Switch View: Manufacturer | Distributor ]** quick-toggle.
+  - If the user is exclusively a Manufacturer, renders a clean **"Apply for Distributor Authorization"** prompt card.
+- **Pre & Post Production Checklists (`manufacturer/src/components/ProductionChecklistModal.jsx`)**:
+  - Step-by-step gate verification (fabric GSM, sample pattern, color shade matching) for pre-production.
+  - Granular post-production QA breakdown by size/color variant with good vs. damaged unit classification before factory inventory receipt.
+- **Distributor Demand & Inbound Receipt Portal (`manufacturer/src/pages/DistributorDemandReceipt.jsx`)**:
+  - Factory stock demand request submission with live manufacturer catalog selection.
+  - Inbound shipment QA checklist comparing ordered vs. actual good, damaged, and missing items.
+- **Distributor Self-Delivery Portal (`manufacturer/src/pages/DistributorSelfDelivery.jsx`)**:
+  - Stepwise status progression workflow: `Dispatched` $\rightarrow$ `On The Way` $\rightarrow$ `Delivered`.
+  - Self-delivery return QA modal with restock vs. damage write-off sorting.
+- **Distributor Financial Dashboard (`manufacturer/src/pages/DistributorFinanceDashboard.jsx`)**:
+  - Minimalist KPI cards: Net Payable, Gross Earnings, Bonuses/Incentives, and Deductions; gross delivery earnings include distributor self-delivery only, never NCM carrier deliveries.
+  - Instant inclusive/exclusive compensation display toggle; the rate-card VAT setting is not proof of verified input VAT or statutory distributor tax status.
+  - Interactive **"Ask for Settlement"** modal caps the request at available net settlement balance; the backend independently validates the amount and reserves it transactionally.
+- **Admin Distributor Management (`admin/src/pages/DistributorApplications.jsx`)**:
+  - Separate review queues for new distributor applications and manufacturer requests to add distributor access, service-area coverage management, and distributor settlement payout review & execution. Configure delivery, return, commission, VAT, and per-successful-NCM-delivery rates only from the distributor detail page (`/distributors/:distributorId`).
+
+## 10. Source references
+
+- Database models: [`backend/prisma/schema.prisma`](./backend/prisma/schema.prisma)
+- API mounts and middleware setup: [`backend/server.js`](./backend/server.js)
+- Transfer API: [`backend/routes/stockTransferRoute.js`](./backend/routes/stockTransferRoute.js)
+- Distributor applications & fulfillment: [`backend/routes/distributorRoute.js`](./backend/routes/distributorRoute.js)
+- Admin distributor rates & finance: [`backend/routes/adminDistributorRateRoute.js`](./backend/routes/adminDistributorRateRoute.js)
+- Manufacturer profile/admin operations: [`backend/routes/manufacturerRoute.js`](./backend/routes/manufacturerRoute.js)
+- Production requests: [`backend/routes/manufacturerProductionRoute.js`](./backend/routes/manufacturerProductionRoute.js)
+- Customer order assignments: [`backend/routes/orderAssignmentRoute.js`](./backend/routes/orderAssignmentRoute.js)
+- Inventory audit: [`backend/routes/inventoryLedgerRoute.js`](./backend/routes/inventoryLedgerRoute.js)
+- Gifts: [`backend/routes/giftRoute.js`](./backend/routes/giftRoute.js)
+- Marketing cards: [`backend/routes/marketingCardRoute.js`](./backend/routes/marketingCardRoute.js)
+- Story letters: [`backend/routes/storyLetterAdminRoute.js`](./backend/routes/storyLetterAdminRoute.js)
+- Access management: [`backend/routes/accessManagementRoute.js`](./backend/routes/accessManagementRoute.js)
+- Request/receipt normalization and transfer states: [`backend/services/stockTransferService.js`](./backend/services/stockTransferService.js)
+- Distributor self-delivery & returns: [`backend/services/distributorSelfDeliveryService.js`](./backend/services/distributorSelfDeliveryService.js)
+- Distributor finance & rate cards: [`backend/services/distributorFinanceService.js`](./backend/services/distributorFinanceService.js) and [`backend/services/distributorRateCardService.js`](./backend/services/distributorRateCardService.js)

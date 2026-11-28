@@ -4,14 +4,21 @@ import {
   createCustomerExchangeRequest,
   decideCustomerExchangeRequest,
   listAdminExchangeRequests,
+  listDistributorExchangeRequests,
   listCustomerExchangeRequests,
   recordExchangeInspection,
   reconcileCustomerExchange,
   resolveUnknownExchangeSubmission,
   submitApprovedExchange,
 } from "../services/orderExchangeService.js";
+import { processDistributorExchange } from "../services/distributorExchangeService.js";
+import {
+  reviewDistributorExchangePaymentEvidence,
+  submitDistributorExchangePaymentEvidence,
+} from "../services/distributorExchangePaymentService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
-const sendError = (res, error) => res.status(error.status || 400).json({
+const sendError = (res, error) => res.status(error.statusCode || error.status || 400).json({
   success: false,
   code: error.code || "EXCHANGE_REQUEST_FAILED",
   message: error.message || "Exchange request failed.",
@@ -43,6 +50,75 @@ export const customerListExchangeRequests = async (req, res) => {
   }
 };
 
+export const distributorListExchangeRequests = async (req, res) => {
+  try {
+    const requests = await listDistributorExchangeRequests({ distributorId: req.distributorId });
+    return res.json({ success: true, requests });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const distributorProcessExchangeRequest = async (req, res) => {
+  try {
+    const request = await processDistributorExchange({
+      requestId: req.params.id,
+      distributorId: req.distributorId,
+      actorId: req.auth?.accountId || req.auth?.userId,
+      action: req.body.action,
+      inspectedItems: req.body.items,
+      notes: req.body.notes,
+      replacementPaperBillNumber: req.body.replacementPaperBillNumber,
+    });
+    return res.json({ success: true, request });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const distributorSubmitExchangePaymentEvidence = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, code: "DISTRIBUTOR_PROFILE_REQUIRED", message: "An approved distributor profile is required." });
+    }
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/exchange_payments");
+    const result = await submitDistributorExchangePaymentEvidence({
+      distributorId,
+      requestId: req.params.id,
+      amount: req.body?.amount,
+      paymentMethod: req.body?.paymentMethod,
+      externalReference: req.body?.externalReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      idempotencyKey: req.body?.idempotencyKey || req.headers?.["idempotency-key"],
+      recordedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    if (result.isReplay && uploadedEvidence?.public_id) {
+      await deleteEvidenceImage(uploadedEvidence.public_id);
+    }
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    return sendError(res, error);
+  }
+};
+
+export const adminReviewExchangePaymentEvidence = async (req, res) => {
+  try {
+    const result = await reviewDistributorExchangePaymentEvidence({
+      requestId: req.params.id,
+      cashEventId: req.body?.cashEventId,
+      decision: req.body?.decision,
+      reviewNotes: req.body?.reviewNotes,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
 export const adminListExchangeRequests = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
@@ -69,6 +145,8 @@ export const adminDecideExchangeRequest = async (req, res) => {
       decision: req.body.decision,
       reason: req.body.reason,
       chargePayer: req.body.chargePayer,
+      replacementPaperBillNumber: req.body.replacementPaperBillNumber,
+      replacementPaperBillAttached: req.body.replacementPaperBillAttached,
     });
     return res.json({ success: true, ...result });
   } catch (error) {
@@ -87,8 +165,8 @@ export const adminRetryExchangeSubmission = async (req, res) => {
 
 export const adminReconcileExchange = async (req, res) => {
   try {
-    const request = await reconcileCustomerExchange(req.params.id);
-    return res.json({ success: true, request });
+    const result = await reconcileCustomerExchange(req.params.id);
+    return res.json({ success: true, ...result });
   } catch (error) {
     return sendError(res, error);
   }

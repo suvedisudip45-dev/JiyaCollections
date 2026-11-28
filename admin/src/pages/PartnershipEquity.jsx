@@ -1,8 +1,18 @@
-/* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import NepaliDatePicker from "../components/NepaliDatePicker";
+import { getNepaliDateRangeForDate } from "../utils/nepaliDate";
+
+const getStableIdempotencyKey = (ref, prefix, request) => {
+  const signature = JSON.stringify(request);
+  if (ref.current?.signature !== signature) {
+    ref.current = { signature, key: `${prefix}-${crypto.randomUUID()}` };
+  }
+  return ref.current.key;
+};
 
 const PartnershipEquity = ({ token }) => {
   const [capTableData, setCapTableData] = useState({
@@ -14,6 +24,11 @@ const PartnershipEquity = ({ token }) => {
   const [liabilities, setLiabilities] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [calendarCurrentDate, setCalendarCurrentDate] = useState("");
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
   const [activeTab, setActiveTab] = useState("captable"); // captable, issue, transfer, valuation, loans, transactions, distribution
 
   // Modals
@@ -25,10 +40,16 @@ const PartnershipEquity = ({ token }) => {
   const [showRepayLoanModal, setShowRepayLoanModal] = useState(false);
   const [showAmortizationModal, setShowAmortizationModal] = useState(false);
   const [showDistributeModal, setShowDistributeModal] = useState(false);
+  const [distributionEstimate, setDistributionEstimate] = useState(null);
 
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [selectedLoanSchedule, setSelectedLoanSchedule] = useState([]);
   const [editingPartner, setEditingPartner] = useState(null);
+  const loanDisbursementIdempotencyKey = useRef(null);
+  const loanRepaymentIdempotencyKey = useRef(null);
+  const shareIssuanceIdempotencyKey = useRef(null);
+  const shareBuybackIdempotencyKey = useRef(null);
+  const peerShareTransferIdempotencyKey = useRef(null);
 
   // Forms
   const [partnerForm, setPartnerForm] = useState({
@@ -86,7 +107,7 @@ const PartnershipEquity = ({ token }) => {
     principalAmount: "",
     interestRate: "11.5",
     loanTermMonths: "12",
-    startDate: new Date().toISOString().split("T")[0],
+    startDate: "",
     depositAccountId: "",
     notes: "",
   });
@@ -100,15 +121,13 @@ const PartnershipEquity = ({ token }) => {
   });
 
   const [distForm, setDistForm] = useState({
-    periodStart: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0],
-    periodEnd: new Date().toISOString().split("T")[0],
+    periodStart: "",
+    periodEnd: "",
     fiscalYear: "2082/2083",
     retainedEarningsPercentage: 20,
-    executePayout: false,
-    fromAccountId: "",
   });
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const [capRes, liabRes, accRes] = await Promise.all([
@@ -130,11 +149,47 @@ const PartnershipEquity = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     if (token) fetchData();
-  }, [token]);
+  }, [fetchData, token]);
+
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    if (!token) return () => { active = false; };
+
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (active) {
+          const currentDate = response.data.currentDate;
+          setCalendarYears(response.data.years);
+          setCalendarCurrentDate(currentDate);
+          setLoanForm((current) => ({ ...current, startDate: current.startDate || currentDate }));
+          setDistForm((current) => ({
+            ...current,
+            periodStart: current.periodStart || getNepaliDateRangeForDate(currentDate).startDate,
+            periodEnd: current.periodEnd || currentDate,
+          }));
+          setCalendarReady(true);
+        }
+      })
+      .catch((error) => {
+        console.error("Load configured Nepali date error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          toast.error(message);
+        }
+      });
+
+    return () => { active = false; };
+  }, [calendarRetry, token]);
 
   // ==========================================
   // HANDLERS
@@ -177,16 +232,19 @@ const PartnershipEquity = ({ token }) => {
   // Primary Share Issuance
   const handleIssueShares = async (e) => {
     e.preventDefault();
-    if (!issueForm.investorName || !issueForm.email || !issueForm.preMoneyValuation || !issueForm.investmentAmount) {
-      return toast.warn("Investor name, email, pre-money valuation, and investment amount are required");
+    if (!issueForm.investorName || !issueForm.email || !issueForm.preMoneyValuation ||
+        !issueForm.investmentAmount || !issueForm.depositAccountId) {
+      return toast.warn("Investor details, valuation, investment amount, and a Treasury account are required");
     }
 
     try {
+      const idempotencyKey = getStableIdempotencyKey(shareIssuanceIdempotencyKey, "SHARE-ISSUANCE", issueForm);
       const res = await axios.post(`${backendUrl}/api/finance/issue-new-shares`, issueForm, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": idempotencyKey },
       });
       if (res.data.success) {
         toast.success(res.data.message);
+        shareIssuanceIdempotencyKey.current = null;
         setShowIssueSharesModal(false);
         setIssueForm({
           investorName: "",
@@ -216,11 +274,44 @@ const PartnershipEquity = ({ token }) => {
     }
 
     try {
+      const isBuyback = transferForm.transferType === "COMPANY_BUYBACK";
+      if (isBuyback && !transferForm.fromTreasuryAccountId) {
+        return toast.warn("Select the mapped Treasury account funding the share buyback");
+      }
+      if (isBuyback && !transferForm.notes.trim()) {
+        return toast.warn("Enter a reason for the company share buyback");
+      }
+      const idempotencyKey = isBuyback
+        ? getStableIdempotencyKey(shareBuybackIdempotencyKey, "SHARE-BUYBACK", {
+            sellerPartnerId: transferForm.sellerPartnerId,
+            sharesToTransfer: transferForm.sharesToTransfer,
+            sharePrice: transferForm.sharePrice || "100",
+            fromTreasuryAccountId: transferForm.fromTreasuryAccountId,
+            notes: transferForm.notes || "",
+          })
+        : getStableIdempotencyKey(peerShareTransferIdempotencyKey, "PEER-SHARE-TRANSFER", {
+            sellerPartnerId: transferForm.sellerPartnerId,
+            buyerType: transferForm.buyerType,
+            buyerPartnerId: transferForm.buyerPartnerId,
+            buyerName: transferForm.buyerName,
+            buyerEmail: transferForm.buyerEmail,
+            buyerPhone: transferForm.buyerPhone,
+            buyerRole: transferForm.buyerRole,
+            sharesToTransfer: transferForm.sharesToTransfer,
+            sharePrice: transferForm.sharePrice || "100",
+            notes: transferForm.notes || "",
+          });
       const res = await axios.post(`${backendUrl}/api/finance/transfer-share`, transferForm, {
-        headers: { token },
+        headers: {
+          token,
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
       });
       if (res.data.success) {
-        toast.success(res.data.message);
+        if (isBuyback) toast.info(res.data.message);
+        else toast.success(res.data.message);
+        if (isBuyback) shareBuybackIdempotencyKey.current = null;
+        else peerShareTransferIdempotencyKey.current = null;
         setShowTransferSharesModal(false);
         setTransferForm({
           sellerPartnerId: "",
@@ -277,16 +368,32 @@ const PartnershipEquity = ({ token }) => {
   // Add Loan / Financing
   const handleSaveLoan = async (e) => {
     e.preventDefault();
+    if (!calendarReady) return toast.error("The configured Nepali calendar is not available.");
     if (!loanForm.investorName || !loanForm.principalAmount) {
       return toast.warn("Lender name and principal amount are required");
     }
 
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, loanForm, {
-        headers: { token },
+      const request = { ...loanForm, calendar: "BS" };
+      const idempotencyKey = getStableIdempotencyKey(loanDisbursementIdempotencyKey, "LOAN-DISBURSEMENT", {
+        investorName: request.investorName,
+        type: request.type,
+        loanType: request.loanType,
+        principalAmount: request.principalAmount,
+        interestRate: request.interestRate,
+        loanTermMonths: request.loanTermMonths,
+        startDate: request.startDate,
+        depositAccountId: request.depositAccountId,
+      });
+      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, request, {
+        headers: {
+          token,
+          "Idempotency-Key": idempotencyKey,
+        },
       });
       if (res.data.success) {
         toast.success(res.data.message);
+        loanDisbursementIdempotencyKey.current = null;
         setShowAddLoanModal(false);
         setLoanForm({
           investorName: "",
@@ -297,7 +404,7 @@ const PartnershipEquity = ({ token }) => {
           principalAmount: "",
           interestRate: "11.5",
           loanTermMonths: "12",
-          startDate: new Date().toISOString().split("T")[0],
+          startDate: calendarCurrentDate,
           depositAccountId: "",
           notes: "",
         });
@@ -314,18 +421,28 @@ const PartnershipEquity = ({ token }) => {
   const handleRepayLoan = async (e) => {
     e.preventDefault();
     if (!selectedLoan || !repayForm.repaymentAmount) return;
+    if (!repayForm.notes.trim()) return toast.warn("Enter a reason for the loan repayment request");
 
     try {
+      const request = { liabilityId: selectedLoan.id, ...repayForm };
+      const idempotencyKey = getStableIdempotencyKey(loanRepaymentIdempotencyKey, "LOAN-REPAYMENT", {
+        liabilityId: request.liabilityId,
+        repaymentAmount: request.repaymentAmount,
+        principalPortion: request.principalPortion,
+        interestPortion: request.interestPortion,
+        fromAccountId: request.fromAccountId,
+      });
       const res = await axios.post(
         `${backendUrl}/api/finance/repay-liability`,
         {
-          liabilityId: selectedLoan.id,
-          ...repayForm,
+          ...request,
+          idempotencyKey,
         },
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success(res.data.message);
+        toast.info(res.data.message);
+        loanRepaymentIdempotencyKey.current = null;
         setShowRepayLoanModal(false);
         setSelectedLoan(null);
         setRepayForm({ repaymentAmount: "", principalPortion: "", interestPortion: "", fromAccountId: "", notes: "" });
@@ -359,14 +476,14 @@ const PartnershipEquity = ({ token }) => {
   // Profit Distribution
   const handleProfitDistribution = async (e) => {
     e.preventDefault();
+    if (!calendarReady) return toast.error("The configured Nepali calendar is not available.");
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/profit-distribution`, distForm, {
+      const res = await axios.post(`${backendUrl}/api/finance/profit-distribution`, { ...distForm, calendar: "BS" }, {
         headers: { token },
       });
       if (res.data.success) {
+        setDistributionEstimate(res.data.estimate);
         toast.success(res.data.message);
-        setShowDistributeModal(false);
-        fetchData();
       } else {
         toast.error(res.data.message);
       }
@@ -410,6 +527,18 @@ const PartnershipEquity = ({ token }) => {
 
   return (
     <div className="space-y-8 pb-16 select-none">
+      {calendarError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <span>{calendarError}</span>
+          <button
+            type="button"
+            onClick={() => setCalendarRetry((retry) => retry + 1)}
+            className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-semibold hover:bg-rose-100"
+          >
+            Retry calendar
+          </button>
+        </div>
+      )}
       {/* HEADER */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
@@ -430,10 +559,13 @@ const PartnershipEquity = ({ token }) => {
         {/* TOP ACTION BUTTONS */}
         <div className="flex flex-wrap items-center gap-2.5">
           <button
-            onClick={() => setShowDistributeModal(true)}
+            onClick={() => {
+              setDistributionEstimate(null);
+              setShowDistributeModal(true);
+            }}
             className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-xs"
           >
-            <span>💸 Distribute Profits</span>
+            <span>💸 Estimate Profit Share</span>
           </button>
 
           <button
@@ -1237,8 +1369,9 @@ const PartnershipEquity = ({ token }) => {
                   value={issueForm.depositAccountId}
                   onChange={(e) => setIssueForm({ ...issueForm, depositAccountId: e.target.value })}
                   className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-semibold"
+                  required
                 >
-                  <option value="">Do not auto-credit treasury balance</option>
+                  <option value="">Select the active mapped NPR Treasury account receiving funds</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.accountName} (Current Balance: {currency}{Number(a.currentBalance).toLocaleString()})
@@ -1752,6 +1885,13 @@ const PartnershipEquity = ({ token }) => {
                 </div>
               </div>
 
+              <NepaliDatePicker
+                label="Loan Start Date"
+                value={loanForm.startDate}
+                onChange={(startDate) => setLoanForm({ ...loanForm, startDate })}
+                calendars={calendarYears}
+              />
+
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   Disburse Principal Into Treasury Account (Capital Inflow)
@@ -1760,8 +1900,9 @@ const PartnershipEquity = ({ token }) => {
                   value={loanForm.depositAccountId}
                   onChange={(e) => setLoanForm({ ...loanForm, depositAccountId: e.target.value })}
                   className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-semibold"
+                  required
                 >
-                  <option value="">Do not credit treasury balance</option>
+                  <option value="">Select Treasury account...</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.accountName} (Balance: {currency}{Number(a.currentBalance).toLocaleString()})
@@ -1780,6 +1921,7 @@ const PartnershipEquity = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={!calendarReady}
                   className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs"
                 >
                   Register Loan Facility
@@ -1821,28 +1963,45 @@ const PartnershipEquity = ({ token }) => {
                 />
               </div>
 
+              {repayForm.repaymentAmount && Number(repayForm.repaymentAmount) > 0 && (
+                <p className="rounded-lg bg-amber-50 p-2 text-[10px] text-amber-900">
+                  Legacy monthly estimate for guidance only — interest: {currency}
+                  {Number((Number(selectedLoan.outstandingBalance || 0) * Number(selectedLoan.interestRate || 0) / 1200).toFixed(2)).toLocaleString()},
+                  principal: {currency}
+                  {Math.max(0, Number((Number(repayForm.repaymentAmount) - Number(selectedLoan.outstandingBalance || 0) * Number(selectedLoan.interestRate || 0) / 1200).toFixed(2))).toLocaleString()}.
+                  Enter and verify both portions from the approved repayment evidence; the estimate is not posted automatically.
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Principal Portion</label>
+                  <label className="font-bold text-slate-700 block mb-1">Principal Portion *</label>
                   <input
                     type="number"
-                    placeholder="Auto-calculated"
+                    min="0"
+                    step="0.01"
+                    placeholder="Enter confirmed principal"
                     value={repayForm.principalPortion}
                     onChange={(e) => setRepayForm({ ...repayForm, principalPortion: e.target.value })}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                    required
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Interest Expense Portion</label>
+                  <label className="font-bold text-slate-700 block mb-1">Interest Expense Portion *</label>
                   <input
                     type="number"
-                    placeholder="Auto-calculated"
+                    min="0"
+                    step="0.01"
+                    placeholder="Enter confirmed interest"
                     value={repayForm.interestPortion}
                     onChange={(e) => setRepayForm({ ...repayForm, interestPortion: e.target.value })}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                    required
                   />
                 </div>
               </div>
+              <p className="text-[10px] text-slate-500">The principal and interest portions must add exactly to the repayment amount.</p>
 
               <div>
                 <label className="font-black text-rose-900 block mb-1">
@@ -1975,31 +2134,27 @@ const PartnershipEquity = ({ token }) => {
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-black text-slate-900">Run Profit Dividend Engine</h3>
+              <h3 className="text-base font-black text-slate-900">Profit Share Estimate</h3>
               <button onClick={() => setShowDistributeModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
+            <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-950">
+              Estimate only—not a distribution approval or statutory profit calculation. This preview does not create a payable, move Treasury funds, or post a journal. Source completeness, tax/return treatment, and distribution policy still require review.
+            </p>
+
             <form onSubmit={handleProfitDistribution} className="space-y-4 mt-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Period Start</label>
-                  <input
-                    type="date"
-                    value={distForm.periodStart}
-                    onChange={(e) => setDistForm({ ...distForm, periodStart: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Period End</label>
-                  <input
-                    type="date"
-                    value={distForm.periodEnd}
-                    onChange={(e) => setDistForm({ ...distForm, periodEnd: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
+              <NepaliDatePicker
+                label="Period Start"
+                value={distForm.periodStart}
+                onChange={(periodStart) => setDistForm({ ...distForm, periodStart })}
+                calendars={calendarYears}
+              />
+              <NepaliDatePicker
+                label="Period End"
+                value={distForm.periodEnd}
+                onChange={(periodEnd) => setDistForm({ ...distForm, periodEnd })}
+                calendars={calendarYears}
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2012,7 +2167,7 @@ const PartnershipEquity = ({ token }) => {
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Retained Earnings (% Reinvested)</label>
+                  <label className="font-bold text-slate-700 block mb-1">Illustrative Retained Earnings (%)</label>
                   <input
                     type="number"
                     value={distForm.retainedEarningsPercentage}
@@ -2022,37 +2177,26 @@ const PartnershipEquity = ({ token }) => {
                 </div>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  id="execPayout"
-                  checked={distForm.executePayout}
-                  onChange={(e) => setDistForm({ ...distForm, executePayout: e.target.checked })}
-                  className="w-4 h-4 rounded-md accent-emerald-600 cursor-pointer"
-                />
-                <label htmlFor="execPayout" className="cursor-pointer">
-                  <span className="font-bold text-slate-900 block">Execute Instant Bank/Cash Dividend Payout</span>
-                  <span className="text-[10px] text-slate-400">Deducts funds directly from liquid treasury account.</span>
-                </label>
-              </div>
-
-              {distForm.executePayout && (
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Disburse From Treasury Account *</label>
-                  <select
-                    value={distForm.fromAccountId}
-                    onChange={(e) => setDistForm({ ...distForm, fromAccountId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
-                    required
-                  >
-                    <option value="">Select Treasury account...</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.accountName} ({currency}{Number(a.currentBalance).toLocaleString()})
-                      </option>
+              {distributionEstimate && (
+                <section className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-live="polite">
+                  <h4 className="text-xs font-black text-slate-900">Estimate results (not posted)</h4>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
+                    <div><dt className="text-slate-500">Gross revenue</dt><dd className="font-bold">{currency}{Number(distributionEstimate.grossRevenue || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">COGS</dt><dd className="font-bold">{currency}{Number(distributionEstimate.cogs || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Operating expenses</dt><dd className="font-bold">{currency}{Number(distributionEstimate.operatingExpenses || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Estimated net profit</dt><dd className="font-bold">{currency}{Number(distributionEstimate.netProfit || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Retained amount</dt><dd className="font-bold">{currency}{Number(distributionEstimate.retainedAmount || 0).toLocaleString()}</dd></div>
+                    <div><dt className="text-slate-500">Illustrative distributable</dt><dd className="font-bold">{currency}{Number(distributionEstimate.distributableAmount || 0).toLocaleString()}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-[10px] text-slate-600">
+                    Data basis: revenue {distributionEstimate.calculationBasis?.revenue}, COGS {distributionEstimate.calculationBasis?.cogs}, expenses {distributionEstimate.calculationBasis?.operatingExpenses}.
+                  </p>
+                  <ul className="mt-2 space-y-1 text-[10px] text-slate-600">
+                    {(distributionEstimate.partnerBreakdown || []).map((partner) => (
+                      <li key={partner.partnerId}>{partner.name}: {currency}{Number(partner.amount || 0).toLocaleString()} ({partner.percentage}%)</li>
                     ))}
-                  </select>
-                </div>
+                  </ul>
+                </section>
               )}
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
@@ -2065,9 +2209,10 @@ const PartnershipEquity = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={!calendarReady}
                   className="px-5 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700"
                 >
-                  Calculate &amp; Execute
+                  Preview Estimate
                 </button>
               </div>
             </form>

@@ -1,12 +1,11 @@
 <div align="center">
 
-# Aama Clothings — Distributed E-Commerce Ecosystem
+# Aama Clothings — Multi-Portal Commerce Repository
 
-### Multi-Hub Manufacturing, Intelligent Proximity Order Routing & Regional Courier Fleet
+### Customer storefront, business operations, manufacturer/distributor workspaces, and marketing portal
 
-A production-grade distributed e-commerce network built with Node.js, Express, Prisma (MySQL), React (Vite), and Tailwind CSS.
+Built with Node.js, Express, Prisma (MySQL), React (Vite), and Tailwind CSS.
 
-![Status](https://img.shields.io/badge/status-active-emerald)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Stack](https://img.shields.io/badge/stack-Node%20%7C%20Prisma%20%7C%20React%20%7C%20MySQL-13aa52)
 ![React](https://img.shields.io/badge/React%2019-61DAFB)
@@ -16,45 +15,16 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 
 ---
 
+> **Current-source note:** The first production release is limited to Cash on Delivery (COD); no bank/debit/credit-card gateway, payment processor, card-token, PCI-processing, or payment-provider webhook flow is in scope. Marketing cards are promotional instruments, not payment cards. This repository has four independent portals (`frontend/`, `admin/`, `manufacturer/`, `marketing/`); distributor operations are a workspace in `manufacturer/`, and there is no `delivery/` app. Do not use legacy database setup commands; see [Project Overview](PROJECT_OVERVIEW.md), [First Production Release Readiness](docs/first-production-release-readiness.md), [Architecture and Backend](ARCHITECTURE_AND_BACKEND.md), and the [P6-R2B readiness audit](docs/phase-6/04-whole-project-erp-implementation-readiness-audit.md).
+
 ## 🌐 The Business Model & Architecture
 
 ```
-                                  ┌───────────────────────────┐
-                                  │      Customer Store       │
-                                  │  (frontend/ : port 5173)  │
-                                  └─────────────┬─────────────┘
-                                                │ Places Order
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │    Node/Express Backend   │
-                                  │   (backend/ : port 4000)  │
-                                  └─────────────┬─────────────┘
-                                                │ Smart Nearest Proximity
-                                                │ + Stock Availability
-                                                │ + Quality Rating Engine
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │    Manufacturer Hubs      │
-                                  │(manufacturer/ : port 5175)│
-                                  └─────────────┬─────────────┘
-                                                │ Production & Packaging Complete
-                                                │ Ready for Pickup Trigger
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │   Delivery Fleet Hub      │
-                                  │  (delivery/ : port 5176)  │
-                                  └─────────────┬─────────────┘
-                                                │ Doorstep Handover & COD Collection
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │      Customer Happy       │
-                                  └───────────────────────────┘
-                                                ▲
-                                                │ Oversight, Contracts, Stock & COD
-                                  ┌─────────────┴─────────────┐
-                                  │    Master Admin Portal    │
-                                  │    (admin/ : port 5174)   │
-                                  └───────────────────────────┘
+Customer storefront ─┐
+Admin operations ────┼── HTTP/JSON ──> Express API ── Prisma ──> MySQL
+Manufacturer /      ─┤                       ├── NCM integration
+distributor workspace┤                       ├── Cloudinary
+Marketing partner ───┘                       └── separate notification worker
 ```
 
 ---
@@ -64,55 +34,21 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 | Portal | Directory | Default Port | Description |
 | --- | --- | --- | --- |
 | **Customer Storefront** | `frontend/` | `5173` | Customer browsing, catalog search, loyalty rewards, cart & checkout |
-| **Admin Portal** | `admin/` | `5174` | Full business cockpit: multi-hub inventory, legal contracts with PDF uploads, order router, double-entry GL, finance |
-| **Manufacturer Hub** | `manufacturer/` | `5175` | Localized factory portal: order acceptance, production status, packaging checklist, hub stock management |
-| **Delivery Fleet** | `delivery/` | `5176` | Courier driver portal: route acceptance, hub pickup, customer doorstep delivery, COD cash reconciliation |
-| **REST API Server** | `backend/` | `4000` | Node.js + Prisma ORM (MySQL), Cloudinary media storage, auto-allocation engine |
+| **Admin Portal** | `admin/` | `5174` | Business operations, catalog, orders, transfers, finance/accounting, access and reporting |
+| **Manufacturer / Distributor Workspaces** | `manufacturer/` | `5175` | Manufacturer production and a separate distributor workspace for hub inventory, transfers and fulfillment |
+| **Marketing Partner Portal** | `marketing/` | `5176` | Partner campaigns, cards, redemptions and reporting |
+| **REST API Server** | `backend/` | `4000` | Shared Express API, Prisma/MySQL access, domain services and integrations |
 
 ---
 
-## ⚡ Key System Features
+## ⚡ Current Source-Backed Overview
 
-### 1. 🏭 Multi-Manufacturer Network & Smart Routing
-- **Proximity-Based Allocation Engine**: Matches customer orders to the nearest qualified manufacturer hub across Nepal (Kathmandu, Lalitpur, Bhaktapur, Pokhara, Biratnagar, Butwal, Chitwan, Dharan, etc.).
-- **Real-Time Stock Availability Check**: Ensures the hub has sufficient available units (`quantity - reservedQty >= orderedQty`) before allocating.
-- **Quality Score Weighting**: High-quality rated manufacturers are prioritized for assignment.
-- **Failover & Re-Allocation**: If a manufacturer declines an order, the engine automatically re-routes it to the next best regional hub.
-- **Admin Manual Routing Override**: Admins can re-route any order directly from the dashboard.
-
-### 2. 📦 Quality Compliance & Legal Contracts
-- **Master Manufacturing Agreement**: Enforces legal terms, start/end dates, and commission rates.
-- **Cloudinary PDF Contract Upload**: Admins upload signed contract scans directly to Cloudinary.
-- **Manufacturer Quality Auditing**: Admin-managed 1.0 to 5.0 star quality rating system.
-
-### 3. 🚚 Delivery Partner Portal & COD Reconciliation
-- **Driver Auto-Dispatch**: Notifies local delivery partners the moment a manufacturer marks a parcel `ready_for_pickup`.
-- **Customer Privacy Protection**: Full customer street address is hidden until the driver accepts the run.
-- **Doorstep COD Handover**: Driver marks cash collected, logs recipient relation/name, and uploads proof of delivery photos.
-- **Driver Earnings & Treasury Ledger**: Real-time tracking of cash-on-hand and commission earnings per completed delivery.
-
-### Operational Delivery Guardrail
-- The carrier booking step is now treated as a real external handoff: an assignment only advances to `ready_for_pickup` after the NCM create request succeeds.
-- If the delivery partner API fails, the system surfaces a clear manufacturer message such as "Failed to book courier" and keeps the order retryable without falsely marking it as booked.
-- The manufacturer can retry the courier booking flow after the external partner issue is resolved without reworking the order status manually.
-
-### 4. 🎁 Gift & Retention Promotions
-- Admin gift entries generate their SKU from the gift name and use General, Partner Product, or Other categories.
-- Loyalty tier gift description/value are configured on the tier itself and automatically become active when the backend applies that tier reward to an order. Separate order-value promotions remain configurable.
-- Admin distributions are pending until the manufacturer accepts the batch. At final checklist completion, the manufacturer selects only from their own accepted stock within the eligible value limit.
-- The backend atomically reserves the selected batch, audits movements, and deducts reserved stock on confirmed NCM delivery.
-
-### 5. 📊 Multi-Hub Aggregate Inventory Monitoring
-- **Admin Central Visibility**: View total stock across Nepal and breakdown per manufacturer warehouse.
-- **Quantity-Aware Stock Reservation**: Inventory is automatically reserved upon order assignment and finalized upon delivery.
-- **Low-Stock Alerts**: Automatic warnings when hub stock falls below safety thresholds.
-
-### 6. ↩️ Audited Customer Return & Exchange Lifecycle
-- Customers can request a return or exchange from delivered-order history; admins can also create cases on a customer's behalf.
-- Every request records its cause, selected items, requester, timestamps, and idempotency key. Admin approval is required before NCM is called.
-- NCM request/response attempts, rejection details, available charges, and charge payer are stored. Failed and unknown handoffs remain distinct from successful bookings.
-- Return refunds and inventory changes wait for manufacturer receipt and inspection. Exchange replacement stock is reserved at approval and consumed on confirmed replacement delivery.
-- The current NCM exchange-create API accepts only the original order ID; admins must verify the replacement waybill against the internally reserved replacement variant.
+- Customer checkout and order fulfillment use distributor workspaces; manufacturer production is a distinct workflow and production stock is not storefront stock.
+- Distributor replenishment uses stock transfers. Newer SKU/location inventory flows use inventory balances and ledger entries, while legacy stock models and writers still exist and require a controlled migration plan.
+- Delivery is integrated with NCM and other operational flows through the backend; there is no separate delivery portal. A delivery status is not, by itself, evidence of COD cash collection or remittance.
+- Admin finance and accounting features are present, but reports and subsystem reconciliation have documented scope and completeness limits. See [the accounting documentation](docs/accounting/).
+- Marketing partner workflows are implemented in the separate `marketing/` portal.
+- Cloudinary uploads and the separate notification worker are external boundaries. Customer orders in the first production release use COD only; no payment-provider transaction flow is part of the release.
 
 ---
 
@@ -128,71 +64,43 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 
 ### Prerequisites
 - Node.js 18+
-- MySQL Server (running on port 3306 or remote)
-- Cloudinary account for media & contract uploads
 
-### 1. Clone & Setup Database
+### 1. Install dependencies
+
+Each application is independent; install dependencies from its own package
+directory. There is no root npm workspace.
 ```bash
-git clone https://github.com/dexter747/Clothes-Store-ECommerce.git
-cd Clothes-Store-ECommerce
-
-# Install backend dependencies
-cd backend
 npm install
-
-# Run database push/migrations
-npx prisma db push
 ```
 
-### 2. Start Services
-In separate terminal windows:
+### 2. Start a development server
 
+Run the relevant script from the package directory:
 ```bash
-# Terminal 1: Backend API (Port 4000)
-cd backend && npm run server
-
-# Terminal 2: Customer Storefront (Port 5173)
-cd frontend && npm run dev
-
-# Terminal 3: Admin Portal (Port 5174)
-cd admin && npm run dev
-
-# Terminal 4: Manufacturer Portal (Port 5175)
-cd manufacturer && npm run dev
-
-# Terminal 5: Delivery Partner Portal (Port 5176)
-cd delivery && npm run dev
+npm run dev
 ```
 
----
+The backend requires an explicitly approved and configured database target.
+Database provisioning and application are not part of this quick start; do not
+use `prisma db push` or run database commands against an unverified target.
+Use package-specific environment examples as templates, and never commit
+credentials or populated `.env` files.
 
-## 🔒 Configuration (`.env`)
+### Prisma migration baseline
 
-### `backend/.env`
-```env
-PORT=4000
-DATABASE_URL="mysql://root:password@localhost:3306/aama_clothings"
-JWT_SECRET="your_jwt_secret"
-CLOUDINARY_NAME="your_cloud_name"
-CLOUDINARY_API_KEY="your_api_key"
-CLOUDINARY_SECRET_KEY="your_secret_key"
-ADMIN_EMAIL="admin@aama.com"
-ADMIN_PASSWORD="adminpassword"
-```
+The migration history is squashed into `backend/prisma/migrations/0_init`, generated from the current `backend/prisma/schema.prisma`. Fresh databases should apply this baseline with `npx prisma migrate deploy` from `backend/`; do not run the baseline SQL against an existing database whose tables already exist.
 
-### Portals (`.env` in `frontend/`, `admin/`, `manufacturer/`, `delivery/`)
-```env
-VITE_BACKEND_URL=http://localhost:4000
-```
+Existing databases must retain their data and must not apply `0_init` as a new schema migration. Before deploying to one, back it up and coordinate a migration-history cutover for its `_prisma_migrations` table; verify the live schema matches the baseline first. This repository change does not connect to a database or rewrite deployed migration records. After the cutover, create future schema changes as new Prisma migrations and apply them with `npx prisma migrate deploy`.
 
-### Return and exchange schema rollout
-From `backend/`, apply the additive migration, seed the new RBAC permissions, and regenerate Prisma Client before starting the API:
+### RBAC and Prisma Client refresh
+After applying the baseline to a fresh database or deploying a later migration that changes permissions or the Prisma schema, run the relevant seed/client-generation steps from `backend/` before starting the API:
 ```bash
-npx prisma migrate deploy
 npm run seed
 npx prisma generate
 ```
 On Windows, stop the running backend before `prisma generate` if its native query-engine DLL is locked.
+
+`ADMIN_EMAIL` is required when seeding and identifies the configured owner Admin account. RBAC seeding grants the built-in broad `ADMIN` role only to that active account and deactivates that built-in role mapping for other Admin accounts while preserving their custom role mappings. Review the existing Admin role assignments and take a database backup before running the updated seed in an existing environment; do not treat seed execution as a substitute for reviewing who should retain privileged access. Never assign the `all:function` authorization bypass to a user or custom role.
 
 ---
 

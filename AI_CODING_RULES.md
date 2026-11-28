@@ -15,6 +15,8 @@ All future project changes must be reflected in the documentation set in this re
 
 This is a hard operating rule. Do not merge or continue feature work without updating the relevant documentation sections for any route, model, permission, flow, environment variable, deployment detail, or UI change.
 
+Request-signing compatibility is verified by backend middleware for portal `/api` requests, including authentication routes, and is deliberately excluded from NCM webhook receiver endpoints. `VITE_` variables are public browser configuration, not confidential secrets; never rely on client-side HMAC signing in place of backend authentication or authorization.
+
 ### 1.1 Keep backend logic authoritative
 
 The backend is the real source of truth for:
@@ -25,10 +27,27 @@ The backend is the real source of truth for:
 - order assignment, shipping, and handoff logic
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
-- location-based discount resolution and resolved manufacturer assignment for checkout
+- distributor earning snapshots and party-level AR/AP documents/allocations, including NCM COD and carrier-fee netting
+- effective-dated VAT configuration and approved return tax snapshots
+- effective-dated corporate income tax policies and their shared estimate calculation service
+- location-based discount resolution and distributor hub assignment for checkout
+- distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
+- distributor dead-stock return authorization, custody movements, receipt discrepancies, append-only investigation notes/evidence, condition assessments, and the prohibition on assigning responsibility, resolving discrepancies, releasing stock, or posting impairment/disposal journals before approved policy
+- distributor allocation requires active distributors with enough distributor-ledger stock and ranks candidates by configured (or default registered) service area, same district, NCM branch, same province, then nationwide; quality rating resolves ties within each tier
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
+- marketing partner analytics are protected by `marketing_card:analytics_read`; partner IDs and report scope are validated server-side, and customer scan reports use province/district snapshots only (never street-level addresses)
+- product sales analytics must use separate bounded aggregate endpoints, derive distributor ownership from authenticated workspace context, and omit revenue fields entirely from distributor responses; validate date ranges, product IDs, pagination, and sort fields in the backend
+- delivery drivers use a separate DRIVER workspace; derive driver and distributor scope from the linked active `DeliveryDriver` profile, enforce assigned-manifest/stop ownership on every API action, and preserve the canonical POD/COD service. Never grant drivers distributor administration permissions or expose private evidence URLs.
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
+
+Financial source records and posted journals are append-only evidence. Correct them through audited reversals or adjustments, not edit/delete operations. Allocate receipts and payouts to the source-party documents they settle, and do not claim a party balance is reconciled when only a legacy table or a subset of source types was checked. VAT changes must be future effective-dated versions; a later rate must never rewrite a posted transaction or approved refund snapshot.
+
+Manufacturer settlement-request money and eligibility use the shared Decimal helpers. Keep request amounts as decimal strings through validation and serialization, and require a stable client idempotency key for `POST /api/manufacturer/finance/settlement-request`; never generate a fresh server key that makes transport retries create distinct requests. A passing mock test does not establish persisted concurrency or payable-to-journal reconciliation.
+
+Generic payable-payout initiation and receivable collection also require stable caller idempotency keys. Do not silently mint a fresh key for a financial retry. Collection request amounts must remain decimal strings through the Admin caller, validation, calculation, and API serialization; use the shared Decimal helper and preserve HALF_EVEN only at approved posting boundaries. The key must be validated before database reads or side effects; changed-payload reuse must conflict, and confirmation/failure of an existing payout retains its existing payout-ID contract.
+
+Corporate income tax estimates must use the shared effective-dated policy service, not a hard-coded rate. Keep rate brackets, context selectors, discounts, and penalties in validated policy data; do not describe estimates as statutory assessments or silently assume a default when no effective policy exists.
 
 ### 1.2 Never infer successful courier creation from optimistic UI state
 
@@ -40,7 +59,7 @@ This repo is intentionally split into multiple apps:
 
 - `frontend/` for customer storefront
 - `admin/` for operations
-- `manufacturer/` for fulfillment
+- `manufacturer/` for factory production and the distributor workspace
 - `marketing/` for partner flows
 - `backend/` for business logic and data access
 
@@ -57,6 +76,14 @@ The codebase consistently uses:
 
 When adding a protected feature, add the route permission and ensure the backend permission exists before assuming the UI can access it.
 
+Distributor reconciliation must remain read-only against source records. Reuse
+the owning domain's authoritative loader/analyzer, scope every query from
+authenticated distributor context, cap every collection, and label incomplete
+or unavailable sources. Do not infer COD, wholesale, financial, or
+inventory-wide reconciliation from UI snapshots or unrelated aggregates.
+Acknowledgements may create an idempotent audit event only; they must not
+repair or mark source records resolved.
+
 ### 1.5 Respect existing domain boundaries
 
 Examples:
@@ -65,6 +92,12 @@ Examples:
 - shipping logic belongs in backend shipping config and delivery integration
 - card assignment and redemption logic belongs in the marketing-card routes and service layer
 - return/exchange reconciliation belongs in the order exchange and delivery domain, not as isolated UI-only logic
+- Distributor-collected COD is a distributor receivable until an evidenced remittance is Admin-verified and posted to company treasury. Require the customer OTP before unpaid COD delivery; do not treat distributor cash collection as company cash.
+- First-release customer orders use COD only. Do not add bank/debit/credit-card gateways, payment processors, payment tokens, PCI payment processing, or payment-provider webhooks. Marketing cards are promotional instruments, not payment cards. Never infer payment from delivery status or POD; use the canonical COD collection evidence and accounting paths.
+- Use a valid order pricing snapshot's `finalPayableTotal` as the COD amount; that total includes delivery fees. Only legacy orders without a valid snapshot use the legacy `amount + deliveryFee` calculation.
+- Distributor-paid customer refunds require Admin-approved refund policy, return receipt/inspection, exact approved amount, distributor payment evidence, and Admin verification. Keep the resulting distributor payable separate from COD receivable; never mark receipt/inspection alone as a completed refund or automatically net balances. Only an explicit Admin-approved offset may clear both subledgers, capped by verified refund payable and open COD receivable less pending remittances, in one serializable balanced journal/allocation/audit transaction.
+- Dead-stock collection is not a write-off: move only quantities physically handed over into transit, receipt quantities into quarantine, and record damaged/missing quantities as open discrepancies. Investigation notes/evidence are append-only and do not resolve a discrepancy, determine financial responsibility, adjust stock, or post a journal. Keep missing units in transit until an authorized resolution; do not post inventory loss, impairment, donation, or sale accounting without accountant/auditor-approved ownership, valuation, and tax policy.
+- Snapshot return charges at Admin approval against returned product value; the original delivery fee is not refundable. Do not cache financial balances or use client-supplied amounts as accounting authority.
 
 ### 1.6 Match the repo’s naming and state conventions
 
@@ -76,11 +109,14 @@ Use status strings and IDs consistent with Prisma and the current service layer.
 
 ### 1.7 Gift promotion and inventory rules
 
-- Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Keep trigger evaluation in backend services and do not treat UI-selected gifts as authoritative.
-- Each manufacturer distribution is an independently accepted inventory batch. The manufacturer chooses from their own accepted stock at final checklist completion; the backend must claim that exact batch atomically and store it on the order.
-- Manufacturer actions that change an order gift must verify manufacturer ownership. Pack, delivery, return, and loss transitions must be idempotent and must update movement logs with stock in the same transaction.
+- Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Card gift claims create pending customer entitlements for the next checkout. Keep trigger evaluation and exact-to-the-cent value matching in backend services; the UI is not authoritative.
+- Each checkout group may receive at most one physical gift, even when fulfilled by multiple distributors. At distributor `letter_ready`, select randomly among equivalent gifts from accepted stock at distributors already assigned to that checkout, preferring customer district, then province, then other eligible assigned distributors. Do not create a gift-only shipment or allow a distributor to select arbitrary stock.
+- Distributor gift distributions record units sent separately from units acknowledged by the distributor. Only the acknowledged quantity is available. Claim stock atomically, link the exact inventory batch to the order, and record each movement; release reserved inventory on cancellation, deduct only on delivery, and handle returns/loss through the explicit lifecycle.
+- Admin gift replacement must use accepted stock at the same assigned distributor, match the entitlement value exactly, and atomically reject changes once packing has started. Do not allow catalog value edits to silently invalidate an active unfulfilled gift assignment.
+- Distributor actions that change a hub order gift must verify authenticated distributor ownership. Legacy manufacturer gift rows remain historical and must not be treated as distributor inventory.
+- Direct hub orders, hub inventory, physical marketing-card stock, and gift stock are distributor features. Direct hub stock reads and deductions must use the distributor inventory ledger; never use `ManufacturerInventory` as a distributor fallback. Keep their routes, permissions, UI access, and admin allocations distributor-scoped.
 - NCM delivery status is authoritative for delivered-gift deduction. Do not mark a gift delivered from optimistic frontend state.
-- Update this guide and the project overview, architecture, schema, and UI docs when gift routes, permissions, states, or lifecycle rules change.
+- Update this guide and the project overview, architecture, schema, UI, and security-flow docs when gift routes, permissions, states, or lifecycle rules change.
 
 ## 2. Do’s and Don’ts
 

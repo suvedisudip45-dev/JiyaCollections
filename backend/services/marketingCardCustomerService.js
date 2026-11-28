@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { createPendingGiftEntitlement } from "./giftService.js";
 
 const hashToken = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
 
@@ -16,7 +17,19 @@ export const assertCardOrderEligibility = (
     deliveryMessage = "This card is not eligible because the related order is not marked as delivered.",
   } = {}
 ) => {
-  if (card.campaign?.isOwnStore) return;
+  const isDistributorAssignedOwnStoreCard = Boolean(card.campaign?.isOwnStore && card.assignedDistributorId);
+  if (card.campaign?.isOwnStore && !isDistributorAssignedOwnStoreCard) return;
+  if (
+    isDistributorAssignedOwnStoreCard &&
+    (
+      !card.orderLink?.order?.userId ||
+      card.orderLink.distributorId !== card.assignedDistributorId
+    )
+  ) {
+    const error = new Error(deliveryMessage);
+    error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+    throw error;
+  }
   if (card.orderLink?.order?.userId && card.orderLink.order.userId !== customerId) {
     const error = new Error(ownershipMessage);
     error.code = "MARKETING_CARD_FORBIDDEN";
@@ -56,6 +69,12 @@ export const assertCardNotPreviouslyScanned = (card) => {
   throw error;
 };
 
+export const isDistributorOrderRewardCard = (card) => Boolean(
+  card?.campaign?.isOwnStore &&
+  card.assignedDistributorId &&
+  card.orderLink?.distributorId === card.assignedDistributorId
+);
+
 /** Returns true if card expiry date has not passed (customers can still activate / partners can still redeem). */
 const cardExpiryIsValid = (campaign, now = new Date()) => {
   if (!campaign) return false;
@@ -67,6 +86,13 @@ const benefitIsValid = (benefit, now = new Date()) => (
   benefit.status === "ACTIVE" &&
   (!benefit.startsAt || benefit.startsAt <= now) &&
   (!benefit.expiresAt || benefit.expiresAt >= now)
+);
+
+export const isCustomerCardRewardRevealed = (link, events = []) => (
+  link.status === "ACTIVE" || events.some((event) => (
+    event.eventType === "CARD_REWARD_REVEALED" ||
+    (event.eventType === "CARD_QR_SCANNED_BY_CUSTOMER" && event.metadata?.rewardHiddenUntilScratch !== true)
+  ))
 );
 
 const partnerForCard = (card) => card.assignedPartner || card.partner || card.campaign?.marketingPartner || null;
@@ -82,6 +108,29 @@ const MONDAY_EPOCH_MS = Date.UTC(1970, 0, 5);
 export const getScanWeekIndex = (date = new Date()) => (
   Math.floor((date.getTime() + NEPAL_OFFSET_MS - MONDAY_EPOCH_MS) / WEEK_MS)
 );
+
+export const getScanLocationSnapshot = (addresses) => {
+  let parsedAddresses = addresses;
+  if (typeof parsedAddresses === "string") {
+    try {
+      parsedAddresses = JSON.parse(parsedAddresses);
+    } catch {
+      return { scannedProvince: null, scannedDistrict: null };
+    }
+  }
+
+  const address = Array.isArray(parsedAddresses) ? parsedAddresses[0] : null;
+  const normalize = (value) => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim();
+    return normalized.length > 0 && normalized.length <= 120 ? normalized : null;
+  };
+
+  return {
+    scannedProvince: normalize(address?.province),
+    scannedDistrict: normalize(address?.district),
+  };
+};
 
 const quota = (used, limit) => ({ used, limit, remaining: Math.max(0, limit - used) });
 
@@ -123,7 +172,7 @@ const incrementScanLimits = (scanLimits) => Object.fromEntries(Object.entries(sc
     { ...limit, used: limit.used + 1, remaining: Math.max(0, limit.remaining - 1) },
   ]));
 
-const scanQuotaFor = async ({
+export const scanQuotaFor = async ({
   client,
   customerId,
   campaignId,
@@ -131,16 +180,19 @@ const scanQuotaFor = async ({
   scanWeekIndex,
   isPublic = false,
   maxScansPerCustomer = 1,
+  isDistributorOrderReward = false,
 }) => {
-  const scope = { customerId, scanWeekIndex, card: { campaignId } };
+  if (isDistributorOrderReward) return null;
+  const cardScope = { campaignId, assignedDistributorId: null };
+  const scope = { customerId, scanWeekIndex, card: cardScope };
   const [weeklyCount, organizationCount, campaignCount] = await Promise.all([
     client.marketingCardCustomer.count({ where: scope }),
     isPublic
       ? Promise.resolve(0)
       :       client.marketingCardCustomer.count({
-        where: { customerId, card: { campaignId }, assignedOrganization },
+        where: { customerId, card: cardScope, assignedOrganization },
       }),
-    client.marketingCardCustomer.count({ where: { customerId, card: { campaignId } } }),
+    client.marketingCardCustomer.count({ where: { customerId, card: cardScope } }),
   ]);
   return getOwnStoreScanLimits(weeklyCount, organizationCount, {
     isPublic,
@@ -153,7 +205,8 @@ const safeCard = (linkOrWrapper) => {
   const link = linkOrWrapper.link || linkOrWrapper;
   const card = linkOrWrapper.card || link.card;
   const benefit = card?.benefit;
-  const hasBenefit = Boolean(card?.hasBenefit && benefit);
+  const isRevealed = isCustomerCardRewardRevealed(link, card?.events || []);
+  const hasBenefit = isRevealed && Boolean(card?.hasBenefit && benefit);
   const isActivated = link.status === "ACTIVE" && Boolean(link.activatedAt);
 
   const benefits = hasBenefit
@@ -164,6 +217,7 @@ const safeCard = (linkOrWrapper) => {
           description: benefit.description,
           benefitType: benefit.benefitType,
           value: benefit.value,
+          maxDiscountAmount: benefit.maxDiscountAmount,
           terms: benefit.terms,
           startsAt: benefit.startsAt,
           expiresAt: benefit.expiresAt,
@@ -184,10 +238,13 @@ const safeCard = (linkOrWrapper) => {
     isPublic: Boolean(card.isPublic),
     activatedAt: link.activatedAt,
     isActivated: link.status === "ACTIVE" && !!link.activatedAt,
+    revealPending: !isRevealed,
     hasBenefit,
-    benefitMessage: hasBenefit
-      ? "Congratulations! You have an exclusive reward."
-      : "Better luck next time!",
+    benefitMessage: !isRevealed
+      ? "Scratch your card to reveal your reward."
+      : hasBenefit
+        ? "Congratulations! You have an exclusive reward."
+        : "Better luck next time!",
     cardExpiresAt: card.campaign?.cardExpiresAt || null,
     isCardExpired: card.campaign?.cardExpiresAt ? new Date() > new Date(card.campaign.cardExpiresAt) : false,
     partner: partnerForCard(card)
@@ -217,6 +274,14 @@ const cardIncludeForCustomer = (customerId) => ({
           redemptions: { where: { customerId, status: { in: ["CLAIMED", "REDEEMED"] } }, orderBy: { redeemedAt: "desc" }, take: 1 },
         },
       },
+      events: {
+        where: {
+          actorId: customerId,
+          actorRole: "CUSTOMER",
+          eventType: { in: ["CARD_REWARD_REVEALED", "CARD_QR_SCANNED_BY_CUSTOMER"] },
+        },
+        select: { eventType: true, metadata: true },
+      },
       partner: true,
       assignedPartner: true,
       campaign: {
@@ -237,7 +302,7 @@ export const listCustomerCards = async (customerId) => {
   return links.map(safeCard);
 };
 
-export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$transaction(async (tx) => {
+export const claimCustomerReward = async ({ customerId, cardId, client = prisma }) => client.$transaction(async (tx) => {
   if (!cardId) throw new Error("A card ID is required.");
 
   const card = await tx.marketingCard.findUnique({
@@ -263,8 +328,18 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
     error.code = "MARKETING_CARD_REWARD_INVALID";
     throw error;
   }
-  if (card.benefit.benefitType !== "DISCOUNT") {
-    const error = new Error("Only discount rewards can be claimed for online checkout.");
+  if (!["DISCOUNT", "GIFT", "VOUCHER"].includes(card.benefit.benefitType)) {
+    const error = new Error("Only discount, gift, and voucher rewards can be claimed online.");
+    error.code = "MARKETING_CARD_REWARD_INVALID";
+    throw error;
+  }
+  const benefitValue = Number(card.benefit.value);
+  if (
+    !Number.isFinite(benefitValue) ||
+    benefitValue <= 0 ||
+    (card.benefit.benefitType === "DISCOUNT" && benefitValue > 100)
+  ) {
+    const error = new Error("This card reward has an invalid value.");
     error.code = "MARKETING_CARD_REWARD_INVALID";
     throw error;
   }
@@ -282,6 +357,7 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
     return {
       cardId: card.id,
       benefitId: card.benefit.id,
+      benefitType: card.benefit.benefitType,
       status: "CLAIMED",
       claimedAt: existing.claimedAt,
       alreadyClaimed: true,
@@ -304,6 +380,16 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
       redeemedAt: null,
     },
   });
+  if (card.benefit.benefitType === "GIFT") {
+    await createPendingGiftEntitlement({
+      client: tx,
+      customerId,
+      sourceType: "CARD",
+      sourceKey: `MARKETING_BENEFIT_REDEMPTION:${redemption.id}`,
+      rewardValue: card.benefit.value,
+      marketingBenefitRedemptionId: redemption.id,
+    });
+  }
   if (link.status !== "ACTIVE" || !link.activatedAt) {
     await tx.marketingCardCustomer.update({
       where: { id: link.id },
@@ -322,6 +408,7 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
   return {
     cardId: card.id,
     benefitId: card.benefit.id,
+    benefitType: card.benefit.benefitType,
     status: "CLAIMED",
     claimedAt,
     alreadyClaimed: false,
@@ -366,6 +453,7 @@ export const listClaimedCustomerRewards = async (customerId) => {
         name: benefit.name,
         benefitType: benefit.benefitType,
         value: benefit.value,
+        maxDiscountAmount: benefit.maxDiscountAmount,
         description: benefit.description,
         terms: benefit.terms,
         expiresAt: benefit.expiresAt,
@@ -440,6 +528,7 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
       isOwnStore: Boolean(card.campaign.isOwnStore),
       maxScansPerCustomer: card.campaign.maxScansPerCustomer,
     },
+    isDistributorOrderReward: isDistributorOrderRewardCard(card),
     isPublic: Boolean(card.isPublic),
     ad: card.campaign.adMediaType && card.campaign.adMediaType !== "NONE" && card.campaign.adMediaUrl ? {
       mediaType: card.campaign.adMediaType,
@@ -453,17 +542,18 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
 };
 
 /**
- * Step 2: Customer scans QR code; validates that QR token matches the verified card code.
+ * Customer scans a QR code directly; a card code may be supplied by legacy clients.
  */
 export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
   const normalizedCode = String(cardCode || "").trim().toUpperCase();
   const rawToken = String(token || "").trim();
 
-  if (!normalizedCode) throw new Error("Card code is required.");
   if (!rawToken) throw new Error("QR token is required.");
 
   const card = await prisma.marketingCard.findUnique({
-    where: { cardCode: normalizedCode },
+    where: normalizedCode
+      ? { cardCode: normalizedCode }
+      : { qrTokenHash: hashToken(rawToken) },
     include: {
       orderLink: { include: { order: true } },
       customerLinks: { take: 1, select: { id: true } },
@@ -486,7 +576,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
   // Validate QR hash match
   const expectedHash = hashToken(rawToken);
   if (card.qrTokenHash !== expectedHash) {
-    throw new Error("The scanned QR code does not match this card code. Please ensure you are scanning the QR code on the correct card.");
+    throw new Error("The scanned QR code is invalid. Please scan the QR code printed on your card.");
   }
   await prisma.marketingCardEvent.create({
     data: {
@@ -505,7 +595,18 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
   assertCardNotPreviouslyScanned(card);
 
   // Partner campaign cards remain tied to their delivered order and customer.
-  assertCardOrderEligibility(card, customerId);
+  assertCardOrderEligibility(card, customerId, {
+    ownershipMessage: "This card is not allocated to your customer account.",
+    deliveryMessage: "This card is not eligible until it is attached to your delivered order.",
+  });
+  if (
+    card.campaign.status !== "ACTIVE" ||
+    (card.campaign.startsAt && new Date() < new Date(card.campaign.startsAt)) ||
+    (card.campaign.endsAt && new Date() > new Date(card.campaign.endsAt)) ||
+    !cardExpiryIsValid(card.campaign)
+  ) {
+    throw new Error("This card or its campaign is no longer valid.");
+  }
 
   let scanLimits = null;
   const scanWeekIndex = getScanWeekIndex();
@@ -526,13 +627,25 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
         throw new Error("Card not found or has been cancelled.");
       }
       assertCardCanBeScanned(latestCard);
-      assertCardOrderEligibility(latestCard, customerId);
+      assertCardOrderEligibility(latestCard, customerId, {
+        ownershipMessage: "This card is not allocated to your customer account.",
+        deliveryMessage: "This card is not eligible until it is attached to your delivered order.",
+      });
+      if (
+        latestCard.campaign.status !== "ACTIVE" ||
+        (latestCard.campaign.startsAt && new Date() < new Date(latestCard.campaign.startsAt)) ||
+        (latestCard.campaign.endsAt && new Date() > new Date(latestCard.campaign.endsAt)) ||
+        !cardExpiryIsValid(latestCard.campaign)
+      ) {
+        throw new Error("This card or its campaign is no longer valid.");
+      }
 
       const existingLink = await tx.marketingCardCustomer.findUnique({ where: { cardId: card.id } });
       assertCardNotPreviouslyScanned({ customerLinks: existingLink ? [existingLink] : [] });
 
       const currentOrganization = organizationForCard(latestCard);
       let quotas = null;
+      const distributorOrderReward = isDistributorOrderRewardCard(latestCard);
       if (latestCard.campaign.isOwnStore) {
         quotas = await scanQuotaFor({
           client: tx,
@@ -542,8 +655,9 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
           scanWeekIndex,
           isPublic: latestCard.isPublic,
           maxScansPerCustomer: latestCard.campaign.maxScansPerCustomer,
+          isDistributorOrderReward: distributorOrderReward,
         });
-        assertOwnStoreScanQuota(quotas, currentOrganization);
+        if (quotas) assertOwnStoreScanQuota(quotas, currentOrganization);
       }
 
       const scanClaim = await tx.marketingCard.updateMany({
@@ -551,6 +665,12 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
         data: { updatedAt: new Date() },
       });
       if (scanClaim.count !== 1) assertCardCanBeScanned({ exchangeLockRequestId: "locked" });
+
+      const customer = await tx.user.findUnique({
+        where: { id: customerId },
+        select: { addresses: true },
+      });
+      const scanLocation = getScanLocationSnapshot(customer?.addresses);
 
       const link = await tx.marketingCardCustomer.create({
         data: {
@@ -560,6 +680,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
           scannedAt: new Date(),
           assignedOrganization: currentOrganization,
           scanWeekIndex,
+          ...scanLocation,
         },
       });
       await tx.marketingCardEvent.create({
@@ -584,10 +705,14 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
           actorId: customerId,
           actorRole: "CUSTOMER",
           referenceId: link.id,
-          metadata: { cardCode: card.cardCode, isPublic: Boolean(latestCard.isPublic) },
+          metadata: {
+            cardCode: card.cardCode,
+            isPublic: Boolean(latestCard.isPublic),
+            rewardHiddenUntilScratch: true,
+          },
         },
       });
-      return { link, quotas };
+      return { link, quotas, isDistributorOrderReward: distributorOrderReward };
     }, { isolationLevel: "Serializable" });
   } catch (error) {
     if (error.code === "P2002" || error.code === "P2034") {
@@ -597,7 +722,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
     throw error;
   }
   const link = scanResult.link;
-  if (card.campaign.isOwnStore) {
+  if (card.campaign.isOwnStore && !scanResult.isDistributorOrderReward) {
     scanLimits = scanResult.quotas
       ? incrementScanLimits(scanResult.quotas)
       : await scanQuotaFor({
@@ -611,26 +736,11 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
         });
   }
 
-  const hasBenefit = Boolean(card.hasBenefit && card.benefit);
-  const benefit = hasBenefit ? card.benefit : null;
-
   return {
     success: true,
     cardId: card.id,
     cardCode: card.cardCode,
     isActivated: link.status === "ACTIVE" && !!link.activatedAt,
-    hasBenefit,
-    benefit: benefit
-      ? {
-          id: benefit.id,
-          name: benefit.name,
-          description: benefit.description,
-          benefitType: benefit.benefitType,
-          value: benefit.value,
-          terms: benefit.terms,
-          expiresAt: benefit.expiresAt,
-        }
-      : null,
     partner: {
       id: partnerForCard(card)?.id || null,
       name: partnerForCard(card)?.name || assignedOrganization,
@@ -644,18 +754,90 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
       isOwnStore: Boolean(card.campaign.isOwnStore),
       maxScansPerCustomer: card.campaign.maxScansPerCustomer,
     },
-    campaign: {
-      id: card.campaign.id,
-      name: card.campaign.name,
-      isOwnStore: Boolean(card.campaign.isOwnStore),
-      maxScansPerCustomer: card.campaign.maxScansPerCustomer,
-    },
+    isDistributorOrderReward: scanResult.isDistributorOrderReward,
     scanLimits,
-    message: hasBenefit
-      ? `Congratulations! You unlocked: ${benefit.name}.${card.campaign.isOwnStore ? " Claim it in your customer portal." : ` Activate your card to claim this offer at ${partnerForCard(card)?.name || assignedOrganization}.`}`
-      : `Better luck next time! Thank you for participating in ${partnerForCard(card)?.name || assignedOrganization}'s campaign.`,
+    ad: card.campaign.adMediaType && card.campaign.adMediaType !== "NONE" && card.campaign.adMediaUrl ? {
+      mediaType: card.campaign.adMediaType,
+      mediaUrl: card.campaign.adMediaUrl,
+      headline: card.campaign.adHeadline || `${partnerForCard(card)?.name || "Aama Own Store"} Special Offer`,
+      description: card.campaign.adDescription || "",
+      externalLink: card.campaign.adExternalLink || "",
+    } : null,
+    message: "Card validated. Scratch to reveal your reward.",
   };
 };
+
+export const revealCustomerQr = async ({ customerId, cardId }) => prisma.$transaction(async (tx) => {
+  const card = await tx.marketingCard.findUnique({
+    where: { id: String(cardId || "") },
+    include: {
+      orderLink: { include: { order: true } },
+      customerLinks: { where: { customerId, status: { not: "CANCELLED" } }, take: 1 },
+      benefit: true,
+      partner: true,
+      assignedPartner: true,
+      campaign: { include: { marketingPartner: true } },
+    },
+  });
+  if (!card || card.physicalStatus === "CANCELLED") {
+    throw new Error("Card not found or has been cancelled.");
+  }
+  assertCardCanBeScanned(card);
+  const link = card.customerLinks[0];
+  if (!link) throw new Error("Scan and verify this card before revealing its reward.");
+  assertCardOrderEligibility(card, customerId, {
+    ownershipMessage: "This card is not allocated to your customer account.",
+    deliveryMessage: "This card is not eligible until it is attached to your delivered order.",
+  });
+
+  const existingReveal = await tx.marketingCardEvent.findFirst({
+    where: {
+      cardId: card.id,
+      eventType: "CARD_REWARD_REVEALED",
+      actorId: customerId,
+      actorRole: "CUSTOMER",
+    },
+    select: { id: true },
+  });
+  const hasBenefit = Boolean(card.hasBenefit && card.benefit);
+  const assignedOrganization = organizationForCard(card);
+  const partnerName = partnerForCard(card)?.name || assignedOrganization;
+  if (!existingReveal) {
+    await tx.marketingCardEvent.create({
+      data: {
+        cardId: card.id,
+        eventType: "CARD_REWARD_REVEALED",
+        actorId: customerId,
+        actorRole: "CUSTOMER",
+        referenceId: link.id,
+        metadata: {
+          hasBenefit,
+          benefitName: hasBenefit ? card.benefit.name : null,
+        },
+      },
+    });
+  }
+
+  return {
+    success: true,
+    hasBenefit,
+    benefit: hasBenefit
+      ? {
+          id: card.benefit.id,
+          name: card.benefit.name,
+          description: card.benefit.description,
+          benefitType: card.benefit.benefitType,
+          value: card.benefit.value,
+          maxDiscountAmount: card.benefit.maxDiscountAmount,
+          terms: card.benefit.terms,
+          expiresAt: card.benefit.expiresAt,
+        }
+      : null,
+    message: hasBenefit
+      ? `Congratulations! You unlocked: ${card.benefit.name}.${card.campaign.isOwnStore ? " Claim it in your customer portal." : ` Activate your card to claim this offer at ${partnerName}.`}`
+      : `Better luck next time! Thank you for participating in ${partnerName}'s campaign.`,
+  };
+}, { isolationLevel: "Serializable" });
 
 /**
  * Step 3: Customer activates their card with the offer.
@@ -665,6 +847,7 @@ export const activateCustomerCard = async ({ customerId, cardId }) => prisma.$tr
   const card = await tx.marketingCard.findUnique({
     where: { id: cardId },
     include: {
+      orderLink: { include: { order: true } },
       customerLinks: { where: { customerId, status: { not: "CANCELLED" } } },
       benefit: true,
       campaign: { include: { marketingPartner: true } },
@@ -678,6 +861,7 @@ export const activateCustomerCard = async ({ customerId, cardId }) => prisma.$tr
   if (!card.customerLinks.length) {
     throw new Error("Card must be verified by scanning the QR code before activation.");
   }
+  assertCardOrderEligibility(card, customerId);
 
   const link = card.customerLinks[0];
   if (link.status === "ACTIVE" && link.activatedAt) {
@@ -723,48 +907,7 @@ export const linkCustomerCard = async ({ customerId, cardCode }) => {
 };
 
 export const resolveCustomerQr = async ({ customerId, token }) => {
-  const rawToken = String(token || "").trim();
-  const card = await prisma.marketingCard.findUnique({
-    where: { qrTokenHash: hashToken(rawToken) },
-    include: {
-      customerLinks: { take: 1, select: { id: true } },
-      benefit: { include: { redemptions: { where: { customerId, status: "REDEEMED" }, take: 1 } } },
-      partner: true,
-      assignedPartner: true,
-      campaign: { include: { marketingPartner: true } },
-    },
-  });
-  if (!card) throw new Error("QR token is invalid.");
-  await prisma.marketingCardEvent.create({
-    data: {
-      cardId: card.id,
-      eventType: "CARD_QR_SCAN_ATTEMPTED",
-      actorId: customerId,
-      actorRole: "CUSTOMER",
-      metadata: {
-        cardCode: card.cardCode,
-        isOwnStore: Boolean(card.campaign.isOwnStore),
-        isPublic: Boolean(card.isPublic),
-        flow: "DIRECT_QR",
-      },
-    },
-  });
-  assertCardCanBeScanned(card);
-  assertCardNotPreviouslyScanned(card);
-  if (!card.customerLinks.length) {
-    throw new Error("Please enter your card code first to verify ownership.");
-  }
-  await prisma.marketingCardEvent.create({
-    data: {
-      cardId: card.id,
-      eventType: "CARD_QR_SCANNED_BY_CUSTOMER",
-      actorId: customerId,
-      actorRole: "CUSTOMER",
-      referenceId: card.customerLinks[0].id,
-      metadata: { cardCode: card.cardCode, isPublic: Boolean(card.isPublic), flow: "DIRECT_QR" },
-    },
-  });
-  return safeCard({ link: card.customerLinks[0], card });
+  return verifyCustomerQr({ customerId, token });
 };
 
 export const redeemCustomerBenefit = async () => {

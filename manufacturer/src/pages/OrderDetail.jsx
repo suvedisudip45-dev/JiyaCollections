@@ -35,10 +35,22 @@ const parseBoolean = (value) => {
   return ["true", "1", "yes", "y"].includes(String(value || "").trim().toLowerCase());
 };
 
+const isCampaignCardAttachable = (card) => {
+  const campaign = card?.campaign;
+  const now = Date.now();
+  return campaign?.status === "ACTIVE" &&
+    (!campaign.endsAt || new Date(campaign.endsAt).getTime() >= now) &&
+    (!campaign.cardExpiresAt || new Date(campaign.cardExpiresAt).getTime() >= now);
+};
+
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { token, backendUrl, currency, manufacturer } = useManufacturer();
+  const { token, backendUrl, currency, manufacturer, distributor, activeWorkspace, platformFeatures } = useManufacturer();
+  const loyaltyEnabled = Boolean(platformFeatures?.loyaltyEnabled);
+  const marketingCardsEnabled = Boolean(platformFeatures?.marketingCardsEnabled);
+  const lettersEnabled = Boolean(platformFeatures?.lettersEnabled);
+  const isDistributor = activeWorkspace === "DISTRIBUTOR";
   const [assignment, setAssignment] = useState(null);
   const [loading, setLoading] = useState(true);
   const [packageWeight, setPackageWeight] = useState("");
@@ -49,6 +61,7 @@ const OrderDetail = () => {
   const [packageType, setPackageType] = useState("Box");
   const [isFragile, setIsFragile] = useState(false);
   const [deliveryInstruction, setDeliveryInstruction] = useState("");
+  const [deliveryChoiceState, setDeliveryChoiceState] = useState({ assignmentId: null, value: "NCM" });
   const [actionLoading, setActionLoading] = useState(false);
   const [storyLetter, setStoryLetter] = useState(null);
   const [marketingCard, setMarketingCard] = useState(null);
@@ -77,15 +90,18 @@ const OrderDetail = () => {
     qualityCheck: false,
   });
 
-  const fetchAssignment = useCallback(async () => {
+  const fetchAssignment = useCallback(async (silent = false) => {
     if (!token) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/order-assignment/my`, {
+      const assignmentPath = isDistributor
+        ? `/api/order-assignment/distributor/${id}`
+        : `/api/order-assignment/${id}`;
+      const res = await axios.get(`${backendUrl}${assignmentPath}`, {
         headers: { token },
       });
       if (res.data.success) {
-        const found = (res.data.assignments || []).find((a) => a.id === id);
+        const found = res.data.assignment || null;
         if (found) {
           const notes = (() => {
             if (!found.notes) return {};
@@ -103,7 +119,15 @@ const OrderDetail = () => {
           setPackageDimensions(notes.packageDimensions || found.packageDimensions || "");
           setPackagingNotes(notes.packagingNotes || found.packagingNotes || "");
           setProductType(notes.productType || fallbackItem?.productType || fallbackItem?.category || "");
-          setProductDescription(notes.productDescription || fallbackItem?.description || fallbackItem?.productDescription || "");
+          const savedDescription = String(notes.productDescription || "").trim();
+          const fallbackDescription = String(fallbackItem?.name || "").trim();
+          setProductDescription(
+            savedDescription.length > 0 && savedDescription.length <= 50
+              ? savedDescription
+              : fallbackDescription.length > 0 && fallbackDescription.length <= 50
+                ? fallbackDescription
+                : "Clothing item"
+          );
           setPackageType(notes.packageType || "Box");
           setIsFragile(parseBoolean(notes.isFragile));
           setDeliveryInstruction(
@@ -135,18 +159,24 @@ const OrderDetail = () => {
             });
           }
         } else {
-          toast.error("Assignment not found");
-          navigate("/orders");
+          if (!silent) {
+            toast.error("Assignment not found");
+            navigate("/orders");
+          }
         }
       }
-    } catch (err) {
-      toast.error("Failed to load assignment details");
+    } catch {
+      if (!silent) toast.error("Failed to load assignment details");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [id, token, backendUrl, navigate]);
 
   const fetchStoryLetterStatus = useCallback(async () => {
+    if (!isDistributor || !lettersEnabled) {
+      setStoryLetter(null);
+      return;
+    }
     if (!token || !assignment?.order?.id) return;
     try {
       const res = await axios.get(`${backendUrl}/api/personalized-letter/${assignment.order.id}`, { headers: { token } });
@@ -156,26 +186,54 @@ const OrderDetail = () => {
     } catch (error) {
       setStoryLetter(null);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, lettersEnabled, token]);
 
   const fetchMarketingCardStatus = useCallback(async () => {
-    if (!token || !assignment?.order?.id) return;
+    if (!token || !assignment?.order?.id || !marketingCardsEnabled) {
+      setMarketingCard(null);
+      return;
+    }
+    if (!isDistributor) {
+      setMarketingCard(null);
+      return;
+    }
     try {
-      const res = await axios.get(`${backendUrl}/api/marketing-cards/manufacturer/cards?status=all`, { headers: { token } });
+      const res = await axios.get(`${backendUrl}/api/marketing-cards/distributor/cards?status=all`, { headers: { token } });
       const linked = (res.data.cards || []).find((card) => card.orderLink?.orderId === assignment.order.id);
-      setMarketingCard(linked || null);
+      if (!linked || isCampaignCardAttachable(linked)) {
+        setMarketingCard(linked || null);
+        return;
+      }
+
+      try {
+        const replacement = await axios.post(
+          `${backendUrl}/api/marketing-cards/distributor/orders/${assignment.order.id}/attach`,
+          {},
+          { headers: { token } }
+        );
+        if (!replacement.data.success) throw new Error(replacement.data.message || "Unable to attach a replacement marketing card.");
+        setMarketingCard(replacement.data.card);
+        toast.info("The previous campaign card is no longer valid. A card from an active campaign was attached.");
+      } catch (error) {
+        setMarketingCard(null);
+        toast.warning(error.response?.data?.message || error.message || "The previous campaign card expired. Attach a replacement card before continuing.");
+      }
     } catch (error) {
       setMarketingCard(null);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, marketingCardsEnabled, token]);
 
   const fetchGiftOptions = useCallback(async () => {
     const orderId = assignment?.order?.id;
     if (!token || !orderId) return;
+    if (!isDistributor) {
+      setGiftOptions(null);
+      return;
+    }
     setGiftOptionsLoading(true);
     setGiftOptionsError("");
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer/gifts/order-options/${orderId}`, { headers: { token } });
+      const response = await axios.get(`${backendUrl}/api/distributor/gifts/order-options/${orderId}`, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to load eligible gifts.");
       setGiftOptions(response.data);
     } catch (error) {
@@ -185,7 +243,7 @@ const OrderDetail = () => {
     } finally {
       setGiftOptionsLoading(false);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
 
   useEffect(() => {
     fetchAssignment();
@@ -193,12 +251,18 @@ const OrderDetail = () => {
   }, [fetchAssignment, fetchStoryLetterStatus]);
 
   useEffect(() => {
+    if (!assignment?.delivery?.ncmOrderId || ["DELIVERED", "RETURN_REQUESTED"].includes(assignment.delivery.state)) return undefined;
+    const interval = setInterval(() => fetchAssignment(true), 30000);
+    return () => clearInterval(interval);
+  }, [assignment?.delivery?.ncmOrderId, assignment?.delivery?.state, fetchAssignment]);
+
+  useEffect(() => {
     fetchMarketingCardStatus();
   }, [fetchMarketingCardStatus]);
 
   const validateChecklist = () => {
     const benefits = assignment?.order?.fulfillmentBenefits || {};
-    const hasHandwrittenLetter = Boolean(benefits.handwrittenCard);
+    const hasHandwrittenLetter = lettersEnabled && Boolean(benefits.handwrittenCard);
 
     if (assignment?.order?.assignedGift && !checklist.catalogGiftIncluded) {
       toast.warning(`Please verify the assigned gift (${assignment.order.assignedGift.name}) is packed.`);
@@ -208,11 +272,11 @@ const OrderDetail = () => {
       toast.warning("Please verify that the Handwritten Thank-You Letter is enclosed as requested for this tier.");
       return false;
     }
-    if (checklist.marketingCard && !checklist.marketingCardId.trim()) {
+    if (marketingCardsEnabled && checklist.marketingCard && !checklist.marketingCardId.trim()) {
       toast.warning("Please enter the Marketing Partner Card ID.");
       return false;
     }
-    if (assignment?.order?.marketingCardRequired !== false && !marketingCard) {
+    if (marketingCardsEnabled && assignment?.order?.marketingCardRequired !== false && !marketingCard) {
       toast.warning("Attach a received marketing card before packing this order.");
       return false;
     }
@@ -220,10 +284,10 @@ const OrderDetail = () => {
   };
 
   const handleAttachMarketingCard = async () => {
-    if (!assignment?.order?.id || marketingCardLoading) return;
+    if (!marketingCardsEnabled || !assignment?.order?.id || marketingCardLoading) return;
     setMarketingCardLoading(true);
     try {
-      const res = await axios.post(`${backendUrl}/api/marketing-cards/manufacturer/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
+      const res = await axios.post(`${backendUrl}/api/marketing-cards/distributor/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
       if (!res.data.success) throw new Error(res.data.message);
       setMarketingCard(res.data.card);
       setChecklist((previous) => ({ ...previous, marketingCard: true, marketingCardId: res.data.card?.card?.cardCode || res.data.card?.cardCode || "attached" }));
@@ -273,6 +337,9 @@ const OrderDetail = () => {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to update status");
+      if (err.response?.data?.code === "MARKETING_CARD_REATTACH_REQUIRED") {
+        await fetchMarketingCardStatus();
+      }
     } finally {
       setActionLoading(false);
     }
@@ -282,9 +349,24 @@ const OrderDetail = () => {
     if (!validateChecklist()) return;
     setActionLoading(true);
     try {
+      if (isDistributor) {
+        const response = await axios.post(
+          `${backendUrl}/api/distributor/orders/${id}/hold`,
+          {
+            deliveryType: selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY" ? "SELF_DELIVERY" : "NCM",
+          },
+          { headers: { token } }
+        );
+        if (!response.data.success) throw new Error(response.data.message || "Could not place order on hold.");
+        toast.success(response.data.message || "Order placed on hold for delivery.");
+        await fetchAssignment();
+        return;
+      }
+
       const res = await axios.post(
         `${backendUrl}/api/delivery-job/ready-for-pickup/${id}`,
         {
+          deliveryType: "NCM",
           packagingNotes,
           packageWeight,
           packageDimensions,
@@ -301,8 +383,8 @@ const OrderDetail = () => {
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success("Courier booking submitted successfully.");
-        fetchAssignment();
+        toast.success("NCM courier booking submitted successfully.");
+        await fetchAssignment();
       }
     } catch (err) {
       const fallbackMessage = err.response?.data?.message || "Failed to book courier with delivery partner.";
@@ -412,16 +494,50 @@ const OrderDetail = () => {
 
   const order = assignment.order;
   const items = order?.items || [];
+  const savedAssignmentNotes = (() => {
+    if (!assignment.notes) return {};
+    if (typeof assignment.notes === "object") return assignment.notes;
+    try {
+      return JSON.parse(assignment.notes);
+    } catch {
+      return {};
+    }
+  })();
+  const deliveryChoice = deliveryChoiceState.assignmentId === id
+    ? deliveryChoiceState.value
+    : savedAssignmentNotes.deliveryOnHold
+      ? assignment.deliveryType
+      : "NCM";
+  const setDeliveryChoice = (value) => setDeliveryChoiceState({ assignmentId: id, value });
   const delivery = assignment.delivery || null;
   const benefits = order?.fulfillmentBenefits || {};
-  const isDispatchLocked = ["ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes((assignment.status || "").toLowerCase());
+  const assignmentStatus = String(assignment.status || "").toLowerCase();
+  const deliveryState = String(delivery?.state || "").toUpperCase();
+  const isDispatchLocked = [
+    "on_hold",
+    "ready_for_pickup",
+    "picked_up",
+    "in_transit",
+    "arrived_at_destination",
+    "out_for_delivery",
+    "delivered",
+    "return_requested",
+  ].includes(assignmentStatus) ||
+    Boolean(
+      delivery?.ncmOrderId ||
+      delivery?.pickedUpAt ||
+      delivery?.deliveredAt ||
+      ["SUBMISSION_PENDING", "NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "PICKED_UP", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"]
+        .includes(deliveryState)
+    );
 
   const pickupReadiness = (() => {
-    const branch = (manufacturer?.ncmPickupBranch || "").trim();
-    const address = (manufacturer?.pickupAddress || "").trim();
-    const contactName = (manufacturer?.pickupContactName || "").trim();
-    const contactPhone = (manufacturer?.pickupContactPhone || "").trim();
-    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+    const fulfillmentProfile = isDistributor ? distributor : manufacturer;
+    const branch = (fulfillmentProfile?.ncmPickupBranch || "").trim();
+    const address = (fulfillmentProfile?.pickupAddress || "").trim();
+    const contactName = (fulfillmentProfile?.pickupContactName || "").trim();
+    const contactPhone = (fulfillmentProfile?.pickupContactPhone || "").trim();
+    const pickupWindow = (fulfillmentProfile?.pickupWindow || "").trim();
 
     const missingFields = [];
     if (!branch) missingFields.push("NCM pickup branch assignment");
@@ -449,29 +565,56 @@ const OrderDetail = () => {
   const stepOrder = DELIVERY_STEPS.map((s) => s.key);
   const currentStepIdx = stepOrder.indexOf(assignment.status);
 
-  const WORKFLOW_STEPS = [
+  const MANUFACTURER_WORKFLOW_STEPS = [
     { key: "assigned", label: "Accept order", description: "Confirm this assignment for your hub." },
     { key: "accepted", label: "Stitching & branding", description: "Complete tailoring, labels, and branding." },
     { key: "preparing", label: "Quality check", description: "Inspect the finished garment before letter preparation." },
-    { key: "quality_check", label: "Customer letter", description: "Print and include the compulsory customer letter." },
+    { key: "quality_check", label: lettersEnabled ? "Customer letter" : "Quality check", description: lettersEnabled ? "Print and include the compulsory customer letter." : "Confirm the quality check before packing." },
     { key: "letter_ready", label: "Final checklist", description: "Confirm every required item before packing." },
     { key: "checklist_complete", label: "Pack order", description: "Seal the verified order." },
     { key: "packed", label: "Package details", description: "Record weight, dimensions, type, and handling." },
     { key: "package_details_complete", label: "Call delivery partner", description: "Submit the completed parcel for pickup." },
   ];
-  const workflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
-  const workflowIndex = Math.max(0, WORKFLOW_STEPS.findIndex((step) => step.key === workflowStatus));
+  const DISTRIBUTOR_WORKFLOW_STEPS = [
+    { key: "assigned", label: "Accept order", description: "Confirm this order for your distributor hub." },
+    { key: "accepted", label: "Quality check", description: "Verify the received products, variants, and condition." },
+    { key: "quality_check", label: lettersEnabled ? "Customer letter" : "Quality check", description: lettersEnabled ? "Print and include the customer’s required letter." : "Verify the received products, variants, and condition." },
+    { key: "letter_ready", label: "Packing checklist", description: "Confirm the order contents, address, and parcel readiness." },
+    { key: "checklist_complete", label: "Pack order", description: "Securely pack and seal the verified order." },
+    { key: "packed", label: "Package details", description: "Enter parcel dimensions and weight; description must be 50 characters or fewer." },
+    { key: "package_details_complete", label: "Choose delivery", description: "Choose self-delivery when available or NCM pickup, then hold the packed order." },
+    { key: "on_hold", label: "On hold", description: "This order is waiting in the selected delivery queue." },
+  ];
+  const WORKFLOW_STEPS = isDistributor ? DISTRIBUTOR_WORKFLOW_STEPS : MANUFACTURER_WORKFLOW_STEPS;
+  const storedWorkflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
+  const workflowStatus = isDistributor && storedWorkflowStatus === "preparing" ? "accepted" : storedWorkflowStatus;
+  const matchedWorkflowIndex = WORKFLOW_STEPS.findIndex((step) => step.key === workflowStatus);
+  const workflowIndex = matchedWorkflowIndex >= 0
+    ? matchedWorkflowIndex
+    : ["ready_for_pickup", "picked_up", "in_transit", "out_for_delivery", "delivered"].includes(workflowStatus)
+      ? WORKFLOW_STEPS.length - (isDistributor ? 2 : 1)
+      : 0;
+  const selfDeliveryAvailable = Boolean(isDistributor && assignment.selfDeliveryAvailable);
+  const deliveryActionLabel = workflowStatus === "package_details_complete"
+    ? isDistributor
+      ? "Hold order"
+      : "Book NCM delivery"
+    : "Continue";
   const handleWorkflowNext = async () => {
     if (workflowStatus === "assigned") return handleAccept();
+    if (isDistributor && workflowStatus === "accepted") return handleStatusChange("quality_check");
     if (workflowStatus === "accepted") return handleStatusChange("preparing", { stitchingBrandingCompleted: true });
     if (workflowStatus === "preparing") {
       setChecklist((prev) => ({ ...prev, qualityVerified: true }));
       return handleStatusChange("quality_check", { stitchingBrandingCompleted: true });
     }
     if (workflowStatus === "quality_check") {
-      if (!storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
-      setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
-      return handleStatusChange("letter_ready", { packagingChecklist: { ...checklist, customerLetterIncluded: true, thankYouLetter: true } });
+      if (isDistributor && lettersEnabled && !storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
+      const letterChecklist = isDistributor
+        ? { ...checklist, ...(lettersEnabled ? { customerLetterIncluded: true, thankYouLetter: true } : {}) }
+        : checklist;
+      if (isDistributor && lettersEnabled) setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
+      return handleStatusChange("letter_ready", { packagingChecklist: letterChecklist });
     }
     if (workflowStatus === "letter_ready") {
       setGiftOptions(null);
@@ -490,13 +633,16 @@ const OrderDetail = () => {
   };
 
   const handleChecklistConfirm = async (confirmedChecklist) => {
-    const { giftInventoryId, ...checklistData } = confirmedChecklist;
-    if (giftInventoryId) checklistData.catalogGiftIncluded = true;
-    setChecklist(checklistData);
+    const {
+      paperBillRequested,
+      paperBillNumber,
+      ...verifiedChecklist
+    } = confirmedChecklist;
+    setChecklist(verifiedChecklist);
     setChecklistModalOpen(false);
     await handleStatusChange("checklist_complete", {
-      giftInventoryId,
-      packagingChecklist: checklistData,
+      packagingChecklist: verifiedChecklist,
+      ...(isDistributor ? { paperBillRequested, paperBillNumber } : {}),
     });
   };
 
@@ -505,7 +651,7 @@ const OrderDetail = () => {
       {/* Top Breadcrumb & Actions */}
       <div className="flex items-center justify-between">
         <Link
-          to="/orders"
+          to={isDistributor && (workflowStatus === "on_hold" || assignment.deliveryType === "NCM") ? "/ncm" : "/orders"}
           className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -521,12 +667,17 @@ const OrderDetail = () => {
         currentIndex={workflowIndex}
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
-        nextLabel={workflowStatus === "assigned" ? "Accept production" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? "Letter printed" : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Enter package details" : workflowStatus === "package_details_complete" ? "Call delivery partner" : "Continue"}
-        nextDisabled={workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
-        previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
+        nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : workflowStatus === "on_hold" ? "Waiting for batch dispatch" : "Continue"}
+        nextDisabled={isDispatchLocked}
+        previousDisabled={workflowIndex <= 0 || isDispatchLocked}
         busy={actionLoading}
       >
-        {order?.marketingCardRequired !== false && (
+        {isDistributor && isDispatchLocked && (
+          <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700">
+            This order is in the delivery queue or has been handed to the delivery partner. Its fulfillment details are read-only.
+          </div>
+        )}
+        {marketingCardsEnabled && order?.marketingCardRequired !== false && (
           <div className={`rounded-2xl border px-4 py-4 ${marketingCard ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -538,7 +689,7 @@ const OrderDetail = () => {
             </div>
           </div>
         )}
-        {workflowStatus === "quality_check" && (
+        {lettersEnabled && isDistributor && workflowStatus === "quality_check" && (
           <button type="button" onClick={handlePrintPersonalizedLetter} disabled={actionLoading} className="w-full rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-left transition hover:border-violet-300 hover:bg-violet-100 disabled:opacity-50">
             <span className="flex items-center gap-2 text-sm font-black text-violet-900"><Printer className="h-4 w-4" /> Print compulsory customer letter</span>
             <span className="mt-1 block text-xs text-violet-700">Every customer receives a letter before the order can continue.</span>
@@ -546,12 +697,63 @@ const OrderDetail = () => {
         )}
         {workflowStatus === "assigned" && (
           <button type="button" onClick={handleReject} disabled={actionLoading} className="mt-3 w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-xs font-bold text-rose-800 transition hover:border-rose-300 hover:bg-rose-100 disabled:opacity-50">
-            Reject production assignment
-            <span className="mt-1 block text-[10px] font-normal text-rose-700">Use this only when your hub cannot produce or accept the order.</span>
+            {isDistributor ? "Reject order assignment" : "Reject production assignment"}
+            <span className="mt-1 block text-[10px] font-normal text-rose-700">{isDistributor ? "Use this only when your hub cannot accept or fulfill the order." : "Use this only when your hub cannot produce or accept the order."}</span>
           </button>
         )}
         {workflowStatus === "letter_ready" && <button type="button" onClick={() => setChecklistModalOpen(true)} className="w-full rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-4 text-left text-xs font-semibold text-indigo-950 transition hover:border-indigo-300 hover:bg-indigo-100">Open the final checklist to verify every required item before packing.</button>}
-        {workflowStatus === "package_details_complete" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Package details are complete. The next action will call the delivery partner.</p>}
+        {workflowStatus === "package_details_complete" && isDistributor && (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4">
+            <p className="text-xs font-bold text-emerald-950">Choose how this order will be delivered</p>
+            {selfDeliveryAvailable ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {[
+                  {
+                    value: "SELF_DELIVERY",
+                    title: "Self delivery",
+                    description: "Your distributor hub will deliver and update the order.",
+                  },
+                  {
+                    value: "NCM",
+                    title: "NCM delivery",
+                    description: "Hold the packed order for batch NCM pickup booking.",
+                  },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setDeliveryChoice(option.value)}
+                    className={`rounded-xl border p-3 text-left transition ${
+                      deliveryChoice === option.value
+                        ? "border-emerald-700 bg-white ring-1 ring-emerald-700"
+                        : "border-emerald-200 bg-emerald-50 hover:bg-white"
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-900">{option.title}</span>
+                    <span className="mt-1 block text-[11px] text-slate-600">{option.description}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-900">
+                Self-delivery is available when the customer is in your district or shares your exact city and province; otherwise use NCM.
+              </p>
+            )}
+          </div>
+        )}
+        {workflowStatus === "package_details_complete" && !isDistributor && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Package details are complete. Continue to book delivery with NCM.</p>}
+        {workflowStatus === "on_hold" && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-xs text-amber-950">
+            <p className="font-bold">Order held for {assignment.deliveryType === "NCM" ? "NCM batch booking" : "self-delivery"}.</p>
+            <Link
+              to={assignment.deliveryType === "NCM" ? "/ncm" : "/distributor/deliveries"}
+              className="mt-2 inline-flex font-bold underline underline-offset-2"
+            >
+              Open {assignment.deliveryType === "NCM" ? "NCM deliveries" : "self-delivery management"}
+            </Link>
+          </div>
+        )}
+        {workflowStatus === "ready_for_pickup" && isDistributor && assignment.deliveryType === "SELF_DELIVERY" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Self-delivery selected. Track and complete this order in Self-Delivery Management.</p>}
         {workflowStatus !== "quality_check" && workflowStatus !== "letter_ready" && workflowStatus !== "package_details_complete" && <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-600">{WORKFLOW_STEPS[workflowIndex]?.description}</p>}
       </FulfillmentProgressStepper>
 
@@ -636,7 +838,7 @@ const OrderDetail = () => {
               </span>
             </div>
 
-            {(benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
+            {loyaltyEnabled && (benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
               <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50/60 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-teal-900">Customer benefits &amp; packing instructions</h3>
@@ -648,7 +850,7 @@ const OrderDetail = () => {
                   {benefits.totalDiscount > 0 && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Discount applied: <strong>{currency}{benefits.totalDiscount.toLocaleString()}</strong></div>}
                   {benefits.freeShipping && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Free delivery benefit applied</div>}
                   {benefits.giftDescription && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Gift: <strong>{benefits.giftDescription}</strong></div>}
-                  {benefits.handwrittenCard && <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 font-bold text-amber-900">Include a handwritten thank-you card</div>}
+                  {lettersEnabled && benefits.handwrittenCard && <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 font-bold text-amber-900">Include a handwritten thank-you card</div>}
                   {benefits.customPerk && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Perk: <strong>{benefits.customPerk}</strong></div>}
                 </div>
                 {benefits.offerItems?.length > 0 && (
@@ -677,7 +879,7 @@ const OrderDetail = () => {
             </p>
 
             {/* Standard Order Banner if no special perks apply */}
-            {!benefits.giftDescription && !benefits.handwrittenCard && !benefits.customPerk && (
+            {loyaltyEnabled && !benefits.giftDescription && !(lettersEnabled && benefits.handwrittenCard) && !benefits.customPerk && (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex items-center gap-2.5">
                 <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
                 <p className="text-[11px] text-slate-600">
@@ -692,10 +894,12 @@ const OrderDetail = () => {
                 {[
                   ["productVerified", "Product and quantity verified"],
                   ["sizeColorVerified", "Size and color verified"],
-                  ["stitchingVerified", "Stitching completed and inspected"],
-                  ["brandingVerified", "Branding, tags, and labels verified"],
+                  ...(!isDistributor ? [
+                    ["stitchingVerified", "Stitching completed and inspected"],
+                    ["brandingVerified", "Branding, tags, and labels verified"],
+                  ] : []),
                   ["qualityVerified", "Quality check passed"],
-                  ["customerLetterIncluded", "Compulsory customer letter included"],
+                  ...(lettersEnabled ? [["customerLetterIncluded", "Compulsory customer letter included"]] : []),
                   ["addressVerified", "Customer address and phone verified"],
                   ["packagingMaterialsVerified", "Packaging materials and seal verified"],
                 ].map(([field, label]) => (
@@ -707,7 +911,7 @@ const OrderDetail = () => {
               </div>
 
               {/* 1. Gifts from loyalty card — only shown if customer earned a gift */}
-              {(benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0)) && (
+              {loyaltyEnabled && (benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0)) && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, loyaltyGift: !prev.loyaltyGift }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -745,7 +949,7 @@ const OrderDetail = () => {
               )}
 
               {/* 2. Handwritten thank-you letter — only shown if requested for this tier */}
-              {benefits.handwrittenCard && (
+              {lettersEnabled && benefits.handwrittenCard && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, thankYouLetter: !prev.thankYouLetter }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -778,7 +982,7 @@ const OrderDetail = () => {
               )}
 
               {/* 3. Custom Perk Fulfilled if present */}
-              {benefits.customPerk && (
+              {loyaltyEnabled && benefits.customPerk && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, customPerkIncluded: !prev.customPerkIncluded }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -808,81 +1012,81 @@ const OrderDetail = () => {
               )}
 
               {/* 4. Additional letter */}
-              <div
-                onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, additionalLetter: !prev.additionalLetter }))}
-                className={`p-3.5 rounded-2xl border transition-all select-none ${
-                  isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
-                } flex items-start gap-3.5 ${
-                  checklist.additionalLetter
-                    ? "bg-emerald-50/70 border-emerald-300"
-                    : "bg-slate-50 border-slate-200 hover:border-slate-300"
-                }`}
-              >
-                <div className="mt-0.5 text-emerald-600 shrink-0">
-                  {checklist.additionalLetter ? (
-                    <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
-                  ) : (
-                    <Square className="w-5 h-5 text-slate-400" />
-                  )}
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-indigo-500" />
-                    <span className="text-xs font-bold text-slate-900">
-                      Additional Letter
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* 5. Marketing partner card */}
-              <div
-                className={`p-3.5 rounded-2xl border transition-all space-y-3 ${
-                  checklist.marketingCard
-                    ? "bg-amber-50/50 border-amber-300"
-                    : "bg-slate-50 border-slate-200"
-                }`}
-              >
+              {lettersEnabled && (
                 <div
-                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, marketingCard: !prev.marketingCard }))}
-                  className={`flex items-start gap-3.5 select-none ${
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, additionalLetter: !prev.additionalLetter }))}
+                  className={`p-3.5 rounded-2xl border transition-all select-none ${
                     isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  } flex items-start gap-3.5 ${
+                    checklist.additionalLetter
+                      ? "bg-emerald-50/70 border-emerald-300"
+                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
                   }`}
                 >
-                  <div className="mt-0.5 text-amber-600 shrink-0">
-                    {checklist.marketingCard ? (
-                      <CheckSquare className="w-5 h-5 text-amber-600 fill-amber-100" />
+                  <div className="mt-0.5 text-emerald-600 shrink-0">
+                    {checklist.additionalLetter ? (
+                      <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
                     ) : (
                       <Square className="w-5 h-5 text-slate-400" />
                     )}
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <CreditCard className="w-4 h-4 text-amber-600" />
-                      <span className="text-xs font-bold text-slate-900">
-                        Marketing Partner Card
-                      </span>
+                      <FileText className="w-4 h-4 text-indigo-500" />
+                      <span className="text-xs font-bold text-slate-900">Additional Letter</span>
                     </div>
                   </div>
                 </div>
+              )}
 
-                {checklist.marketingCard && (
-                  <div className="pt-2 border-t border-amber-200/80 pl-8 space-y-1.5 animate-in fade-in duration-150">
-                    <label className="block text-[11px] font-bold text-amber-900">
-                      Marketing Partner Card ID <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Enter Card ID"
-                      value={checklist.marketingCardId}
-                      disabled={isDispatchLocked}
-                      onChange={(e) => setChecklist((prev) => ({ ...prev, marketingCardId: e.target.value }))}
-                      className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 disabled:opacity-60"
-                      required={checklist.marketingCard}
-                    />
+              {/* 5. Marketing partner card */}
+              {marketingCardsEnabled && (
+                <div
+                  className={`p-3.5 rounded-2xl border transition-all space-y-3 ${
+                    checklist.marketingCard
+                      ? "bg-amber-50/50 border-amber-300"
+                      : "bg-slate-50 border-slate-200"
+                  }`}
+                >
+                  <div
+                    onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, marketingCard: !prev.marketingCard }))}
+                    className={`flex items-start gap-3.5 select-none ${
+                      isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                    }`}
+                  >
+                    <div className="mt-0.5 text-amber-600 shrink-0">
+                      {checklist.marketingCard ? (
+                        <CheckSquare className="w-5 h-5 text-amber-600 fill-amber-100" />
+                      ) : (
+                        <Square className="w-5 h-5 text-slate-400" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <CreditCard className="w-4 h-4 text-amber-600" />
+                        <span className="text-xs font-bold text-slate-900">Marketing Partner Card</span>
+                      </div>
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {checklist.marketingCard && (
+                    <div className="pt-2 border-t border-amber-200/80 pl-8 space-y-1.5 animate-in fade-in duration-150">
+                      <label className="block text-[11px] font-bold text-amber-900">
+                        Marketing Partner Card ID <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Enter Card ID"
+                        value={checklist.marketingCardId}
+                        disabled={isDispatchLocked}
+                        onChange={(e) => setChecklist((prev) => ({ ...prev, marketingCardId: e.target.value }))}
+                        className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 disabled:opacity-60"
+                        required={checklist.marketingCard}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 6. Garment quality check & packaging seal */}
               <div
@@ -910,7 +1114,9 @@ const OrderDetail = () => {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Inspected fabric quality, size labels, stitching, and wrapped in tamper-proof seal.
+                    {isDistributor
+                      ? "Checked the received product, variants, and condition; securely sealed the parcel."
+                      : "Inspected fabric quality, size labels, stitching, and wrapped in a tamper-proof seal."}
                   </p>
                 </div>
               </div>
@@ -918,13 +1124,17 @@ const OrderDetail = () => {
           </div>
 
           {/* Packaging & Quality Specs Card */}
-          <div className={`${workflowStatus === "packed" || workflowStatus === "package_details_complete" ? "" : "hidden"} bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4`}>
+          <div className={`${workflowStatus === "packed" || workflowStatus === "package_details_complete" || isDispatchLocked ? "" : "hidden"} bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4`}>
             <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              Packaging &amp; Quality Dispatch Parameters
+              {isDistributor ? "Parcel details for delivery" : "Packaging & Quality Dispatch Parameters"}
             </div>
             <p className="text-xs text-slate-500">
-              Ensure proper packaging, tag inspection, and correct box dimensions before handing over to the delivery partner.
+            {isDistributor
+              ? isDispatchLocked
+                ? "Saved parcel type, contents, weight, dimensions, and handling notes."
+                : "Confirm the parcel type, short contents description, weight, and dimensions before booking delivery."
+              : "Ensure proper packaging, tag inspection, and correct box dimensions before handing over to the delivery partner."}
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -966,12 +1176,14 @@ const OrderDetail = () => {
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="e.g. Premium cotton shirt with size label and care instructions"
+                  maxLength={50}
+                  placeholder="e.g. Cotton shirt"
                   value={productDescription}
                   disabled={isDispatchLocked}
                   onChange={(e) => setProductDescription(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
+                <p className={`mt-1 text-[10px] ${productDescription.length >= 50 ? "text-rose-600" : "text-slate-500"}`}>{productDescription.length}/50 characters · brief parcel description</p>
               </div>
 
               <div>
@@ -1287,18 +1499,18 @@ const OrderDetail = () => {
               </div>
             )}
 
-            {assignment.status === "packed" && (
+            {isDistributor && assignment.status === "packed" && (
               <div className="space-y-2">
-                <button
+                {lettersEnabled && <button
                   onClick={handlePrintPersonalizedLetter}
                   disabled={actionLoading}
                   className="w-full py-3 px-4 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <Printer className="w-4 h-4" />
                   Print Personalized Letter
-                </button>
+                </button>}
 
-                {storyLetter?.letter && (
+                {lettersEnabled && storyLetter?.letter && (
                   <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[11px] text-violet-900">
                     <div className="font-bold uppercase tracking-wider text-violet-700">Allocated letter</div>
                     <div className="mt-1 text-sm font-black">#{storyLetter.letter.sequenceNumber || "1"}</div>
@@ -1373,10 +1585,15 @@ const OrderDetail = () => {
         giftOptionsLoading={giftOptionsLoading}
         giftOptionsError={giftOptionsError}
         onRetryGiftOptions={fetchGiftOptions}
+        marketingCard={marketingCard}
+        marketingCardLoading={marketingCardLoading}
+        onAttachMarketingCard={handleAttachMarketingCard}
         currency={currency}
         busy={actionLoading}
         onClose={() => setChecklistModalOpen(false)}
         onConfirm={handleChecklistConfirm}
+        isDistributor={isDistributor}
+        platformFeatures={{ loyaltyEnabled, marketingCardsEnabled, lettersEnabled }}
       />
     </div>
   );

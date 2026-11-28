@@ -41,6 +41,16 @@ This project follows these rules:
 - Profit & Loss: activity over a period
 - Reconciliation: proof that Treasury, AP, AR, and control accounts agree with source records
 
+### 2.3 Reading journal-derived reports
+
+The General Ledger, Trial Balance and accounting Financial Statements are calculated from journal entries in the report's included posted/reversed statuses. Their responses expose `reportBasis` metadata with the period, source population and limitations. A balanced Trial Balance proves debit/credit parity only for the included journal population; it does not prove that all business events were posted, that the subledgers are complete, or that cash agrees to a bank/provider statement.
+
+Review the Accounting Health coverage and exceptions separately. A `PARTIAL`, `SOURCE_SCOPED`, `LEGACY_PARTIAL` or `TREASURY_REGISTER_ONLY` status is not a reconciled control balance. Do not fill missing GL opening entries from a dashboard or operational estimate.
+
+The Finance Dashboard deliberately shows posted-ledger totals separately from operational estimates. The legacy Finance Statements endpoint is estimate-only, and the tax report combines posted VAT with an operational corporate-tax projection; neither should be presented as a complete authoritative or statutory report.
+
+The Admin Product Analytics and customer-location summaries use order and return records, not a complete posted-sales population. Manufacturer-portal paid-order totals may use only the currently loaded page and `Order.payment`; they are not company revenue or Treasury receipts. See the [P5-R6 report-basis inventory](./23-p5-r6-financial-reporting-source-of-truth-audit.md) before comparing any portal KPI with the GL, invoices, collections, distributor remittances, or tax reports.
+
 ---
 
 ## 3. Roles and permissions
@@ -75,6 +85,8 @@ Treasury accounts are not allowed to be random cash buckets. The project enforce
 - COD receivable and carrier escrow are not treated as company cash
 
 This prevents a common accounting failure: using a receivable or held-payment account as if it were cash.
+
+Manufacturer, distributor, and generic payable payouts additionally require an active NPR Treasury account whose GL mapping matches its type. An unmapped, inactive, wrong-currency, or mismatched account is blocked. The payout journal credits the mapped GL account; it must not guess a cash/bank account code.
 
 ### 4.2 Required setup steps
 
@@ -129,6 +141,46 @@ The system blocks unsupported categories such as:
 
 This is a major design principle: no “best guess” accounting.
 
+The Expense Management income form is limited to **Other Income** receipts that finance has confirmed do not require output VAT. It posts the deposit to the Treasury account's mapped GL account and credits Other Income (8100) in the same transaction as the income and cash-transaction records. Do not use it for sales, scrap disposals, or services; use their tax-aware workflows instead. VAT-bearing receipts remain blocked from this manual form until their tax treatment is implemented and approved.
+
+Operating expenses post the expense and either the mapped Treasury outflow or Accounts Payable within one database transaction. A failed GL posting rolls back the associated expense and Treasury/subledger change. Supplier VAT remains pending review; input VAT is recognized only after evidence and the effective-dated Admin VAT registration checks pass.
+
+The direct operating-expense endpoint requires an idempotency key and writes its cash movement, payable (if any), and GL journal in one transaction. Partial payments must reconcile exactly to the expense total; paid amounts use the selected mapped Treasury account. Retrying an unchanged request returns the prior posting, while reuse of the key for different details is rejected.
+
+Treasury direct entries and internal transfers also post their mapped journal in the same transaction as the balance and cash-log changes. Supported direct entries are limited to non-sales other receipts, operating expenses, and drawings. Internal transfers debit the destination mapping and credit the source mapping. Sales, asset proceeds, loans, vendor-bill payments, and other specialized receipts/disbursements must use their dedicated workflows.
+
+### 4.6 Loan funding and repayments
+
+Record a loan only when its proceeds are received into an active NPR Treasury account mapped to the matching cash, bank, or wallet GL account. The liability record, Treasury balance, cash transaction, and journal must commit together; a failed posting must not leave a partial loan or cash balance.
+
+For repayments, select the actual mapped Treasury source and enter the principal and interest portions from approved repayment evidence. The two portions must equal the total payment. The displayed monthly-interest calculation is a legacy estimate for guidance only; it is not posted automatically and is not a substitute for the lender's statement or approved amortization evidence. Repayment balance, Treasury balance, cash transaction, and journal post atomically and retries use an idempotency key.
+
+### 4.7 Fixed-asset acquisition
+
+For a fixed-asset purchase paid in full or in part, use the actual active NPR Treasury account and confirm it is mapped to the correct cash, bank, or wallet GL account. The asset register, Treasury outflow, related payable (if any), and acquisition journal are committed together. The journal debits the asset category account, credits the mapped Treasury account for the paid amount, and credits Accounts Payable for the unpaid amount. It must not assume every cash payment came from Bank (1120).
+
+The Admin form sends an idempotency key for each unchanged submission. Retrying that request returns the existing acquisition without repeating cash or GL effects; reusing the key with changed purchase details is rejected. Keep the same request key when retrying after an uncertain network result.
+
+The monthly depreciation batch uses the configured Bikram Sambat accounting period and can be posted only once for that period. Asset book-value updates and the 6600/1590 journal are committed together; if posting fails, the asset updates roll back. A retry of a posted period returns the existing result without changing asset values again. This guard does not determine the correct accounting or tax depreciation start date and does not provide catch-up batches for missed periods; confirm those policies with the finance approver before use.
+
+Damage/write-off requests require a reason and approval from a different active Admin before transactional, idempotent derecognition can execute. Approval removes the gross asset cost, clears accumulated depreciation, recognizes the remaining book-value loss in GL 6800, and updates the register only if the three amounts reconcile; rejection does not change the asset or ledger. Asset sales and any disposal proceeds are disabled pending CA-approved tax/VAT treatment; do not record sale receipts as capital injections or other income. The control-coverage report remains unreconciled until asset-register balances and additions, depreciation, and disposals are independently tied to the fixed-asset GL accounts.
+
+### 4.8 Primary share issuance
+
+Record a primary share issue only after the funds are received into an active NPR cash, bank, or wallet Treasury account mapped to its matching GL account. The share register/dilution, Treasury balance and cash receipt, valuation milestone, share-transaction record, and journal must commit together. The journal debits the selected mapped Treasury account and credits Share Capital (3100), retaining the current configured classification; any share-premium or legal-capital reclassification requires CA approval and a separate policy change.
+
+The Admin request carries an idempotency key. Retrying an unchanged request returns the prior recorded issue, while reusing its key for different terms is rejected. A journal failure rolls back the cap-table and Treasury changes. Preserve bank receipt evidence and approved allotment/company records. This system workflow does not establish compliance with company-law allotment, board/shareholder approval, OCR filing, tax, or statutory register requirements; confirm those with the company secretary and Nepal CA.
+
+### 4.9 Company share buyback
+
+Record a company buyback only against an active NPR cash, bank, or wallet account mapped to the matching Treasury GL account, and only from funds available after reservations. Treasury, seller share count/status, remaining ownership percentages, the cash outflow, share-transaction record, and journal are committed together. The journal uses the currently configured Share Capital (3100) debit and credits the selected mapped Treasury account; do not infer a different treasury-share or capital-reduction presentation without CA approval.
+
+The Admin request uses an idempotency key; retry an unchanged request with that same key after an uncertain network result. Reusing the key with changed terms is rejected. The accounting record is not proof of legal authority to repurchase, solvency under company law, required board/shareholder approvals, tax treatment, or required OCR/company-register filings. Obtain and retain those approvals and source documents before processing, and have a Nepal CA/company secretary verify applicable requirements. Database-backed concurrent execution and production reconciliations remain separate release checks.
+
+Private peer-to-peer share transfers update the seller/buyer cap table and append a share-transaction record in one database transaction; they do not represent company Treasury movement or a company GL cash receipt/payment. The private purchase consideration is recorded on the share transaction only: it does not increase the company's contributed capital or the buyer's company-capital balance. Record and retain the parties' signed transfer agreement and settlement evidence outside this company-cash workflow. Admin retries use a durable idempotency key after the additive ShareTransaction migration is deployed; until the application schema is migrated and generated client updated, do not assume production retries are protected.
+
+The cap table uses share counts to calculate ownership, but still includes legacy floating-point share fields and a 100,000-share fallback for some overview/valuation calculations. Do not treat that fallback as the entity's authorized or issued share capital. Reconcile holdings to the legal shareholder register and approved allotment/transfer records; obtain CA/company-secretary approval of authorized versus issued shares, fractional-share precision, and capital presentation before changing those rules.
+
 ---
 
 ## 5. General Ledger (GL)
@@ -179,7 +231,7 @@ The Profit & Loss statement summarizes activity over a period and derives from p
 - returns and discounts
 - COGS
 - operating expenses
-- manufacturer commissions
+- historical manufacturer commission postings (no new accruals)
 - marketing partner CPA
 - delivery/carrier costs
 - depreciation and interest
@@ -249,6 +301,18 @@ Equity includes:
 
 ---
 
+## PAN/VAT and bill records
+
+The Admin Tax Compliance page resolves to `UNREGISTERED` until a status is recorded. Record `UNREGISTERED`, `PAN_ONLY`, or `VAT_REGISTERED` only from available registration evidence; the initial unregistered status may be recorded for today, while later changes are future-dated. Output VAT requires both VAT registration and an explicitly effective VAT rate at the transaction tax point; a missing rate blocks tax calculation instead of falling back to a default. Unregistered sales remain internal accounting records and statutory paper-bill issuance is blocked. These controls support internal bookkeeping and do not certify statutory compliance.
+
+For the current paper-bill process, issue the official bill through the business's approved paper stationery and record its actual bill number/date against the system invoice. Keep the original bill and supporting evidence. The system record is not itself a legally issued bill, does not print or submit one, and does not provide an IRD electronic billing integration.
+
+VAT return drafts are posted-ledger reconciliations, not ready-to-submit IRD returns. Check the IRD-assigned period, taxable sales, the complete purchase/invoice and credit-note registers, the carried-forward credit, and all adjustments with the accountant before submitting a filing, payment, or amendment request. A distinct active Admin must approve each request before the system records it; rejection leaves the filing, Treasury, and journal unchanged. Internal approval does not mean the return or payment was submitted to IRD or that a CA reviewed it. Record the IRD reference and assessed amount. An assessment variance requires an explanation and an active offset account; the approved action posts the adjustment journal atomically. Record each actual payment once, using its reference and the matching cash/bank Treasury account; partial and outstanding amounts remain visible.
+
+Do not claim supplier input VAT solely because a supplier bill is marked verified: the business must also be VAT-registered at acquisition. Non-recoverable VAT is included in inventory/COGS. The acquisition-time cost-layer snapshot prevents a later VAT registration from retrospectively creating an input credit.
+
+---
+
 ## 8. Cash, bank, and reconciliation workflow
 
 ### 8.1 Bank/Cash health check
@@ -289,7 +353,9 @@ The system intentionally blocks or warns on these patterns:
 
 ### 9.1 AP and AR are document-ledger based
 
-The system is designed so that actual open payables and receivables reconcile to control accounts. In this project, the older legacy flows remain compatibility-oriented until the full document cutover is finished.
+The system is designed so that actual open payables and receivables reconcile to control accounts. Manufacturer production bills are created when delivered goods trigger payable recognition; manufacturer payments allocate to those open bills. A confirmed return creates a supplier credit note only when the original delivery bill exists. Older manufacturer journals remain a legacy balance until reconciled.
+
+New distributor settlement requests do not create an AP from the amount requested. Requests backed by distributor earning documents are linked to those documents. Requests without matching earning documents are marked for reconciliation and cannot be paid until historical earnings are backfilled/reconciled. Pre-existing request-accrual AP records remain on the compatibility path pending controlled migration.
 
 ### 9.2 Safe patterns
 
@@ -298,7 +364,18 @@ The system is designed so that actual open payables and receivables reconcile to
 - ensure the Treasury account used for the payment/receipt is mapped to a valid GL cash/bank entry
 - use a stable idempotency key for retries
 
-### 9.3 Warning
+### 9.3 Payable payout lifecycle
+
+Admin payable, manufacturer, and distributor transfers use a two-step confirmation flow:
+
+1. Initiate the payout from a mapped Treasury account. The system reserves the cash amount, but does not yet debit Treasury, clear the payable, create a cash transaction, or post the payment journal.
+2. Make the transfer through the bank or other payment provider outside the application.
+3. Confirm only after checking the bank statement or equivalent transfer evidence. Record the evidence reference; confirmation atomically debits Treasury, posts the journal, updates the payable/settlement, releases the reservation, and records the audit event.
+4. If the transfer failed, mark the initiated payout failed with a reason. The reservation is released without recording a payment.
+
+An initiated payout remains recoverable from the Admin payout list if the original dialog is closed. Do not treat the external transfer reference entered at initiation as proof of settlement. The payout lifecycle migration and database-backed transition tests must be verified in an isolated database before operational rollout.
+
+### 9.4 Warning
 
 Do not mark a receivable or payable as cleared based only on a UI toggle or a partial payment status. It must reconcile to the balance and to the ledger.
 
@@ -309,6 +386,8 @@ Do not mark a receivable or payable as cleared based only on a UI toggle or a pa
 ### 10.1 COD receivable
 
 COD is not cash. The carrier has collected customer funds, but the money is still due to the company as a receivable until settlement is confirmed.
+
+Outstanding distributor COD is displayed as a separate exposure warning on Admin service-settlement views and payout results. Distributor service earnings are paid gross against their own payable documents; COD is not automatically netted from that payout. Remittance verification or an explicitly approved offset workflow is required to clear the COD receivable.
 
 ### 10.2 NCM settlement rule
 
@@ -323,6 +402,20 @@ The posted receipt must match the net remittance, not the gross COD value.
 ### 10.3 Why this matters
 
 This avoids double-counting or book-cash before funds are actually received. It also keeps gross COD receivable and carrier fee obligations separate and visible.
+
+### 10.4 NCM returns and exchanges
+
+An NCM return request or return status is not proof that the goods reached the seller, passed inspection, or were refunded. Keep it in `RETURN_REQUESTED`; do not mark the order fully returned, set physical-return dates, restock inventory, reverse sales/VAT/COGS, or create a manufacturer supplier credit from that event alone. A delivered order retains its payment and COD settlement facts while the return and any refund/remittance variance are reconciled separately. A return before delivery has no recognized COD sale.
+
+Use the customer-return workflow for authorization, physical receipt, inspection, refund, and restocking decisions. Post any customer refund, VAT adjustment, inventory movement, and manufacturer credit only from their verified workflow evidence, without duplicating an existing journal. NCM's exchange operation creates separate return and replacement order IDs; track both legs independently and do not treat either leg's delivery status as settlement proof.
+
+Carrier status and money are separate evidence streams. Reconcile COD and carrier fees to the carrier statement and actual bank receipt; a delivery scan, return request, or COD transfer-ticket request is not bank evidence. Other courier APIs follow the same useful separation: [EasyPost tracking](https://docs.easypost.com/docs/trackers) distinguishes return-to-sender tracking from a return shipment, and its [webhook guidance](https://docs.easypost.com/docs/webhooks) recommends idempotent handling; [Shiprocket's API documentation](https://apidocs.shiprocket.in/) distinguishes order/tracking identifiers but does not establish COD remittance. Confirm NCM's own statement and return-status semantics before treating provider events as physical or financial evidence.
+
+### 10.5 Receipt and settlement evidence limits
+
+The mounted customer invoice collection workflow records an internal receipt, invoice allocation, Treasury movement, journal, and audit event together in its service transaction. These linked records establish internal system traceability only. An evidence reference entered by a user, an uploaded transfer image, an OTP, a distributor collection declaration, or a balanced journal is not independent proof of a bank deposit or physical cash receipt. Use bank statements or approved cash-count evidence and a separately controlled matching/review procedure before describing funds as independently reconciled.
+
+For NCM COD settlement, distinguish expected net deposit from actual net deposit; use the approved settlement-confirmation workflow that records the actual amount received. Do not treat the finance collection branch's expected amount as confirmation of cash. For distributor collections, a verified customer collection event is not a company Treasury receipt until the separate company remittance or settlement workflow posts it. See the [P5-R2 evidence-chain inventory](./20-p5-r2-collection-return-settlement-evidence-chain.md) for the current route boundaries, known gaps, and validation limits.
 
 ---
 
@@ -355,6 +448,18 @@ Never:
 - post a payment without a valid source document or control account
 - reverse a journal without preserving the original reference
 - edit a posted journal
+
+### Legacy distributor settlement requests
+
+Requests marked `LEGACY_EARNINGS_RECONCILIATION_REQUIRED` are not payable until an Admin resolves them through `POST /api/admin/distributor-finance/settlements/:id/resolve-reconciliation`.
+
+- `RECONCILE` requires selecting existing, open distributor earning or target-bonus documents for that distributor. The requested amount must be covered, selected documents must not already be reserved by another open request, and the decision requires review notes.
+- `REJECT` closes an unsupported unpaid request and requires review notes.
+- Both decisions are audited. This endpoint does not backfill or create earning records. If historical delivery earnings are missing from the subledger, investigate and backfill them from verified source records before reconciling; never infer or fabricate an earning amount.
+
+Open supplier credit notes are reported separately from gross manufacturer bills. An Admin with `finance:payable_settle` may apply a confirmed manufacturer return credit to the matching delivery bill for the same manufacturer and order. The workflow requires an existing posted `DELIVERY_RETURN` payable reversal, a positive amount within both open balances, and a reason note. It updates the two document balances, stores paired allocations against the existing return journal, and writes an audit event; it does not post another journal for the return. The action is idempotent and a retry with the same key and payload returns the prior application.
+
+Do not apply credits across manufacturers, currencies, or orders. Do not apply a credit when the return journal or original bill is missing. The additive `SupplierCreditApplication` migration must be applied and verified in an isolated database before enabling this workflow in a deployed environment.
 
 ---
 
@@ -394,3 +499,43 @@ The accounting feature in this project is designed to behave like a disciplined 
 If a user or operator cannot prove the source of the money movement, the system should block it or warn clearly rather than create a false balance.
 
 This is the safest and most reliable way to operate bank, cash, GL, and balance-sheet records.
+
+## 15. Inventory and COGS report interpretation
+
+Inventory screens do not all show the same source:
+
+- The Admin product stock list is a legacy catalog quantity projection. Do not use it as a physical count, location/owner schedule, or valuation.
+- The Admin multi-hub and Distributor inventory screens show canonical ledger quantities for their covered locations. They are operational subledger quantities, not independent counts or posted inventory value.
+- The Manufacturer inventory page reads a separate legacy `ManufacturerInventory` model. It is not interchangeable with the canonical ledger or proof of company ownership.
+- The Admin COGS calculator compares supply quotes and catalog prices. It is not actual COGS or realized profit.
+- Finance Dashboard inventory value and operational product cost are estimates; Accounting Health compares only its supported source population to posted inventory control. Neither is a complete inventory-to-GL reconciliation.
+
+For official posted balances, use the posted General Ledger/Financial Statements and confirm the source event is posted. A journal balance alone does not establish physical stock, title, source cost, or complete movement history. Returns, transfers, damage/loss, and layerless stock can have different quantity and cost evidence. Do not substitute `Product.costPrice` for an evidenced inventory layer, treat delivery as proof of collection, or assume FIFO applies to every inventory source. The detailed static limitations and required isolated-data validation are in [P5-R7](./24-p5-r7-inventory-valuation-and-cogs-evidence-audit.md). No persisted inventory or valuation accuracy is certified by this guide.
+
+## 16. Supplier procurement, payable, and payment evidence
+
+The Admin vendor registry and expense forms create internal supplier identity and expense/AP records. A supplier name, invoice number, evidence URL, expense bill, or posted journal is not by itself proof that goods were ordered, accepted, or received. The current repository does not establish a mounted PO/approval/partial goods-receipt workflow or supplier receipt-to-cost-layer path. Do not use `Product.costPrice` or the unmounted inbound-shipment poster as historical supplier acquisition cost.
+
+For an AP payout, keep initiation/reservation separate from confirmation. Confirmation is an internal Admin maker-checker action and requires a recorded bank-evidence reference; independently match that reference to the actual bank record and supplier statement before treating it as externally verified payment. A failed payout releases the reservation and is not an outflow. Immediate paid amounts entered through expense forms are recorded directly in the expense transaction and are distinct from the payout lifecycle.
+
+**Correction caution:** P5-R9 now reverses the exact linked CASH allocation and restores the expense-bill document balance/status when the payable party, bill, payout/journal, and allocation are uniquely verified. The correction fails closed when this source chain is missing, ambiguous, already reversed, or inconsistent. Confirm the AP and bill results after correction; an unlinked payable is not inferred to have a supplier bill, and the correction's recorded evidence reference is not independently verified bank proof. The generic path still permits only its existing latest-settlement/record-level correction. Supplier credit applications also have no discovered reversal path; resolve credit and originating-bill policy before application. See [P5-R9](./26-p5-r9-supplier-payable-correction-integrity.md) and the original [P5-R8 supplier audit](./25-p5-r8-supplier-procurement-and-payables-evidence-audit.md).
+
+The Expense Management input-VAT status is Finance-reviewed recorded invoice evidence, not independent supplier or tax-authority validation or proof a return was filed. The Payables & Receivables page is a mixed internal subledger/Treasury view, not a complete supplier statement, goods-received schedule, AP-control reconciliation, or independent bank match. Supplier-wide balances and inventory costs require the isolated-data and external-evidence checks described in P5-R8.
+
+## 17. Supplier return and credit evidence (P5-R10)
+
+Treat the Admin supplier-return screen as an internal request/posting workflow, not proof that stock was purchased from the selected supplier, physically handed back, or accepted. A separate Admin accounting-action approval triggers the current posting. The posted record immediately reduces legacy aggregate `Product.stockQuantity`, writes `StockLog`, and records an internal AP credit or Treasury cash inflow using a submitted unit-cost snapshot. It is not linked to an accepted supplier receipt line or cost layer; the optional legacy shipment reference checks supplier/invoice text only.
+
+An internally generated payable-side credit note is not a supplier-confirmed credit note. An internal cash inflow/Treasury increase is not independently verified bank receipt. Do not rely on the internal return reconciliation status as proof of physical stock, supplier acceptance, acquisition cost, external refund, or complete supplier/AP/GL reconciliation.
+
+At the time of P5-R10/R11, credit application was executed directly by an Admin with `finance:payable_settle`, despite the UI's approval wording. P5-R12 changed the mounted route to queue a maker-checker request: credit/bill/AP balances and allocations remain unchanged until a distinct Admin with `accounting:approval_review` approves it. Approval revalidates the source return, credit, supplier, currency, bill, and remaining balances; it links paired allocations to the existing return journal and does not post a second journal. Rejection has no financial effect. This is an internal approval control and does not prove supplier acceptance or independent external credit-note evidence. No return cancellation or credit-application reversal path was added; escalate any posted error for Finance review rather than attempting an unrecorded stock or balance adjustment.
+
+Before any return is represented as supplier-accepted or externally settled, independently retain the source invoice/bill, accepted goods-receipt and eligible quantity/cost evidence, return handoff/acceptance, supplier credit confirmation or refund proof, and any required bank/tax evidence. The minimum evidence and proposed next implementation boundary are documented in [P5-R10](./27-p5-r10-supplier-returns-and-credit-evidence-audit.md).
+
+## 18. Supplier return credit and refund lifecycle (P5-R11/P5-R12)
+
+The current mounted supplier-return path is an internal ledger workflow, not a supplier-accepted return workflow. It approves a return request, reduces aggregate `Product.stockQuantity`, writes `StockLog`, and posts either an internal AP credit or an internal Treasury inflow using submitted unit-cost snapshots. The optional shipment reference does not validate original receipt lines or accepted quantity/cost, and no original supplier bill link is required.
+
+P5-R11 identified that the direct supplier credit-application route did not enforce the independent approval described by the UI. P5-R12 corrected this: the route now creates a pending approval request; only a distinct authorized Admin can approve the credit application, and only then are bill/credit balances and paired allocations updated. The internal credit document or Treasury inflow is not external supplier acceptance or actual refund evidence.
+
+A safe future supplier-return/refund implementation must establish: original accepted receipt linkage, accepted return quantity/location, supplier acceptance or confirmed credit-note evidence, actual cash/receipt evidence, and a source-specific reversal path that restores inventory, AP, Treasury, journal, and audit history together. The P5-R12 approval does not fill those evidence gaps; treat return provenance and refund positions as internal evidence only. See [P5-R11](./26-p5-r11-supplier-returns-credit-application-and-refund-lifecycle.md) and [P5-R12](./29-p5-r12-supplier-credit-application-approval-implementation.md).

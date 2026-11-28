@@ -8,3 +8,13 @@ createRoot(document.getElementById('root')).render(
     <App />
   </StrictMode>,
 )
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}driver-offline-sw.js`, {
+      scope: import.meta.env.BASE_URL,
+    }).catch((error) => {
+      console.warn('Static offline app-shell caching could not be enabled:', error.message)
+    })
+  })
+}

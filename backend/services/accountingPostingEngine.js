@@ -2,9 +2,45 @@ import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { normalizeBalancedJournalLines } from "./accountingMoney.js";
-import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
-import { classifySaleChannel, calculateManufacturerCommission } from "./accountingRecognitionPolicy.js";
+import {
+  getConfiguredNepaliFiscalPeriod,
+  getNepaliCalendarYears,
+} from "./nepaliFiscalCalendar.js";
+import { classifySaleChannel, calculateLegacyManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
+import { hasValidVatSupplierIdentity } from "./manufacturerTaxIdentity.js";
+import { createAccountingDocument } from "./accountingSubledgerService.js";
+import { recordSystemAudit } from "./auditService.js";
+import {
+  accountingDecimal,
+  addDecimals,
+  compareDecimals,
+  divideDecimals,
+  multiplyDecimals,
+  quantizeNprAmount,
+} from "./accountingDecimal.js";
+import { readOrderPricingSnapshot } from "./checkoutPricingService.js";
+import {
+  resolveOrderTaxPoint,
+  resolveOutputVatRatePercent,
+  resolveSellerTaxTreatment,
+} from "./sellerTaxProfileService.js";
+
+const parseAccountingItems = (items, sourceLabel) => {
+  if (items == null || items === "") return [];
+  let parsed = items;
+  if (typeof items === "string") {
+    try {
+      parsed = JSON.parse(items);
+    } catch (error) {
+      throw new Error(`${sourceLabel} contains invalid order-item JSON: ${error.message}`);
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${sourceLabel} requires order items to be an array.`);
+  }
+  return parsed;
+};
 
 // ==========================================
 // 1. STANDARD CHART OF ACCOUNTS DEFINITION
@@ -17,10 +53,12 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "1120", accountName: "Bank Accounts", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1130", accountName: "Accounts Receivable (Control)", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1140", accountName: "Merchandise Inventory", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
-  { accountCode: "1150", accountName: "Input VAT Receivable (13%)", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1150", accountName: "Input VAT Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1160", accountName: "Supplier Advances & Prepaid Expenses", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1165", accountName: "VAT Tax Prepayments / Credits", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1170", accountName: "NCM COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1180", accountName: "Payment Gateway Clearing", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1190", accountName: "Distributor COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1500", accountName: "Non-Current & Fixed Assets", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1000" },
   { accountCode: "1510", accountName: "Computers & IT Equipment", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1500" },
   { accountCode: "1520", accountName: "Furniture & Store Fixtures", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1500" },
@@ -31,13 +69,15 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "2000", accountName: "Liabilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: null },
   { accountCode: "2100", accountName: "Current Liabilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2110", accountName: "Accounts Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
-  { accountCode: "2120", accountName: "Output VAT Payable (13%)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2120", accountName: "Output VAT Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2130", accountName: "Corporate Income Tax / TDS Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2140", accountName: "Customer Refunds & Advances Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2150", accountName: "Partner Profit Distributions Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2160", accountName: "Manufacturer Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2170", accountName: "Marketing Partner Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2180", accountName: "NCM Carrier Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2185", accountName: "NCM Remittance Variance Suspense", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2190", accountName: "Distributor Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2500", accountName: "Non-Current Liabilities & Debt", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2510", accountName: "Bank Term Loans & Credit Facilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2500" },
 
@@ -74,9 +114,12 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "6410", accountName: "Manufacturer Commission Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6420", accountName: "Marketing Partner CPA Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6430", accountName: "Delivery & Carrier Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6440", accountName: "Distributor Stock Transfer Compensation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6450", accountName: "Distributor Hub Counter Sale Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6500", accountName: "Software & Technology Tools", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6600", accountName: "Fixed Asset Depreciation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6700", accountName: "Miscellaneous Operating Expenses", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6800", accountName: "Fixed Asset Disposal Loss", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
 
   // FINANCE & OTHER (7000 - 8999)
   { accountCode: "7000", accountName: "Finance Costs & Other", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: null },
@@ -93,11 +136,14 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "INPUT_VAT_RECEIVABLE", accountCode: "1150" },
   { mappingKey: "NCM_COD_RECEIVABLE", accountCode: "1170" },
   { mappingKey: "PAYMENT_GATEWAY_CLEARING", accountCode: "1180" },
+  { mappingKey: "DISTRIBUTOR_COD_RECEIVABLE", accountCode: "1190" },
   { mappingKey: "AP_CONTROL", accountCode: "2110" },
   { mappingKey: "OUTPUT_VAT_PAYABLE", accountCode: "2120" },
   { mappingKey: "MANUFACTURER_PAYABLE", accountCode: "2160" },
   { mappingKey: "MARKETING_PARTNER_PAYABLE", accountCode: "2170" },
   { mappingKey: "NCM_CARRIER_PAYABLE", accountCode: "2180" },
+  { mappingKey: "NCM_REMITTANCE_VARIANCE_PAYABLE", accountCode: "2185" },
+  { mappingKey: "DISTRIBUTOR_PAYABLE", accountCode: "2190" },
   { mappingKey: "PRODUCT_SALES_REVENUE", accountCode: "4100" },
   { mappingKey: "DELIVERY_REVENUE", accountCode: "4200" },
   { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
@@ -107,6 +153,9 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "MANUFACTURER_COMMISSION_EXPENSE", accountCode: "6410" },
   { mappingKey: "MARKETING_PARTNER_CPA_EXPENSE", accountCode: "6420" },
   { mappingKey: "DELIVERY_EXPENSE", accountCode: "6430" },
+  { mappingKey: "DISTRIBUTOR_NCM_TRANSFER_EXPENSE", accountCode: "6440" },
+  { mappingKey: "DISTRIBUTOR_STOCK_TRANSFER_EXPENSE", accountCode: "6440" },
+  { mappingKey: "DISTRIBUTOR_COUNTER_SALE_EXPENSE", accountCode: "6450" },
 ];
 
 export const ensureStandardAccountMappings = async (client = prisma) => {
@@ -180,7 +229,8 @@ export const ensureStandardChartOfAccounts = async (client = prisma) => {
 
 // Ensure active Fiscal Year & Accounting Period
 export const ensureFiscalYearAndPeriod = async (txDate = new Date(), client = prisma) => {
-  const calendar = getNepaliFiscalPeriod(txDate);
+  const calendars = await getNepaliCalendarYears(client);
+  const calendar = await getConfiguredNepaliFiscalPeriod(txDate, calendars);
 
   const fiscalYear = await client.fiscalYear.upsert({
     where: { name: calendar.fiscalYearName },
@@ -256,6 +306,9 @@ export const postJournalEntry = async ({
   lines = [],
   createdBy = "system",
   allowClosedPeriod = false,
+  accountingEventId = null,
+  afterPost = null,
+  throwOnIdempotencyConflict = false,
   client = prisma,
 }) => {
   const cleanDate = transactionDate ? new Date(transactionDate) : new Date();
@@ -269,7 +322,10 @@ export const postJournalEntry = async ({
           where: { idempotencyKey: idempKey },
           include: { lines: { include: { account: true } } },
         });
-        if (existingEntry?.status === "POSTED") return existingEntry;
+        if (existingEntry?.status === "POSTED") {
+          if (afterPost) await afterPost(tx, existingEntry);
+          return existingEntry;
+        }
       }
 
       const { fiscalYear, period, fiscalYearNumber } = await ensureFiscalYearAndPeriod(cleanDate, tx);
@@ -328,19 +384,33 @@ export const postJournalEntry = async ({
           credit: line.credit.toFixed(2),
         })),
       };
-      const accountingEvent = await tx.accountingEvent.create({
-        data: {
-          idempotencyKey: accountingEventKey,
-          sourceType: eventSourceType,
-          sourceId: sourceId || journalNumber,
-          sourceVersion: 1,
-          eventType: eventSourceType,
-          effectiveAt: cleanDate,
-          status: "PROCESSING",
-          payload: eventPayload,
-          payloadHash: crypto.createHash("sha256").update(JSON.stringify(eventPayload)).digest("hex"),
-        },
-      });
+      let accountingEvent;
+      if (accountingEventId) {
+        accountingEvent = await tx.accountingEvent.findUnique({ where: { id: accountingEventId } });
+        if (
+          !accountingEvent ||
+          accountingEvent.idempotencyKey !== accountingEventKey ||
+          accountingEvent.sourceType !== eventSourceType ||
+          accountingEvent.sourceId !== (sourceId || journalNumber) ||
+          accountingEvent.status !== "PROCESSING"
+        ) {
+          throw new Error("Accounting outbox event is not claimed for this journal posting.");
+        }
+      } else {
+        accountingEvent = await tx.accountingEvent.create({
+          data: {
+            idempotencyKey: accountingEventKey,
+            sourceType: eventSourceType,
+            sourceId: sourceId || journalNumber,
+            sourceVersion: 1,
+            eventType: eventSourceType,
+            effectiveAt: cleanDate,
+            status: "PROCESSING",
+            payload: eventPayload,
+            payloadHash: crypto.createHash("sha256").update(JSON.stringify(eventPayload)).digest("hex"),
+          },
+        });
+      }
 
       const journalEntry = await tx.journalEntry.create({
         data: {
@@ -375,9 +445,17 @@ export const postJournalEntry = async ({
         });
       }
 
+      if (afterPost) await afterPost(tx, journalEntry);
+
       await tx.accountingEvent.update({
         where: { id: accountingEvent.id },
-        data: { status: "POSTED", processedAt: new Date() },
+        data: {
+          status: "POSTED",
+          processedAt: new Date(),
+          claimedAt: null,
+          nextAttemptAt: null,
+          lastError: null,
+        },
       });
 
       return journalEntry;
@@ -388,6 +466,12 @@ export const postJournalEntry = async ({
       : postWithinTransaction(client));
   } catch (error) {
     if (idempKey && error.code === "P2002") {
+      if (throwOnIdempotencyConflict) {
+        const conflictError = new Error(`Concurrent journal posting used the same idempotency key: ${error.message}`);
+        conflictError.statusCode = 409;
+        conflictError.code = "ACCOUNTING_IDEMPOTENCY_CONFLICT";
+        throw conflictError;
+      }
       const existingEntry = await client.journalEntry.findUnique({
         where: { idempotencyKey: idempKey },
         include: { lines: { include: { account: true } } },
@@ -412,72 +496,468 @@ export const postJournalEntry = async ({
  * DR COGS (5100): Approved Unit COGS * Qty
  * DR Input VAT Receivable (1150): Split if valid manufacturer tax invoice provided
  * CR Manufacturer Payable (2160): Approved COGS
- * (If direct sale): DR Manufacturer Commission Expense (6410), CR Manufacturer Payable (2160)
+ * Previously posted direct-sale commissions are preserved for historical return reversals only.
  */
+const hydrateProductionCostRecognitionMode = async (items, client) => {
+  const allocations = items.flatMap((item) =>
+    Array.isArray(item?.productionCostAllocations) ? item.productionCostAllocations : []
+  );
+  const missingRecognitionMode = allocations.filter((allocation) =>
+    !Object.prototype.hasOwnProperty.call(allocation, "manufacturerPayableRecognizedAtProduction")
+  );
+  const missingRecoverability = allocations.filter((allocation) =>
+    !Object.prototype.hasOwnProperty.call(allocation, "inputVatRecoverable") &&
+    allocation.vatInvoiceVerified === true &&
+    allocation.costLayerId
+  );
+  const layerMetadata = [...new Set([...missingRecognitionMode, ...missingRecoverability])];
+  if (!layerMetadata.length) return;
+
+  const costLayerIds = [...new Set(layerMetadata
+    .map((allocation) => allocation.costLayerId)
+    .filter(Boolean))];
+  if (missingRecognitionMode.some((allocation) => !allocation.costLayerId)) {
+    throw new Error("Production cost allocation is missing its cost-layer recognition reference; reconcile before delivery accounting.");
+  }
+  const costLayers = await client.manufacturerInventoryCostLayer.findMany({
+    where: { id: { in: costLayerIds } },
+    select: {
+      id: true,
+      manufacturerId: true,
+      unitVatAmount: true,
+      vatInvoiceVerified: true,
+      inputVatRecoverable: true,
+      manufacturerPayableRecognizedAtProduction: true,
+    },
+  });
+  const costLayersById = new Map(costLayers.map((layer) => [layer.id, layer]));
+  for (const allocation of layerMetadata) {
+    const layer = costLayersById.get(allocation.costLayerId);
+    if (!layer) {
+      if (Object.prototype.hasOwnProperty.call(allocation, "manufacturerPayableRecognizedAtProduction")) {
+        allocation.inputVatRecoverable = false;
+        continue;
+      }
+      throw new Error(`Production cost layer ${allocation.costLayerId} was not found; reconcile before delivery accounting.`);
+    }
+    allocation.manufacturerId ||= layer.manufacturerId;
+    allocation.unitVatAmount ??= String(layer.unitVatAmount || 0);
+    allocation.vatInvoiceVerified ??= layer.vatInvoiceVerified === true;
+    allocation.inputVatRecoverable ??= layer.inputVatRecoverable === true;
+    allocation.manufacturerPayableRecognizedAtProduction =
+      layer.manufacturerPayableRecognizedAtProduction === true;
+  }
+};
+
+export const postManufacturerProductionAccounting = async ({
+  productionRequest,
+  manufacturer,
+  goodQuantity,
+  inventoryValue,
+  recoverableInputVat = 0,
+  supplierTaxIdType = null,
+  supplierTaxIdNumber = null,
+  transactionDate = new Date(),
+  inputVatTaxPoint = transactionDate,
+  createdBy = "system",
+  client = prisma,
+} = {}) => {
+  if (!productionRequest?.id || !manufacturer?.id || productionRequest.manufacturerId !== manufacturer.id) {
+    throw new Error("A production request and its matching manufacturer are required for accounting.");
+  }
+  if (!Number.isInteger(goodQuantity) || goodQuantity < 0) {
+    throw new Error("Good production quantity must be a non-negative whole number.");
+  }
+  if (goodQuantity === 0) return null;
+
+  const inventoryAmount = new Prisma.Decimal(String(inventoryValue))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const inputVatAmount = new Prisma.Decimal(String(recoverableInputVat || 0))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const sellerTaxTreatment = await resolveSellerTaxTreatment(inputVatTaxPoint, { client });
+  if (
+    !inventoryAmount.isFinite() || !inventoryAmount.greaterThan(0) ||
+    !inputVatAmount.isFinite() || inputVatAmount.isNegative()
+  ) {
+    throw new Error("Production inventory and recoverable VAT amounts must be valid non-negative values.");
+  }
+  if (inputVatAmount.greaterThan(0) && sellerTaxTreatment.taxStatus !== "VAT_REGISTERED") {
+    throw new Error("Input VAT cannot be recognized while the business is not VAT-registered.");
+  }
+
+  const manufacturerRecord = await client.manufacturer.findUnique({
+    where: { id: manufacturer.id },
+    select: { id: true, name: true },
+  });
+  if (!manufacturerRecord) throw new Error("Manufacturer was not found for production accounting.");
+  const supplierTaxIdentity = { taxIdType: supplierTaxIdType, taxIdNumber: supplierTaxIdNumber };
+  if (inputVatAmount.greaterThan(0) && !hasValidVatSupplierIdentity(supplierTaxIdentity)) {
+    throw new Error("Input VAT cannot be recognized without a VAT supplier identity snapshot containing a 9-digit ID.");
+  }
+  const party = await ensureAccountingParty({
+    partyType: "MANUFACTURER",
+    sourceEntityId: manufacturer.id,
+    displayName: manufacturerRecord.name || `Manufacturer (${manufacturer.id.slice(-6)})`,
+  }, { client });
+
+  const payableAmount = inventoryAmount.plus(inputVatAmount)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const idempotencyKey = `MANUFACTURER_PRODUCTION:${productionRequest.id}`;
+  const documentHash = crypto.createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 24).toUpperCase();
+  const lines = [
+    {
+      mappingKey: "INVENTORY",
+      debit: inventoryAmount,
+      credit: 0,
+      description: `Accepted good production inventory for request ${productionRequest.id}`,
+    },
+    ...(inputVatAmount.greaterThan(0) ? [{
+      mappingKey: "INPUT_VAT_RECEIVABLE",
+      debit: inputVatAmount,
+      credit: 0,
+      description: `Verified manufacturer input VAT for production request ${productionRequest.id}`,
+      supplierId: manufacturer.id,
+      accountingPartyId: party.id,
+    }] : []),
+    {
+      mappingKey: "MANUFACTURER_PAYABLE",
+      debit: 0,
+      credit: payableAmount,
+      description: `Manufacturer payable for accepted production request ${productionRequest.id}`,
+      supplierId: manufacturer.id,
+      accountingPartyId: party.id,
+    },
+  ];
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: productionRequest.id,
+    idempotencyKey,
+    referenceNumber: `MFG-PROD-${productionRequest.id.slice(-6)}`,
+    description: `Accepted production receipt and manufacturer payable for request ${productionRequest.id}`,
+    createdBy,
+    lines,
+    afterPost: async (tx) => {
+      await createAccountingDocument({
+        documentType: "BILL",
+        documentNumber: `MFG-PROD-${documentHash}`,
+        partyId: party.id,
+        partyTaxIdType: supplierTaxIdentity.taxIdType,
+        partyTaxIdNumber: supplierTaxIdentity.taxIdNumber,
+        side: "PAYABLE",
+        sourceType: "MANUFACTURER_PRODUCTION",
+        sourceId: productionRequest.id,
+        amount: payableAmount,
+        issueDate: transactionDate,
+        idempotencyKey,
+        notes: `Manufacturer payable for accepted production request ${productionRequest.id}.`,
+      }, { client: tx });
+    },
+    client,
+  });
+};
+
+export const postManufacturerLogisticsAccounting = async ({
+  shipment,
+  transfer,
+  freightCharge,
+  transactionDate = new Date(),
+  createdBy = "system",
+  client = prisma,
+} = {}) => {
+  const amount = new Prisma.Decimal(String(freightCharge ?? ""));
+  if (!shipment?.id || !transfer?.id || !transfer?.manufacturerId || !transfer?.manufacturer?.name) {
+    throw new Error("A dispatched shipment, transfer, and manufacturer are required for freight accounting.");
+  }
+  if (!amount.isFinite() || !amount.greaterThan(0)) {
+    throw new Error("Manufacturer-paid local freight must be a valid amount greater than zero.");
+  }
+  const party = await ensureAccountingParty({
+    partyType: "MANUFACTURER",
+    sourceEntityId: transfer.manufacturerId,
+    displayName: transfer.manufacturer.name,
+  }, { client });
+  const idempotencyKey = `MANUFACTURER_LOGISTICS:TRANSFER:${shipment.id}`;
+  const documentHash = crypto.createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 24).toUpperCase();
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "MANUFACTURER_LOGISTICS",
+    sourceId: shipment.id,
+    idempotencyKey,
+    referenceNumber: `MFG-LOG-${shipment.id.slice(-8).toUpperCase()}`,
+    description: `Manufacturer-paid logistics for stock transfer ${transfer.id}`,
+    createdBy,
+    lines: [
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: amount,
+        credit: 0,
+        description: `Local logistics expense for stock transfer ${transfer.id}`,
+        supplierId: transfer.manufacturerId,
+        supplierName: transfer.manufacturer.name,
+        accountingPartyId: party.id,
+      },
+      {
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: 0,
+        credit: amount,
+        description: `Local logistics payable to ${transfer.manufacturer.name}`,
+        supplierId: transfer.manufacturerId,
+        accountingPartyId: party.id,
+      },
+    ],
+    afterPost: async (tx) => createAccountingDocument({
+      documentType: "BILL",
+      documentNumber: `MFG-LOG-${documentHash}`,
+      partyId: party.id,
+      side: "PAYABLE",
+      sourceType: "MANUFACTURER_LOGISTICS",
+      sourceId: shipment.id,
+      amount,
+      issueDate: transactionDate,
+      idempotencyKey,
+      notes: `Manufacturer-paid local freight for stock transfer ${transfer.id}.`,
+    }, { client: tx }),
+    client,
+  });
+};
+
 export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => {
   const client = opts.client || prisma;
   const order = orderOrParams.order || orderOrParams;
   const deliveryOrder = orderOrParams.deliveryOrder || opts.deliveryOrder || null;
   if (!order || !order.id) return null;
 
-  const grossAmount = new Prisma.Decimal(String(order.amount || 0));
-  if (grossAmount.lessThanOrEqualTo(0)) return null;
+  const acceptedPricing = readOrderPricingSnapshot(order.pricingSnapshot ?? order.locationPricingSnapshot);
+  const grossAmount = quantizeNprAmount(
+    acceptedPricing?.totals.finalPayableTotal ?? String(order.amount ?? 0),
+  );
+  if (!grossAmount.greaterThan(0)) {
+    throw Object.assign(new Error("Delivered sale requires a positive source order amount."), {
+      code: "DELIVERED_SALE_AMOUNT_INVALID",
+    });
+  }
 
-  const deliveryCharge = new Prisma.Decimal(String(order.deliveryCharge || deliveryOrder?.customerDeliveryCharge || 0));
+  const deliveryCharge = quantizeNprAmount(
+    acceptedPricing?.totals.deliveryFee ??
+      String(order.deliveryCharge ?? order.deliveryFee ?? deliveryOrder?.customerDeliveryCharge ?? 0),
+  );
+  if (deliveryCharge.isNegative() || deliveryCharge.greaterThan(grossAmount)) {
+    throw Object.assign(new Error("Delivered sale has an invalid delivery charge relative to its source order amount."), {
+      code: "DELIVERED_SALE_AMOUNT_INVALID",
+    });
+  }
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const productTaxable = productGross.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  const productVat = productGross.minus(productTaxable);
+  const taxPoint = await resolveOrderTaxPoint({
+    ...order,
+    deliveredAt: order.deliveredAt || deliveryOrder?.deliveredAt,
+  }, { client });
+  const sellerTaxTreatment = await resolveSellerTaxTreatment(taxPoint, { client });
+  const vatRate = accountingDecimal(sellerTaxTreatment.vatRate ?? "0", "Output VAT rate");
+  if (vatRate.isNegative() || vatRate.greaterThan(100)) {
+    throw Object.assign(new Error("Delivered sale has an invalid effective VAT rate."), {
+      code: "DELIVERED_SALE_TAX_RATE_INVALID",
+    });
+  }
+  const vatDivisor = addDecimals("1", divideDecimals(vatRate, "100", {
+    significantDigits: 40,
+    roundingMode: Prisma.Decimal.ROUND_HALF_EVEN,
+  }));
+  const productTaxable = quantizeNprAmount(divideDecimals(productGross, vatDivisor, {
+    significantDigits: 40,
+    roundingMode: Prisma.Decimal.ROUND_HALF_EVEN,
+  }));
+  const productVat = quantizeNprAmount(productGross.minus(productTaxable));
 
   const deliveryTaxable = deliveryCharge.greaterThan(0)
-    ? deliveryCharge.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
-    : new Prisma.Decimal(0);
-  const deliveryVat = deliveryCharge.minus(deliveryTaxable);
-  const totalVat = productVat.plus(deliveryVat);
+    ? quantizeNprAmount(divideDecimals(deliveryCharge, vatDivisor, {
+      significantDigits: 40,
+      roundingMode: Prisma.Decimal.ROUND_HALF_EVEN,
+    }))
+    : accountingDecimal("0");
+  const deliveryVat = quantizeNprAmount(deliveryCharge.minus(deliveryTaxable));
+  const totalVat = addDecimals(productVat, deliveryVat);
 
-  let items = [];
-  try {
-    items = typeof order.items === "string" ? JSON.parse(order.items) : (order.items || []);
-  } catch {
-    items = [];
-  }
+  const items = parseAccountingItems(order.items, "Delivered-sale accounting");
 
-  let totalAgreedCogs = new Prisma.Decimal(0);
-  for (const item of items) {
-    const qty = new Prisma.Decimal(String(item.quantity || 1));
-    const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
-      ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
-      : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-    totalAgreedCogs = totalAgreedCogs.plus(unitCost.mul(qty));
-  }
-  totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  await hydrateProductionCostRecognitionMode(items, client);
 
-  const hasValidTaxInvoice = Boolean(orderOrParams.hasValidTaxInvoice || opts.hasValidTaxInvoice);
-  let recoverableInputVat = new Prisma.Decimal(0);
-  let netCogs = totalAgreedCogs;
-  if (hasValidTaxInvoice && totalAgreedCogs.greaterThan(0)) {
-    const net = totalAgreedCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-    recoverableInputVat = totalAgreedCogs.minus(net);
-    netCogs = net;
-  }
-
-  const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
-  let commissionAmount = new Prisma.Decimal(0);
-  if (isDirect && totalAgreedCogs.greaterThan(0)) {
-    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || order.agreedCommissionRate || 0;
-    if (Number(commissionRate) > 0) {
-      const comm = calculateManufacturerCommission({
-        productRevenueExVat: productTaxable.toString(),
-        agreedCogsVatInclusive: totalAgreedCogs.toString(),
-        recoverableInputVat: recoverableInputVat.toString(),
-        commissionRatePercent: commissionRate,
+  const saleChannel = classifySaleChannel(order);
+  const isDirectDistributorSale = saleChannel === "DISTRIBUTOR_DIRECT";
+  const isDirectManufacturerSale = saleChannel === "MANUFACTURER_DIRECT";
+  const isSelfFulfilledDirectSale = isDirectDistributorSale || isDirectManufacturerSale;
+  const manufacturerCosts = new Map();
+  let directLegacyInventoryCogs = accountingDecimal("0");
+  const fallbackManufacturerId = order.manufacturerId || deliveryOrder?.manufacturerId ||
+    items.find((item) => item?.manufacturerId)?.manufacturerId ||
+    items.flatMap((item) => item?.productionCostAllocations || [])
+      .find((allocation) => allocation?.manufacturerId)?.manufacturerId || null;
+  const getManufacturerCosts = (manufacturerId) => {
+    const key = manufacturerId || "";
+    if (!manufacturerCosts.has(key)) {
+      manufacturerCosts.set(key, {
+        manufacturerId: manufacturerId || null,
+        productionCogs: accountingDecimal("0"),
+        productionInputVat: accountingDecimal("0"),
+        inventoryRecognizedCogs: accountingDecimal("0"),
+        legacyGrossCogs: accountingDecimal("0"),
+        legacyInputVat: accountingDecimal("0"),
+        legacyDeliveryOverhead: accountingDecimal("0"),
+        party: null,
       });
-      commissionAmount = new Prisma.Decimal(comm.commissionAmount);
+    }
+    return manufacturerCosts.get(key);
+  };
+  for (const item of items) {
+    const qty = accountingDecimal(String(item.quantity ?? 1), "Order item quantity");
+    if (!qty.greaterThan(0)) {
+      throw Object.assign(new Error("Delivered sale contains a nonpositive order item quantity."), {
+        code: "DELIVERED_SALE_QUANTITY_INVALID",
+      });
+    }
+    if (Array.isArray(item.productionCostAllocations) && item.productionCostAllocations.length > 0) {
+      const allocatedQuantity = item.productionCostAllocations.reduce(
+        (total, allocation) => addDecimals(
+          total,
+          accountingDecimal(String(allocation.quantity ?? 0), "Production allocation quantity"),
+        ),
+        accountingDecimal("0"),
+      );
+      const legacyQuantity = accountingDecimal(String(item.legacyCostQuantity ?? 0), "Legacy cost quantity");
+      if (legacyQuantity.isNegative() || compareDecimals(addDecimals(allocatedQuantity, legacyQuantity), qty) !== 0) {
+        throw Object.assign(new Error("Delivered sale production and legacy cost quantities do not match the fulfilled order quantity."), {
+          code: "DELIVERED_SALE_QUANTITY_INVALID",
+        });
+      }
+    }
+    const manufacturerId = item.manufacturerId || fallbackManufacturerId;
+    if (Array.isArray(item.productionCostAllocations)) {
+      for (const allocation of item.productionCostAllocations) {
+        const allocationQty = accountingDecimal(String(allocation.quantity ?? 0), "Production allocation quantity");
+        const unitCogs = accountingDecimal(String(allocation.unitCogs ?? 0), "Production unit COGS");
+        if (allocationQty.isNegative() || unitCogs.isNegative()) {
+          throw Object.assign(new Error("Delivered sale contains a negative production quantity or unit COGS."), {
+            code: "DELIVERED_SALE_COST_INVALID",
+          });
+        }
+        const unitDeliveryCost = accountingDecimal(String(allocation.unitDeliveryCost ?? 0), "Production unit delivery cost");
+        const unitVatAmount = accountingDecimal(String(allocation.unitVatAmount ?? 0), "Production unit VAT");
+        if (unitDeliveryCost.isNegative() || unitVatAmount.isNegative()) {
+          throw Object.assign(new Error("Delivered sale contains a negative production delivery cost or VAT amount."), {
+            code: "DELIVERED_SALE_COST_INVALID",
+          });
+        }
+        const costs = getManufacturerCosts(allocation.manufacturerId || manufacturerId);
+        costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+          multiplyDecimals(unitDeliveryCost, allocationQty)
+        );
+        if (allocation.manufacturerPayableRecognizedAtProduction === true) {
+          costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.plus(multiplyDecimals(unitCogs, allocationQty));
+        } else {
+          costs.productionCogs = costs.productionCogs.plus(multiplyDecimals(unitCogs, allocationQty));
+        }
+        if (allocation.manufacturerPayableRecognizedAtProduction !== true && allocation.vatInvoiceVerified === true) {
+          const allocationVat = multiplyDecimals(unitVatAmount, allocationQty);
+          if (allocation.inputVatRecoverable === true) {
+            costs.productionInputVat = costs.productionInputVat.plus(allocationVat);
+          } else {
+            costs.productionCogs = costs.productionCogs.plus(allocationVat);
+          }
+        }
+      }
+      const legacyQty = accountingDecimal(String(
+        item.legacyCostQuantity ?? (item.productionCostAllocations.length > 0 ? 0 : qty)
+      ), "Legacy cost quantity");
+      const legacyUnitCost = accountingDecimal(String(
+        item.legacyUnitCogsVatInclusiveAtAcceptance ??
+        item.agreedUnitCogsVatInclusiveAtAcceptance ??
+        item.costPrice ??
+        0
+      ), "Legacy unit COGS");
+      const legacyUnitDeliveryCost = accountingDecimal(
+        String(item.unitDeliveryCost ?? item.approvedDeliveryCost ?? 0),
+        "Legacy unit delivery cost",
+      );
+      if (legacyQty.isNegative() || legacyUnitCost.isNegative() || legacyUnitDeliveryCost.isNegative()) {
+        throw Object.assign(new Error("Delivered sale contains a negative legacy quantity or unit COGS."), {
+          code: "DELIVERED_SALE_COST_INVALID",
+        });
+      }
+      const costs = getManufacturerCosts(manufacturerId);
+      const directLegacyUnitCost = item.legacyInventoryUnitCogs ?? item.costPrice;
+      if (isDirectDistributorSale && directLegacyUnitCost !== undefined && directLegacyUnitCost !== null) {
+        const directUnitCost = accountingDecimal(String(directLegacyUnitCost), "Legacy inventory unit COGS");
+        if (directUnitCost.isNegative()) {
+          throw Object.assign(new Error("Delivered sale contains a negative legacy inventory unit COGS."), {
+            code: "DELIVERED_SALE_COST_INVALID",
+          });
+        }
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          multiplyDecimals(directUnitCost, legacyQty)
+        );
+      } else {
+        costs.legacyGrossCogs = costs.legacyGrossCogs.plus(multiplyDecimals(legacyUnitCost, legacyQty));
+      }
+      costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+        multiplyDecimals(legacyUnitDeliveryCost, legacyQty)
+      );
+    } else {
+      const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
+        ? accountingDecimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance), "Agreed unit COGS")
+        : accountingDecimal(String(item.costPrice ?? 0), "Legacy unit COGS");
+      if (unitCost.isNegative()) {
+        throw Object.assign(new Error("Delivered sale contains a negative unit COGS."), {
+          code: "DELIVERED_SALE_COST_INVALID",
+        });
+      }
+      const costs = getManufacturerCosts(manufacturerId);
+      const directLegacyUnitCost = item.legacyInventoryUnitCogs ?? item.costPrice;
+      if (isDirectDistributorSale && directLegacyUnitCost !== undefined && directLegacyUnitCost !== null) {
+        const directUnitCost = accountingDecimal(String(directLegacyUnitCost), "Legacy inventory unit COGS");
+        if (directUnitCost.isNegative()) {
+          throw Object.assign(new Error("Delivered sale contains a negative legacy inventory unit COGS."), {
+            code: "DELIVERED_SALE_COST_INVALID",
+          });
+        }
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          multiplyDecimals(directUnitCost, qty)
+        );
+      } else {
+        costs.legacyGrossCogs = costs.legacyGrossCogs.plus(multiplyDecimals(unitCost, qty));
+      }
+      costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+        multiplyDecimals(String(item.unitDeliveryCost ?? item.approvedDeliveryCost ?? 0), qty)
+      );
     }
   }
 
-  const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
-  const tenderMappingKey = isCod ? "NCM_COD_RECEIVABLE" : "BANK";
+  for (const costs of manufacturerCosts.values()) {
+    costs.productionCogs = quantizeNprAmount(costs.productionCogs);
+    costs.productionInputVat = quantizeNprAmount(costs.productionInputVat);
+    costs.inventoryRecognizedCogs = quantizeNprAmount(costs.inventoryRecognizedCogs);
+    costs.legacyGrossCogs = quantizeNprAmount(costs.legacyGrossCogs);
+    costs.legacyDeliveryOverhead = quantizeNprAmount(costs.legacyDeliveryOverhead);
+  }
+
+  directLegacyInventoryCogs = quantizeNprAmount(directLegacyInventoryCogs);
+  const paymentMethod = String(order.paymentMethod || "COD").toUpperCase();
+  const isCod = paymentMethod === "COD";
+  if (order.payment === true && (!isCod || isSelfFulfilledDirectSale)) {
+    throw Object.assign(new Error("Delivered sale has a paid status without a source-linked customer receipt."), {
+      code: "DELIVERED_SALE_TENDER_UNVERIFIED",
+    });
+  }
+  const collectionDistributorId = isCod && !isDirectManufacturerSale
+    ? String(order.collectionDistributorId || "").trim()
+    : "";
+  const tenderMappingKey = isSelfFulfilledDirectSale
+    ? "CUSTOMER_RECEIVABLE_CONTROL"
+    : isCod
+      ? collectionDistributorId ? "DISTRIBUTOR_COD_RECEIVABLE" : "NCM_COD_RECEIVABLE"
+      : "CUSTOMER_RECEIVABLE_CONTROL";
 
   let customerParty = null;
   if (order.userId) {
@@ -488,15 +968,40 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     }, { client });
   }
 
-  let manufacturerParty = null;
-  const manufacturerId = order.manufacturerId || deliveryOrder?.manufacturerId || (items[0]?.manufacturerId);
-  if (manufacturerId) {
-    const mfg = await client.manufacturer.findUnique({ where: { id: manufacturerId } }).catch(() => null);
-    manufacturerParty = await ensureAccountingParty({
-      partyType: "MANUFACTURER",
-      sourceEntityId: manufacturerId,
-      displayName: mfg?.name || `Manufacturer (${manufacturerId.slice(-6)})`,
+  let collectionDistributorParty = null;
+  let ncmParty = null;
+  if (collectionDistributorId) {
+    const distributor = await client.distributor.findUnique({
+      where: { id: collectionDistributorId },
+      select: { id: true, name: true },
+    });
+    if (!distributor) throw new Error("Distributor for COD receivable was not found.");
+    collectionDistributorParty = await ensureAccountingParty({
+      partyType: "DISTRIBUTOR",
+      sourceEntityId: collectionDistributorId,
+      displayName: distributor.name || `Distributor (${collectionDistributorId.slice(-6)})`,
     }, { client });
+  } else if (tenderMappingKey === "NCM_COD_RECEIVABLE") {
+    ncmParty = await ensureAccountingParty({
+      partyType: "CARRIER",
+      sourceEntityId: "NCM",
+      displayName: "Nepal Can Move (NCM)",
+    }, { client });
+  }
+
+  for (const costs of manufacturerCosts.values()) {
+    if (!costs.manufacturerId) continue;
+    const mfg = await client.manufacturer.findUnique({ where: { id: costs.manufacturerId } });
+    costs.party = await ensureAccountingParty({
+      partyType: "MANUFACTURER",
+      sourceEntityId: costs.manufacturerId,
+      displayName: mfg?.name || `Manufacturer (${costs.manufacturerId.slice(-6)})`,
+    }, { client });
+  }
+  if ([...manufacturerCosts.values()].some((costs) =>
+    costs.legacyDeliveryOverhead.greaterThan(0) && !costs.party
+  )) {
+    throw new Error("Legacy delivery/other cost requires a manufacturer accounting party.");
   }
 
   const lines = [
@@ -504,9 +1009,11 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       mappingKey: tenderMappingKey,
       debit: grossAmount,
       credit: 0,
-      description: `Receivable/Tender for Order #${order.id.slice(-6)}`,
-      customerId: order.userId,
-      accountingPartyId: customerParty?.id,
+      description: isCod
+        ? `COD receivable for delivered Order #${order.id.slice(-6)}`
+        : `Customer receivable for delivered Order #${order.id.slice(-6)}`,
+      customerId: collectionDistributorParty || ncmParty ? null : order.userId,
+      accountingPartyId: collectionDistributorParty?.id || ncmParty?.id || customerParty?.id,
     },
     {
       mappingKey: "PRODUCT_SALES_REVENUE",
@@ -520,7 +1027,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       mappingKey: "OUTPUT_VAT_PAYABLE",
       debit: 0,
       credit: totalVat,
-      description: `13% Output VAT Collected on Order #${order.id.slice(-6)}`,
+      description: `${vatRate.toFixed(2)}% Output VAT Collected on Order #${order.id.slice(-6)}`,
     },
   ];
 
@@ -534,70 +1041,73 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     });
   }
 
-  if (totalAgreedCogs.greaterThan(0)) {
-    if (recoverableInputVat.greaterThan(0)) {
-      lines.push(
-        {
-          mappingKey: "COGS",
-          debit: netCogs,
-          credit: 0,
-          description: `Approved COGS ex-VAT for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "INPUT_VAT_RECEIVABLE",
-          debit: recoverableInputVat,
-          credit: 0,
-          description: `Recoverable Input VAT for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "MANUFACTURER_PAYABLE",
-          debit: 0,
-          credit: totalAgreedCogs,
-          description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
-          supplierId: manufacturerId,
-          accountingPartyId: manufacturerParty?.id,
-        }
-      );
-    } else {
-      lines.push(
-        {
-          mappingKey: "COGS",
-          debit: totalAgreedCogs,
-          credit: 0,
-          description: `Approved Gross COGS for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "MANUFACTURER_PAYABLE",
-          debit: 0,
-          credit: totalAgreedCogs,
-          description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
-          supplierId: manufacturerId,
-          accountingPartyId: manufacturerParty?.id,
-        }
-      );
+  for (const costs of manufacturerCosts.values()) {
+    const legacyCogs = costs.legacyGrossCogs.minus(costs.legacyInputVat);
+    const cogs = costs.productionCogs.plus(costs.inventoryRecognizedCogs).plus(legacyCogs);
+    const inputVat = costs.productionInputVat.plus(costs.legacyInputVat);
+    const manufacturerPayable = costs.productionCogs.plus(costs.productionInputVat).plus(costs.legacyGrossCogs);
+    if (cogs.greaterThan(0)) {
+      lines.push({
+        mappingKey: "COGS",
+        debit: cogs,
+        credit: 0,
+        description: `Approved manufacturer COGS for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    if (costs.inventoryRecognizedCogs.greaterThan(0)) {
+      lines.push({
+        mappingKey: "INVENTORY",
+        debit: 0,
+        credit: costs.inventoryRecognizedCogs,
+        description: `Relieve previously recognized manufacturer inventory for Order #${order.id.slice(-6)}`,
+      });
+    }
+    if (inputVat.greaterThan(0)) {
+      lines.push({
+        mappingKey: "INPUT_VAT_RECEIVABLE",
+        debit: inputVat,
+        credit: 0,
+        description: `Verified manufacturer input VAT for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    if (costs.legacyDeliveryOverhead.greaterThan(0)) {
+      lines.push({
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: costs.legacyDeliveryOverhead,
+        credit: 0,
+        description: `Legacy delivery/other cost for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    const totalManufacturerPayable = manufacturerPayable.plus(costs.legacyDeliveryOverhead);
+    if (totalManufacturerPayable.greaterThan(0)) {
+      lines.push({
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: 0,
+        credit: totalManufacturerPayable,
+        description: `Manufacturer payable recognized on delivery of Order #${order.id.slice(-6)}`,
+        supplierId: costs.manufacturerId,
+        accountingPartyId: costs.party?.id,
+      });
     }
   }
 
-  if (commissionAmount.greaterThan(0)) {
+  if (directLegacyInventoryCogs.greaterThan(0)) {
     lines.push(
       {
-        mappingKey: "MANUFACTURER_COMMISSION_EXPENSE",
-        debit: commissionAmount,
+        mappingKey: "COGS",
+        debit: directLegacyInventoryCogs,
         credit: 0,
-        description: `Manufacturer commission for direct order #${order.id.slice(-6)}`,
-        accountingPartyId: manufacturerParty?.id,
+        description: `Legacy hub inventory COGS for direct Order #${order.id.slice(-6)}`,
       },
       {
-        mappingKey: "MANUFACTURER_PAYABLE",
+        mappingKey: "INVENTORY",
         debit: 0,
-        credit: commissionAmount,
-        description: `Manufacturer commission payable for Order #${order.id.slice(-6)}`,
-        supplierId: manufacturerId,
-        accountingPartyId: manufacturerParty?.id,
-      }
+        credit: directLegacyInventoryCogs,
+        description: `Legacy hub inventory reduction for direct Order #${order.id.slice(-6)}`,
+      },
     );
   }
 
@@ -611,6 +1121,143 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     referenceNumber: `ORD-${order.id.slice(-6)}`,
     description: `Delivered sale, revenue, VAT, and manufacturer COGS for Order #${order.id.slice(-6)}`,
     lines,
+    accountingEventId: opts.accountingEventId,
+    afterPost: async (tx) => {
+      if (collectionDistributorParty || ncmParty) {
+        await createAccountingDocument({
+          documentType: "INVOICE",
+          documentNumber: collectionDistributorParty ? `DCO-${order.id}` : `NCM-COD-${order.id}`,
+          partyId: collectionDistributorParty?.id || ncmParty.id,
+          side: "RECEIVABLE",
+          sourceType: collectionDistributorParty ? "DISTRIBUTOR_COD_SALE" : "NCM_COD_SALE",
+          sourceId: order.id,
+          amount: grossAmount,
+          issueDate: transactionDate,
+          idempotencyKey: collectionDistributorParty
+            ? `DISTRIBUTOR_COD_SALE:${order.id}`
+            : `NCM_COD_SALE:${order.id}`,
+          notes: collectionDistributorParty
+            ? `COD collected by distributor for delivered order ${order.id}.`
+            : `COD collected by NCM for delivered order ${order.id}.`,
+        }, { client: tx });
+      } else if (tenderMappingKey === "CUSTOMER_RECEIVABLE_CONTROL") {
+        if (!customerParty?.id) {
+          throw new Error(`Customer accounting party is required for customer receivable ${order.id}.`);
+        }
+        await createAccountingDocument({
+          documentType: "INVOICE",
+          documentNumber: `DIRECT-${order.id}`,
+          partyId: customerParty.id,
+          side: "RECEIVABLE",
+          sourceType: "DIRECT_ORDER_RECEIVABLE",
+          sourceId: order.id,
+          amount: grossAmount,
+          issueDate: transactionDate,
+          idempotencyKey: `DIRECT_ORDER_RECEIVABLE:${order.id}`,
+          notes: `Customer receivable for delivered order ${order.id}.`,
+        }, { client: tx });
+      }
+
+      for (const costs of manufacturerCosts.values()) {
+        if (!costs.party) continue;
+        const amount = costs.productionCogs
+          .plus(costs.productionInputVat)
+          .plus(costs.legacyGrossCogs)
+          .plus(costs.legacyDeliveryOverhead);
+        if (!amount.greaterThan(0)) continue;
+        const key = `MANUFACTURER_DELIVERY_COGS:${order.id}:${costs.manufacturerId}`;
+        const documentHash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24).toUpperCase();
+        await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `MFG-DEL-${documentHash}`,
+          partyId: costs.party.id,
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: order.id,
+          amount,
+          issueDate: transactionDate,
+          idempotencyKey: key,
+          notes: `Manufacturer payable for delivered order ${order.id}.`,
+        }, { client: tx });
+      }
+
+      const parseSnapshot = (value) => {
+        if (!value) return {};
+        if (typeof value !== "string") return value;
+        return JSON.parse(value);
+      };
+      const paperBillAssignment = await tx.orderAssignment?.findUnique?.({
+        where: { orderId: order.id },
+        select: {
+          distributorId: true,
+          paperBillStatus: true,
+          paperBillRequested: true,
+          paperBillDocumentType: true,
+          paperBillNumber: true,
+          paperBillIssuedAt: true,
+          paperBillIssuedBy: true,
+        },
+      });
+      if (
+        paperBillAssignment?.distributorId &&
+        paperBillAssignment.paperBillStatus === "NOT_SELECTED"
+      ) {
+        const error = new Error("The distributor's customer bill choice must be recorded before delivery accounting can post.");
+        error.code = "PAPER_BILL_CHOICE_REQUIRED";
+        error.statusCode = 409;
+        throw error;
+      }
+      const paperBillIssued = paperBillAssignment?.paperBillStatus === "ISSUED" &&
+        Boolean(paperBillAssignment.paperBillNumber);
+      const registrationDocumentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+        ? "VAT_TAX_INVOICE"
+        : sellerTaxTreatment.taxStatus === "PAN_ONLY"
+          ? "PAN_BILL"
+          : "INTERNAL_SALES_RECORD";
+      const expectedDocumentType = paperBillIssued
+        ? paperBillAssignment.paperBillDocumentType
+        : registrationDocumentType;
+      const paperBillTypeMismatch = paperBillIssued &&
+        paperBillAssignment.paperBillDocumentType !== registrationDocumentType;
+      const internalOnly = sellerTaxTreatment.taxStatus === "UNREGISTERED" && !paperBillIssued;
+      await tx.salesInvoice.upsert({
+        where: { orderId: order.id },
+        create: {
+          orderId: order.id,
+          documentNumber: `SYS-${order.orderReference || order.id}`,
+          documentType: expectedDocumentType,
+          issueChannel: internalOnly ? "INTERNAL" : "PAPER",
+          status: internalOnly
+            ? "INTERNAL_ONLY"
+            : paperBillTypeMismatch
+              ? "PAPER_BILL_TYPE_MISMATCH"
+              : paperBillIssued
+                ? "PAPER_ISSUED"
+                : paperBillAssignment?.paperBillStatus === "NO_PHYSICAL_COPY"
+                  ? "NO_PHYSICAL_COPY"
+                  : "PENDING_PAPER_DETAILS",
+          invoiceNumber: paperBillIssued ? paperBillAssignment.paperBillNumber : null,
+          issueDate: paperBillIssued ? paperBillAssignment.paperBillIssuedAt : null,
+          taxStatus: sellerTaxTreatment.taxStatus,
+          taxTreatment: sellerTaxTreatment.taxTreatment,
+          vatRate,
+          taxableAmount: productTaxable.plus(deliveryTaxable),
+          vatAmount: totalVat,
+          totalAmount: grossAmount,
+          taxPoint: transactionDate,
+          sellerSnapshot: {
+            legalName: sellerTaxTreatment.legalName,
+            panNumber: sellerTaxTreatment.panNumber,
+            vatNumber: sellerTaxTreatment.vatNumber,
+            address: sellerTaxTreatment.address,
+          },
+          buyerSnapshot: parseSnapshot(order.address),
+          lineSnapshots: parseItemsForAccounting(order.items),
+          issuedBy: paperBillIssued ? paperBillAssignment.paperBillIssuedBy : null,
+        },
+        update: {},
+      });
+    },
     client,
   });
 };
@@ -631,37 +1278,98 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   const deliveryCharge = new Prisma.Decimal(String(order.deliveryCharge || 0));
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const productTaxable = productGross.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const taxPoint = await resolveOrderTaxPoint({
+    ...order,
+    deliveredAt: order.deliveredAt || deliveryOrder?.deliveredAt,
+  }, { client });
+  const vatRate = await resolveOutputVatRatePercent(taxPoint, { client });
+  const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+  const productTaxable = productGross.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const productVat = productGross.minus(productTaxable);
   const deliveryTaxable = deliveryCharge.greaterThan(0)
-    ? deliveryCharge.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
+    ? deliveryCharge.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
     : new Prisma.Decimal(0);
   const deliveryVat = deliveryCharge.minus(deliveryTaxable);
   const totalVat = productVat.plus(deliveryVat);
 
-  let items = [];
-  try {
-    items = typeof order.items === "string" ? JSON.parse(order.items) : (order.items || []);
-  } catch {
-    items = [];
-  }
+  const items = parseAccountingItems(order.items, "Customer-return accounting");
+  await hydrateProductionCostRecognitionMode(items, client);
 
   let totalAgreedCogs = new Prisma.Decimal(0);
+  let directLegacyInventoryCogs = new Prisma.Decimal(0);
+  let productionLayerCogs = new Prisma.Decimal(0);
+  let productionLayerInputVat = new Prisma.Decimal(0);
+  let productionInventoryRecognizedCogs = new Prisma.Decimal(0);
+  let legacyManufacturerCogs = new Prisma.Decimal(0);
+  const saleChannel = classifySaleChannel(order);
+  const isDirectDistributorSale = saleChannel === "DISTRIBUTOR_DIRECT";
+  const isDirectManufacturerSale = saleChannel === "MANUFACTURER_DIRECT";
+  const isSelfFulfilledDirectSale = isDirectDistributorSale || isDirectManufacturerSale;
   for (const item of items) {
     const qty = new Prisma.Decimal(String(item.quantity || 1));
-    const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
-      ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
-      : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-    totalAgreedCogs = totalAgreedCogs.plus(unitCost.mul(qty));
+    if (Array.isArray(item.productionCostAllocations)) {
+      for (const allocation of item.productionCostAllocations) {
+        const allocatedQuantity = new Prisma.Decimal(String(allocation.quantity || 0));
+        const allocationCogs = new Prisma.Decimal(String(allocation.unitCogs || 0)).mul(allocatedQuantity);
+        if (allocation.manufacturerPayableRecognizedAtProduction === true) {
+          productionInventoryRecognizedCogs = productionInventoryRecognizedCogs.plus(allocationCogs);
+        } else {
+          productionLayerCogs = productionLayerCogs.plus(allocationCogs);
+        }
+        if (allocation.manufacturerPayableRecognizedAtProduction !== true && allocation.vatInvoiceVerified === true) {
+          const allocationVat = new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocatedQuantity);
+          if (allocation.inputVatRecoverable === true) {
+            productionLayerInputVat = productionLayerInputVat.plus(allocationVat);
+          } else {
+            productionLayerCogs = productionLayerCogs.plus(allocationVat);
+          }
+        }
+      }
+      const legacyQuantity = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
+      const legacyUnitCost = new Prisma.Decimal(String(
+        item.legacyUnitCogsVatInclusiveAtAcceptance ??
+        item.agreedUnitCogsVatInclusiveAtAcceptance ??
+        item.costPrice ??
+        0
+      ));
+      if (isDirectDistributorSale && item.costPrice !== undefined && item.costPrice !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(item.costPrice)).mul(legacyQuantity)
+        );
+      } else {
+        legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQuantity));
+      }
+    } else {
+      const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
+        ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
+        : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
+      if (isDirectDistributorSale && item.costPrice !== undefined && item.costPrice !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(item.costPrice)).mul(qty)
+        );
+      } else {
+        legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+      }
+    }
   }
-  totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  directLegacyInventoryCogs = directLegacyInventoryCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionLayerInputVat = productionLayerInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionInventoryRecognizedCogs = productionInventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  totalAgreedCogs = productionLayerCogs
+    .plus(productionInventoryRecognizedCogs)
+    .plus(legacyManufacturerCogs)
+    .plus(directLegacyInventoryCogs)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
   let commissionAmount = new Prisma.Decimal(0);
   if (isDirect && totalAgreedCogs.greaterThan(0)) {
-    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || order.agreedCommissionRate || 0;
+    // Reverse commissions already posted for legacy direct orders when they are returned.
+    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || 0;
     if (Number(commissionRate) > 0) {
-      const comm = calculateManufacturerCommission({
+      const comm = calculateLegacyManufacturerCommission({
         productRevenueExVat: productTaxable.toString(),
         agreedCogsVatInclusive: totalAgreedCogs.toString(),
         recoverableInputVat: "0",
@@ -671,13 +1379,25 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     }
   }
 
-  const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
-  const tenderMappingKey = isCod ? "NCM_COD_RECEIVABLE" : "BANK";
+  const paymentMethod = String(order.paymentMethod || "COD").toUpperCase();
+  const isCod = paymentMethod === "COD";
+  const tenderMappingKey = isSelfFulfilledDirectSale
+    ? order.payment !== true
+      ? "CUSTOMER_RECEIVABLE_CONTROL"
+      : ["CASH", "COD"].includes(paymentMethod)
+        ? "CASH_ON_HAND"
+        : "BANK"
+    : saleChannel === "ADMIN_DIRECT" && !isCod && order.payment !== true
+      ? "CUSTOMER_RECEIVABLE_CONTROL"
+      : isCod ? "NCM_COD_RECEIVABLE" : "BANK";
 
-  const manufacturerId = returnRecord.manufacturerId || order.manufacturerId;
+  const manufacturerId = returnRecord.manufacturerId || order.manufacturerId ||
+    items.find((item) => item?.manufacturerId)?.manufacturerId ||
+    items.flatMap((item) => item?.productionCostAllocations || [])
+      .find((allocation) => allocation?.manufacturerId)?.manufacturerId || null;
   let manufacturerParty = null;
   if (manufacturerId) {
-    const mfg = await client.manufacturer.findUnique({ where: { id: manufacturerId } }).catch(() => null);
+    const mfg = await client.manufacturer.findUnique({ where: { id: manufacturerId } });
     manufacturerParty = await ensureAccountingParty({
       partyType: "MANUFACTURER",
       sourceEntityId: manufacturerId,
@@ -706,11 +1426,11 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     },
   ];
 
-  if (totalAgreedCogs.greaterThan(0)) {
+  if (legacyManufacturerCogs.greaterThan(0)) {
     lines.push(
       {
         mappingKey: "MANUFACTURER_PAYABLE",
-        debit: totalAgreedCogs,
+        debit: legacyManufacturerCogs,
         credit: 0,
         description: `Reverse Manufacturer AP for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
@@ -718,10 +1438,72 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
       {
         mappingKey: "COGS",
         debit: 0,
-        credit: totalAgreedCogs,
+        credit: legacyManufacturerCogs,
         description: `Reverse COGS for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
       }
+    );
+  }
+
+  if (directLegacyInventoryCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: directLegacyInventoryCogs,
+        credit: 0,
+        description: `Restore legacy hub inventory for returned Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: directLegacyInventoryCogs,
+        description: `Reverse legacy hub inventory COGS for returned Order #${order.id.slice(-6)}`,
+      },
+    );
+  }
+
+  if (productionLayerCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: productionLayerCogs.plus(productionLayerInputVat),
+        credit: 0,
+        description: `Reverse manufacturer payable for returned production-batch goods on Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: productionLayerCogs,
+        description: `Reverse production-batch COGS for returned Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      },
+      ...(productionLayerInputVat.greaterThan(0) ? [{
+        mappingKey: "INPUT_VAT_RECEIVABLE",
+        debit: 0,
+        credit: productionLayerInputVat,
+        description: `Reverse recoverable manufacturer input VAT for returned Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
+      }] : [])
+    );
+  }
+  if (productionInventoryRecognizedCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: productionInventoryRecognizedCogs,
+        credit: 0,
+        description: `Restore previously recognized production-batch inventory for returned Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: productionInventoryRecognizedCogs,
+        description: `Reverse COGS for returned pre-cutover production-batch inventory on Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      },
     );
   }
 
@@ -744,6 +1526,10 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     );
   }
 
+  const supplierCreditAmount = legacyManufacturerCogs
+    .plus(productionLayerCogs)
+    .plus(productionLayerInputVat)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   return await postJournalEntry({
     transactionDate: new Date(),
     sourceType: "DELIVERY_RETURN",
@@ -752,6 +1538,33 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     referenceNumber: `RET-${returnId.slice(-6)}`,
     description: `Confirmed delivery return and financial reversal for Order #${order.id.slice(-6)}`,
     lines,
+    afterPost: async (tx) => {
+      if (!manufacturerParty || !supplierCreditAmount.greaterThan(0)) return;
+      const deliveryBill = await tx.accountingDocument.findFirst({
+        where: {
+          partyId: manufacturerParty.id,
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: order.id,
+        },
+        select: { id: true },
+      });
+      if (!deliveryBill) return;
+      const key = `MANUFACTURER_DELIVERY_RETURN:${returnId}:${manufacturerId}`;
+      const documentHash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24).toUpperCase();
+      await createAccountingDocument({
+        documentType: "CREDIT_NOTE",
+        documentNumber: `MFG-RET-${documentHash}`,
+        partyId: manufacturerParty.id,
+        side: "RECEIVABLE",
+        sourceType: "MANUFACTURER_DELIVERY_RETURN",
+        sourceId: returnId,
+        amount: supplierCreditAmount,
+        issueDate: new Date(),
+        idempotencyKey: key,
+        notes: `Supplier credit for manufacturer payable reversed on returned order ${order.id}.`,
+      }, { client: tx });
+    },
     client,
   });
 };
@@ -762,19 +1575,22 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
  */
 export const postMarketingCpaRedemptionAccounting = async ({ redemption, campaign, partner, client = prisma }) => {
   if (!redemption || !redemption.id) return null;
-  const cpaRate = new Prisma.Decimal(String(campaign?.cpaRate || redemption.cpaRate || 0));
+  const cpaRateSnapshot = redemption.cpaRateSnapshot;
+  const sourceRate = cpaRateSnapshot !== undefined && cpaRateSnapshot !== null
+    ? cpaRateSnapshot
+    : campaign?.cpaRate || redemption.cpaRate || 0;
+  const cpaRate = new Prisma.Decimal(String(sourceRate));
   if (cpaRate.lessThanOrEqualTo(0)) return null;
 
   const partnerId = partner?.id || campaign?.marketingPartnerId || redemption.partnerId;
-  let partnerParty = null;
-  if (partnerId) {
-    const p = partner || await client.marketingPartner.findUnique({ where: { id: partnerId } }).catch(() => null);
-    partnerParty = await ensureAccountingParty({
-      partyType: "MARKETING_PARTNER",
-      sourceEntityId: partnerId,
-      displayName: p?.name || `Marketing Partner (${partnerId.slice(-6)})`,
-    }, { client });
-  }
+  if (!partnerId) throw new Error("Marketing CPA posting requires a marketing partner.");
+  const resolvedPartner = partner || await client.marketingPartner.findUnique({ where: { id: partnerId } });
+  const partnerParty = await ensureAccountingParty({
+    partyType: "MARKETING_PARTNER",
+    sourceEntityId: partnerId,
+    displayName: resolvedPartner?.name || `Marketing Partner (${partnerId.slice(-6)})`,
+  }, { client });
+  const redemptionDate = redemption.redeemedAt ? new Date(redemption.redeemedAt) : new Date();
 
   const lines = [
     {
@@ -794,7 +1610,7 @@ export const postMarketingCpaRedemptionAccounting = async ({ redemption, campaig
   ];
 
   return await postJournalEntry({
-    transactionDate: redemption.redeemedAt ? new Date(redemption.redeemedAt) : new Date(),
+    transactionDate: redemptionDate,
     sourceType: "MARKETING_CPA",
     sourceId: redemption.id,
     idempotencyKey: `MARKETING_CPA:${redemption.id}`,
@@ -802,13 +1618,26 @@ export const postMarketingCpaRedemptionAccounting = async ({ redemption, campaig
     description: `Marketing CPA accrual for benefit redemption on card ${redemption.cardId || ""}`,
     lines,
     client,
+    afterPost: async (tx) => createAccountingDocument({
+      documentType: "BILL",
+      documentNumber: `CPA-${redemption.id}`,
+      partyId: partnerParty.id,
+      side: "PAYABLE",
+      sourceType: "MARKETING_CPA",
+      sourceId: redemption.id,
+      issueDate: redemptionDate,
+      currency: "NPR",
+      amount: cpaRate,
+      notes: `Marketing CPA accrual for benefit redemption ${redemption.id}`,
+      idempotencyKey: `MARKETING_CPA_DOCUMENT:${redemption.id}`,
+    }, { client: tx }),
   });
 };
 
 export const postCollaborationFeeInvoiceAccounting = async ({ invoice, partner, client = prisma }) => {
   if (!invoice?.id || !partner?.id) return null;
   const totalAmount = new Prisma.Decimal(String(invoice.totalAmount || 0));
-  if (totalAmount.lessThanOrEqualTo(0)) return null;
+  if (totalAmount.isZero()) return null;
 
   const partnerParty = await ensureAccountingParty({
     partyType: "MARKETING_PARTNER",
@@ -819,9 +1648,9 @@ export const postCollaborationFeeInvoiceAccounting = async ({ invoice, partner, 
   const vatAmount = new Prisma.Decimal(String(invoice.vatAmount || 0));
   const lines = [{
     mappingKey: "CUSTOMER_RECEIVABLE_CONTROL",
-    debit: totalAmount,
-    credit: 0,
-    description: `Collaboration fee receivable for ${invoice.invoiceNumber}`,
+    debit: totalAmount.isPositive() ? totalAmount : 0,
+    credit: totalAmount.isNegative() ? totalAmount.abs() : 0,
+    description: `${totalAmount.isNegative() ? "Collaboration fee credit" : "Collaboration fee receivable"} for ${invoice.invoiceNumber}`,
     accountingPartyId: partnerParty.id,
   }];
 
@@ -845,7 +1674,7 @@ export const postCollaborationFeeInvoiceAccounting = async ({ invoice, partner, 
     sourceId: invoice.id,
     idempotencyKey: `COLLABORATION_FEE_INVOICE:${invoice.id}`,
     referenceNumber: invoice.invoiceNumber,
-    description: `Monthly collaboration fee invoice for ${partner.name}`,
+    description: `${totalAmount.isNegative() ? "Monthly collaboration fee credit note" : "Monthly collaboration fee invoice"} for ${partner.name}`,
     lines,
     client,
   });
@@ -902,6 +1731,48 @@ export const postNcmSettlementAccounting = async ({ settlement, client = prisma 
   });
 };
 
+export const postNcmCarrierFeeAccrualAccounting = async ({
+  settlementId,
+  feeAmount,
+  ncmPartyId,
+  createdBy = "ADMIN",
+}, { client = prisma } = {}) => {
+  const fee = new Prisma.Decimal(String(feeAmount || 0));
+  if (!fee.isFinite() || fee.isNegative()) {
+    throw new Error("NCM carrier fee must be a non-negative amount.");
+  }
+  if (fee.isZero()) return null;
+  if (!settlementId || !ncmPartyId) {
+    throw new Error("NCM settlement and carrier party are required to accrue carrier fees.");
+  }
+  return postJournalEntry({
+    transactionDate: new Date(),
+    sourceType: "NCM_CARRIER_FEE_ACCRUAL",
+    sourceId: settlementId,
+    idempotencyKey: `NCM_CARRIER_FEE_ACCRUAL:${settlementId}`,
+    referenceNumber: `NCM-FEE-${String(settlementId).slice(-8)}`,
+    description: "Accrue NCM carrier fee deducted from COD remittance.",
+    createdBy,
+    lines: [
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: fee,
+        credit: 0,
+        description: "NCM carrier fee expense accrued at remittance.",
+        accountingPartyId: ncmPartyId,
+      },
+      {
+        mappingKey: "NCM_CARRIER_PAYABLE",
+        debit: 0,
+        credit: fee,
+        description: "NCM carrier fee payable accrued before net settlement.",
+        accountingPartyId: ncmPartyId,
+      },
+    ],
+    client,
+  });
+};
+
 /**
  * 1. Sales Invoice & Order Accounting
  * DR Accounts Receivable / Cash: Total MRP Amount
@@ -910,35 +1781,50 @@ export const postNcmSettlementAccounting = async ({ settlement, client = prisma 
  * DR Cost of Goods Sold (COGS): Direct Product Cost
  * CR Merchandise Inventory: Direct Product Cost
  */
-export const postSalesOrderAccounting = async (order) => {
+export const postSalesOrderAccounting = async (order, opts = {}) => {
   try {
     if (!order || !order.id) return null;
-    const grossAmount = Number(order.amount || 0);
-    if (grossAmount <= 0) return null;
+    const grossAmount = quantizeNprAmount(String(order.amount ?? 0));
+    if (!grossAmount.greaterThan(0)) return null;
 
-    const vatRate = 0.13;
-    const taxableRevenue = Number((grossAmount / (1 + vatRate)).toFixed(2));
-    const outputVat = Number((grossAmount - taxableRevenue).toFixed(2));
+    const client = opts.client || prisma;
+    const dateVal = await resolveOrderTaxPoint(order, { client });
+    const vatRate = await resolveOutputVatRatePercent(dateVal, { client });
+    const vatDecimal = accountingDecimal(vatRate, "Output VAT rate");
+    const vatDivisor = addDecimals("1", divideDecimals(vatDecimal, "100", {
+      significantDigits: 40,
+      roundingMode: Prisma.Decimal.ROUND_HALF_EVEN,
+    }));
+    const taxableRevenue = quantizeNprAmount(divideDecimals(grossAmount, vatDivisor, {
+      significantDigits: 40,
+      roundingMode: Prisma.Decimal.ROUND_HALF_EVEN,
+    }));
+    const outputVat = quantizeNprAmount(grossAmount.minus(taxableRevenue));
 
     // Calculate Direct Product COGS from order items
-    let items = [];
-    try {
-      items = typeof order.items === "string" ? JSON.parse(order.items) : (order.items || []);
-    } catch {
-      items = [];
-    }
+    const items = parseAccountingItems(order.items, "Sales-order accounting");
 
-    let totalCOGS = 0;
+    let totalCOGS = accountingDecimal("0");
     for (const item of items) {
       const pId = item.productId || item._id || item.id;
-      const qty = Number(item.quantity || 1);
+      const qty = accountingDecimal(String(item.quantity ?? 1), "Order item quantity");
+      if (!qty.greaterThan(0)) {
+        throw Object.assign(new Error("Sales order contains a nonpositive item quantity."), {
+          code: "SALES_ORDER_QUANTITY_INVALID",
+        });
+      }
       if (pId) {
-        const product = await prisma.product.findUnique({ where: { id: pId }, select: { costPrice: true } });
-        const unitCost = product ? Number(product.costPrice || 0) : 0;
-        totalCOGS += unitCost * qty;
+        const product = await client.product.findUnique({ where: { id: pId }, select: { costPrice: true } });
+        const unitCost = accountingDecimal(String(product?.costPrice ?? 0), "Product unit cost");
+        if (unitCost.isNegative()) {
+          throw Object.assign(new Error("Sales order contains a negative product unit cost."), {
+            code: "SALES_ORDER_COST_INVALID",
+          });
+        }
+        totalCOGS = totalCOGS.plus(multiplyDecimals(unitCost, qty));
       }
     }
-    totalCOGS = Number(totalCOGS.toFixed(2));
+    totalCOGS = quantizeNprAmount(totalCOGS);
 
     const isPrepaid = order.payment === true || order.paymentMethod !== "COD";
     const arOrCashAccount = isPrepaid ? "1120" : "1130"; // 1120 Bank if online, 1130 AR if COD
@@ -948,44 +1834,42 @@ export const postSalesOrderAccounting = async (order) => {
       {
         accountCode: arOrCashAccount,
         debit: grossAmount,
-        credit: 0,
+        credit: accountingDecimal("0"),
         description: `Receivable/Payment for Order #${order.id.slice(-6)}`,
         customerId: order.userId,
       },
       {
         accountCode: "4100",
-        debit: 0,
+        debit: accountingDecimal("0"),
         credit: taxableRevenue,
         description: `Taxable Sales Revenue for Order #${order.id.slice(-6)}`,
         customerId: order.userId,
       },
       {
         accountCode: "2120",
-        debit: 0,
+        debit: accountingDecimal("0"),
         credit: outputVat,
-        description: `13% Output VAT Collected for Order #${order.id.slice(-6)}`,
+        description: `${vatRate.toFixed(2)}% Output VAT Collected for Order #${order.id.slice(-6)}`,
       },
     ];
 
     // Inventory Perpetual Leg
-    if (totalCOGS > 0) {
+    if (totalCOGS.greaterThan(0)) {
       lines.push(
         {
           accountCode: "5100",
           debit: totalCOGS,
-          credit: 0,
+          credit: accountingDecimal("0"),
           description: `COGS for Order #${order.id.slice(-6)}`,
         },
         {
           accountCode: "1140",
-          debit: 0,
+          debit: accountingDecimal("0"),
           credit: totalCOGS,
           description: `Inventory reduction for Order #${order.id.slice(-6)}`,
         }
       );
     }
-
-    const dateVal = order.date ? new Date(Number(order.date)) : new Date();
 
     return await postJournalEntry({
       transactionDate: dateVal,
@@ -995,6 +1879,7 @@ export const postSalesOrderAccounting = async (order) => {
       referenceNumber: `ORD-${order.id.slice(-6)}`,
       description: `Sales Revenue & COGS recognition for Order #${order.id.slice(-6)} (${order.paymentMethod})`,
       lines,
+      client,
     });
   } catch (error) {
     console.error("Error in postSalesOrderAccounting:", error);
@@ -1011,17 +1896,31 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
   try {
     const orderId = paramsOrOrder.orderId || paramsOrOrder.id;
     const customerName = paramsOrOrder.customerName || (paramsOrOrder.userId ? `Customer (${paramsOrOrder.userId.slice(-6)})` : "Customer");
-    const amt = Number(paramsOrOrder.amount || 0);
-    const settlementAmount = Number(paramsOrOrder.settlementAmount ?? amt);
-    const discountAmount = Number(paramsOrOrder.discountAmount || 0);
-    const fineAmount = Number(paramsOrOrder.fineAmount || 0);
+    const accountingPartyId = paramsOrOrder.accountingPartyId || null;
+    const postingAmount = (value) => quantizeNprAmount(
+      accountingDecimal(typeof value === "number" ? String(value) : value ?? "0"),
+    );
+    const amt = postingAmount(paramsOrOrder.amount);
+    const settlementAmount = paramsOrOrder.settlementAmount === undefined || paramsOrOrder.settlementAmount === null
+      ? amt
+      : postingAmount(paramsOrOrder.settlementAmount);
+    const discountAmount = postingAmount(paramsOrOrder.discountAmount);
+    const fineAmount = postingAmount(paramsOrOrder.fineAmount);
     const depositAccountType = paramsOrOrder.depositAccountType || "BANK";
     const depositAccountCode = paramsOrOrder.depositAccountCode || (depositAccountType === "CASH" ? "1110" : "1120");
     const referenceNumber = paramsOrOrder.referenceNumber;
     const idempotencyKey = paramsOrOrder.idempotencyKey || `CUSTOMER_PAYMENT:${orderId}:${amt}`;
     const client = paramsOrOrder.client || prisma;
 
-    if (amt <= 0) return null;
+    if (compareDecimals(amt, "0") <= 0) return null;
+    if (
+      compareDecimals(settlementAmount, "0") <= 0 ||
+      compareDecimals(discountAmount, "0") < 0 ||
+      compareDecimals(fineAmount, "0") < 0 ||
+      !addDecimals(amt, discountAmount).equals(addDecimals(settlementAmount, fineAmount))
+    ) {
+      throw new Error("Customer payment amounts must balance exactly at the NPR posting boundary.");
+    }
 
     return await postJournalEntry({
       transactionDate: new Date(),
@@ -1037,7 +1936,7 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
           credit: 0,
           description: `Cash/Bank receipt for Order #${orderId ? orderId.slice(-6) : ""}`,
         },
-        ...(discountAmount > 0 ? [{
+        ...(compareDecimals(discountAmount, "0") > 0 ? [{
           accountCode: "6700",
           debit: discountAmount,
           credit: 0,
@@ -1049,8 +1948,9 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
           credit: settlementAmount,
           description: `Clear Accounts Receivable for Order #${orderId ? orderId.slice(-6) : ""}`,
           customerName,
+          ...(accountingPartyId ? { accountingPartyId } : {}),
         },
-        ...(fineAmount > 0 ? [{
+        ...(compareDecimals(fineAmount, "0") > 0 ? [{
           accountCode: "8100",
           debit: 0,
           credit: fineAmount,
@@ -1167,13 +2067,25 @@ export const postSupplierPaymentAccounting = async ({
   referenceNumber,
   payableAccountCode = "2110",
   cashAccountCode,
+  cashAccountId = null,
+  supplierId = null,
+  accountingPartyId = null,
   idempotencyKey,
   client = prisma,
 }) => {
   try {
-    const amt = Number(amount || 0);
-    if (amt <= 0) return null;
-    const settled = Number(settlementAmount ?? (amt + Number(discountAmount || 0) - Number(fineAmount || 0)));
+    const amt = new Prisma.Decimal(String(amount ?? 0));
+    const discount = new Prisma.Decimal(String(discountAmount ?? 0));
+    const fine = new Prisma.Decimal(String(fineAmount ?? 0));
+    const settled = settlementAmount === undefined || settlementAmount === null
+      ? amt.plus(discount).minus(fine)
+      : new Prisma.Decimal(String(settlementAmount));
+    if (
+      !amt.isFinite() || !amt.isPositive() ||
+      !discount.isFinite() || discount.isNegative() ||
+      !fine.isFinite() || fine.isNegative() ||
+      !settled.isFinite() || !settled.isPositive()
+    ) return null;
 
     const cashBankCode = cashAccountCode || (fromAccountType === "CASH" ? "1110" : "1120");
 
@@ -1190,24 +2102,26 @@ export const postSupplierPaymentAccounting = async ({
           debit: settled,
           credit: 0,
           description: `Settle Accounts Payable for ${payeeName}`,
+          ...(supplierId ? { supplierId } : {}),
           supplierName: payeeName,
+          ...(accountingPartyId ? { accountingPartyId } : {}),
         },
-        ...(Number(fineAmount) > 0 ? [{
+        ...(fine.isPositive() ? [{
           accountCode: "6700",
-          debit: Number(fineAmount),
+          debit: fine,
           credit: 0,
           description: `Fine expense on payable to ${payeeName}`,
         }] : []),
         {
-          accountCode: cashBankCode,
+          ...(cashAccountId ? { accountId: cashAccountId } : { accountCode: cashBankCode }),
           debit: 0,
           credit: amt,
           description: `Disbursed from liquid account to ${payeeName}`,
         },
-        ...(Number(discountAmount) > 0 ? [{
+        ...(discount.isPositive() ? [{
           accountCode: "8100",
           debit: 0,
-          credit: Number(discountAmount),
+          credit: discount,
           description: `Discount received on payable to ${payeeName}`,
         }] : []),
       ],
@@ -1219,6 +2133,83 @@ export const postSupplierPaymentAccounting = async ({
   }
 };
 
+export const postMarketingCpaPayablePaymentAccounting = async ({
+  payoutId,
+  document,
+  amount,
+  cashAccountId,
+  client = prisma,
+}) => {
+  const paymentAmount = new Prisma.Decimal(String(amount ?? 0));
+  if (!payoutId || !document?.id || !document.partyId || !cashAccountId) {
+    throw new Error("Marketing CPA payment requires a payout, payable document, partner, and mapped Treasury account.");
+  }
+  if (!paymentAmount.isFinite() || paymentAmount.lessThanOrEqualTo(0)) {
+    throw new Error("Marketing CPA payment amount must be positive.");
+  }
+
+  return postJournalEntry({
+    transactionDate: new Date(),
+    sourceType: "MARKETING_CPA_PAYMENT",
+    sourceId: payoutId,
+    idempotencyKey: `MARKETING_CPA_PAYMENT:${payoutId}`,
+    referenceNumber: `CPA-PAY-${payoutId.slice(-8).toUpperCase()}`,
+    description: `Cash payment against Marketing CPA payable ${document.documentNumber}`,
+    lines: [
+      {
+        accountCode: "2170",
+        debit: paymentAmount,
+        credit: 0,
+        description: `Reduce Marketing CPA payable ${document.documentNumber}`,
+        accountingPartyId: document.partyId,
+      },
+      {
+        accountId: cashAccountId,
+        debit: 0,
+        credit: paymentAmount,
+        description: `Marketing CPA payment from Treasury`,
+      },
+    ],
+    client,
+  });
+};
+
+export const postDistributorSettlementRequestAccounting = async ({
+  settlement,
+  distributorName,
+  client = prisma,
+}) => {
+  const amount = Number(settlement?.amount || 0);
+  if (!settlement?.id || !Number.isFinite(amount) || amount <= 0) {
+    throw new Error("A valid distributor settlement request and positive amount are required for accounting.");
+  }
+  return postJournalEntry({
+    transactionDate: settlement.requestedAt || new Date(),
+    sourceType: "DISTRIBUTOR_SETTLEMENT_REQUEST",
+    sourceId: settlement.id,
+    idempotencyKey: `DISTRIBUTOR_SETTLEMENT_REQUEST:${settlement.id}`,
+    referenceNumber: `DIST-SET-${settlement.id.slice(-8)}`,
+    description: `Distributor delivery services payable to ${distributorName}`,
+    lines: [
+      {
+        accountCode: "6430",
+        debit: amount,
+        credit: 0,
+        description: `Distributor settlement service expense for ${distributorName}`,
+        supplierName: distributorName,
+      },
+      {
+        accountCode: "2110",
+        debit: 0,
+        credit: amount,
+        description: `Distributor settlement payable to ${distributorName}`,
+        supplierName: distributorName,
+      },
+    ],
+    client,
+  });
+};
+
 /**
  * 5. Customer Return (RMA) & Sales Reversal
  * DR Sales Returns (4500): Ex-VAT Base
@@ -1226,73 +2217,833 @@ export const postSupplierPaymentAccounting = async ({
  * CR Cash/Bank (1110/1120) or Customer Refund Payable (2140) / AP (2110)
  * (If restocked): DR Merchandise Inventory (1140), CR COGS (5100)
  */
+export const buildCustomerReturnAccountingLines = ({
+  returnId,
+  customerName,
+  totalRefund,
+  vat,
+  isPayable,
+  refundMethod,
+  treasuryGlAccountId,
+  restockedInventoryCost,
+  damagedInventoryCost,
+}) => {
+  const netReturn = Number((totalRefund - vat).toFixed(2));
+  const creditAccount = isPayable ? "2110" : refundMethod === "BANK_TRANSFER" ? "1120" : refundMethod === "CASH" ? "1110" : "2140";
+  const lines = [
+    {
+      accountCode: "4500",
+      debit: netReturn,
+      credit: 0,
+      description: `Sales Return ex-VAT for RMA #${returnId ? returnId.slice(-6) : ""}`,
+      customerName,
+    },
+    {
+      accountCode: "2120",
+      debit: vat,
+      credit: 0,
+      description: `Output VAT adjustment for RMA #${returnId ? returnId.slice(-6) : ""}`,
+    },
+    {
+      ...(treasuryGlAccountId ? { accountId: treasuryGlAccountId } : { accountCode: creditAccount }),
+      debit: 0,
+      credit: totalRefund,
+      description: `Refund payout/credit to ${customerName}`,
+      customerName,
+    },
+  ];
+
+  const restockCost = Number(restockedInventoryCost);
+  if (Number.isFinite(restockCost) && restockCost > 0) {
+    lines.push(
+      {
+        accountCode: "1140",
+        debit: restockCost,
+        credit: 0,
+        description: `Restock inventory for RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+      {
+        accountCode: "5100",
+        debit: 0,
+        credit: restockCost,
+        description: `Reverse COGS for restocked item in RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+    );
+  }
+  const damagedCost = Number(damagedInventoryCost);
+  if (Number.isFinite(damagedCost) && damagedCost > 0) {
+    lines.push(
+      {
+        accountCode: "5500",
+        debit: damagedCost,
+        credit: 0,
+        description: `Scrap loss for damaged return RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+      {
+        accountCode: "5100",
+        debit: 0,
+        credit: damagedCost,
+        description: `Relieve sold COGS for damaged return RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+    );
+  }
+  return lines;
+};
+
+export const resolveCustomerReturnTreasuryGlAccountId = async (client, financialAccountId) => {
+  const selectedTreasuryAccount = await client.financialAccount.findUnique({
+    where: { id: financialAccountId },
+  });
+  const treasuryGlAccountId = selectedTreasuryAccount?.accountId || null;
+  if (!treasuryGlAccountId) {
+    throw new Error("The selected refund treasury account is not linked to a General Ledger account.");
+  }
+  return treasuryGlAccountId;
+};
+
+export const buildDistributorReturnInventoryAccountingLines = ({ returnId, items = [] } = {}) => {
+  if (!returnId) throw new Error("Distributor return inventory accounting requires a return ID.");
+  let restockedCost = new Prisma.Decimal(0);
+  let damagedCost = new Prisma.Decimal(0);
+
+  for (const item of parseItemsForAccounting(items)) {
+    const condition = String(item.condition || "").trim().toUpperCase();
+    if (!["RESTOCKABLE", "DAMAGED"].includes(condition)) {
+      throw new Error(`Unsupported distributor return condition: ${condition || "missing"}.`);
+    }
+    const quantity = new Prisma.Decimal(String(item.quantity ?? 0));
+    if (item.unitCostPrice === undefined || item.unitCostPrice === null || String(item.unitCostPrice).trim() === "") {
+      throw new Error("Distributor return accounting requires the original unit cost.");
+    }
+    const unitCost = new Prisma.Decimal(String(item.unitCostPrice));
+    if (!quantity.isFinite() || quantity.lessThanOrEqualTo(0)) {
+      throw new Error("Distributor return accounting requires a positive item quantity.");
+    }
+    if (!unitCost.isFinite() || unitCost.isNegative()) {
+      throw new Error("Distributor return accounting requires a valid non-negative unit cost.");
+    }
+    const itemCost = unitCost.mul(quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (condition === "RESTOCKABLE") restockedCost = restockedCost.plus(itemCost);
+    else damagedCost = damagedCost.plus(itemCost);
+  }
+
+  restockedCost = restockedCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  damagedCost = damagedCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const totalCost = restockedCost.plus(damagedCost);
+  if (totalCost.isZero()) return [];
+
+  const lines = [];
+  if (restockedCost.greaterThan(0)) {
+    lines.push({
+      mappingKey: "INVENTORY",
+      debit: restockedCost,
+      credit: 0,
+      description: `Restock returned inventory for RMA #${returnId.slice(-6)}`,
+    });
+  }
+  if (damagedCost.greaterThan(0)) {
+    lines.push({
+      accountCode: "5500",
+      debit: damagedCost,
+      credit: 0,
+      description: `Write off defective returned goods for RMA #${returnId.slice(-6)}`,
+    });
+  }
+  lines.push({
+    mappingKey: "COGS",
+    debit: 0,
+    credit: totalCost,
+    description: `Reverse sold COGS for inspected return RMA #${returnId.slice(-6)}`,
+  });
+  return lines;
+};
+
+export const postDistributorReturnInventoryAccounting = async ({
+  returnRecord,
+  client = prisma,
+} = {}) => {
+  if (!returnRecord?.id) {
+    throw new Error("Distributor return inventory accounting requires a persisted return.");
+  }
+  const lines = buildDistributorReturnInventoryAccountingLines({
+    returnId: returnRecord.id,
+    items: returnRecord.items,
+  });
+  if (!lines.length) return null;
+
+  const transactionDate = returnRecord.inspectedAt;
+  if (!transactionDate || Number.isNaN(new Date(transactionDate).getTime())) {
+    throw new Error("Distributor return inventory accounting requires a valid inspection date.");
+  }
+  return postJournalEntry({
+    transactionDate: new Date(transactionDate),
+    sourceType: "DISTRIBUTOR_RETURN_INVENTORY",
+    sourceId: returnRecord.id,
+    idempotencyKey: `DISTRIBUTOR_RETURN_INVENTORY:${returnRecord.id}`,
+    referenceNumber: `RMA-${returnRecord.id.slice(-6)}`,
+    description: `Inventory and cost adjustment for inspected distributor return RMA #${returnRecord.id.slice(-6)}`,
+    lines,
+    client,
+  });
+};
+
+const recordSalesInvoiceReturnAdjustment = async ({
+  client,
+  orderId,
+  returnId,
+  totalRefund,
+  vat,
+  journalNumber,
+  occurredAt,
+}) => {
+  if (!orderId || !client.salesInvoice?.findUnique || !client.salesInvoiceAdjustment?.upsert) return;
+  const invoice = await client.salesInvoice.findUnique({
+    where: { orderId },
+    select: { id: true, status: true, totalAmount: true },
+  });
+  if (!invoice) return;
+  const adjustmentIdempotencyKey = `CUSTOMER_RETURN:${returnId}`;
+  const creditNoteNumber = `CN-${journalNumber}`;
+  await client.salesInvoiceAdjustment.upsert({
+    where: { idempotencyKey: adjustmentIdempotencyKey },
+    create: {
+      salesInvoiceId: invoice.id,
+      sourceType: "CUSTOMER_RETURN",
+      sourceId: String(returnId),
+      idempotencyKey: adjustmentIdempotencyKey,
+      adjustmentType: "CREDIT_NOTE",
+      status: ["PAPER_ISSUED", "PAPER_BILL_TYPE_MISMATCH"].includes(invoice.status)
+        ? "CREDIT_NOTE_REQUIRED"
+        : "REVERSED",
+      amount: new Prisma.Decimal(String(totalRefund)),
+      vatAmount: new Prisma.Decimal(String(vat)),
+      internalReference: journalNumber,
+      externalDocumentNumber: creditNoteNumber,
+      occurredAt,
+    },
+    update: {},
+  });
+  const assignment = await client.orderAssignment?.findUnique?.({
+    where: { orderId },
+    select: { id: true, paperBillNumber: true, paperBillStatus: true },
+  });
+  if (!assignment?.paperBillNumber || assignment.paperBillStatus === "VOIDED") return;
+  const prior = await client.salesInvoiceAdjustment.aggregate({
+    where: {
+      salesInvoiceId: invoice.id,
+      sourceType: "CUSTOMER_RETURN",
+      idempotencyKey: { not: adjustmentIdempotencyKey },
+    },
+    _sum: { amount: true },
+  });
+  const cumulativeRefund = new Prisma.Decimal(String(prior._sum.amount || 0))
+    .plus(totalRefund);
+  const fullyCredited = cumulativeRefund.greaterThanOrEqualTo(invoice.totalAmount);
+  await client.orderAssignment.update({
+    where: { id: assignment.id },
+    data: {
+      paperBillStatus: fullyCredited ? "CREDITED" : "PARTIALLY_CREDITED",
+      paperBillAdjustedAt: occurredAt,
+      paperBillAdjustmentReason: `Customer return adjustment ${creditNoteNumber}`.slice(0, 500),
+    },
+  });
+  await client.salesInvoice.update({
+    where: { id: invoice.id },
+    data: { status: fullyCredited ? "CREDITED" : "PARTIALLY_CREDITED" },
+  });
+};
+
 export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) => {
   try {
+    const client = opts.client || prisma;
     const returnId = returnOrParams.returnId || returnOrParams.id;
     const customerName = returnOrParams.customerName || "Customer";
     const totalRefund = Number(returnOrParams.totalRefundAmount || returnOrParams.refundAmount || 0);
-    if (totalRefund <= 0) return null;
-
-    const vat = Number(returnOrParams.vatRefunded || (totalRefund - totalRefund / 1.13).toFixed(2));
-    const netReturn = Number((totalRefund - vat).toFixed(2));
-    const isPayable = opts.recordAsPayable !== undefined ? opts.recordAsPayable : returnOrParams.refundMethod === "PAYABLE";
-    const refundMethod = returnOrParams.refundMethod || (isPayable ? "PAYABLE" : "CASH");
-    const creditAccount = isPayable ? "2110" : refundMethod === "BANK_TRANSFER" ? "1120" : refundMethod === "CASH" ? "1110" : "2140";
-
-    const lines = [
-      {
-        accountCode: "4500",
-        debit: netReturn,
-        credit: 0,
-        description: `Sales Return ex-VAT for RMA #${returnId ? returnId.slice(-6) : ""}`,
-        customerName,
-      },
-      {
-        accountCode: "2120",
-        debit: vat,
-        credit: 0,
-        description: `Output VAT adjustment for RMA #${returnId ? returnId.slice(-6) : ""}`,
-      },
-      {
-        accountCode: creditAccount,
-        debit: 0,
-        credit: totalRefund,
-        description: `Refund payout/credit to ${customerName}`,
-        customerName,
-      },
-    ];
-
-    const restockCost = Number(returnOrParams.restockedInventoryCost || 0);
-    if (restockCost > 0) {
-      lines.push(
-        {
-          accountCode: "1140",
-          debit: restockCost,
-          credit: 0,
-          description: `Restock inventory for RMA #${returnId ? returnId.slice(-6) : ""}`,
-        },
-        {
-          accountCode: "5100",
-          debit: 0,
-          credit: restockCost,
-          description: `Reverse COGS for restocked item in RMA #${returnId ? returnId.slice(-6) : ""}`,
-        }
-      );
+    if (!Number.isFinite(totalRefund) || totalRefund < 0) {
+      throw new Error("Customer return refund amount must be a non-negative finite amount.");
     }
 
+    let vat = returnOrParams.vatRefunded;
+    if (vat === undefined || vat === null) {
+      const sourceOrder = returnOrParams.orderId
+        ? await client.order.findUnique({
+          where: { id: returnOrParams.orderId },
+          select: { id: true, date: true, orderType: true, directOrderType: true },
+        })
+        : null;
+      const transactionDate = sourceOrder
+        ? await resolveOrderTaxPoint(sourceOrder, { client })
+        : returnOrParams.inspectedAt ?? returnOrParams.completedAt ?? new Date();
+      const vatRate = await resolveOutputVatRatePercent(transactionDate, { client });
+      const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+      vat = new Prisma.Decimal(String(totalRefund)).minus(
+        new Prisma.Decimal(String(totalRefund)).div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      ).toNumber();
+    }
+    vat = Number(vat);
+    if (!Number.isFinite(vat) || vat < 0 || vat > totalRefund) {
+      throw new Error("Customer return VAT adjustment must be between zero and the refund amount.");
+    }
+    const isPayable = opts.recordAsPayable !== undefined ? opts.recordAsPayable : returnOrParams.refundMethod === "PAYABLE";
+    const refundMethod = returnOrParams.refundMethod || (isPayable ? "PAYABLE" : "CASH");
+    const selectedTreasuryAccountId = opts.refundFromAccountId || returnOrParams.refundFromAccountId;
+    let treasuryGlAccountId = null;
+    if (!isPayable && selectedTreasuryAccountId) {
+      treasuryGlAccountId = await resolveCustomerReturnTreasuryGlAccountId(client, selectedTreasuryAccountId);
+    }
+    const lines = buildCustomerReturnAccountingLines({
+      returnId,
+      customerName,
+      totalRefund,
+      vat,
+      isPayable,
+      refundMethod,
+      treasuryGlAccountId,
+      restockedInventoryCost: returnOrParams.restockedInventoryCost,
+      damagedInventoryCost: returnOrParams.damagedInventoryCost,
+    });
+    const hasInventoryAdjustment = Number(returnOrParams.restockedInventoryCost) > 0
+      || Number(returnOrParams.damagedInventoryCost) > 0;
+    if (totalRefund === 0 && !hasInventoryAdjustment) return null;
+
     return await postJournalEntry({
-      transactionDate: returnOrParams.returnDate ? new Date(returnOrParams.returnDate) : new Date(),
+      transactionDate: new Date(returnOrParams.inspectedAt || returnOrParams.completedAt || new Date()),
       sourceType: "SALES_RETURN",
       sourceId: returnId,
       idempotencyKey: `SALES_RETURN:${returnId}`,
       referenceNumber: `RMA-${returnId ? returnId.slice(-6) : ""}`,
       description: `Customer Return RMA refund and revenue reversal for ${customerName}`,
       lines,
+      client,
+      afterPost: async (tx, postedEntry) => {
+        if (totalRefund <= 0) return;
+        await recordSalesInvoiceReturnAdjustment({
+          client: tx,
+          orderId: returnOrParams.orderId,
+          returnId,
+          totalRefund,
+          vat,
+          journalNumber: postedEntry.journalNumber,
+          occurredAt: new Date(returnOrParams.inspectedAt || returnOrParams.completedAt || new Date()),
+        });
+      },
     });
   } catch (error) {
     console.error("Error in postCustomerReturnAccounting:", error);
     throw error;
   }
+};
+
+export const postDistributorCustomerRefundAccounting = async ({
+  returnRecord,
+  client = prisma,
+} = {}) => {
+  if (!returnRecord?.id || !returnRecord.distributorId) {
+    throw new Error("Distributor refund accounting requires a return and distributor.");
+  }
+  const totalRefund = new Prisma.Decimal(String(
+    returnRecord.approvedRefundAmount ?? returnRecord.totalRefundAmount ?? 0,
+  )).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (totalRefund.lessThanOrEqualTo(0)) throw new Error("Approved distributor refund must be greater than zero.");
+  const vat = new Prisma.Decimal(String(returnRecord.vatRefunded || 0))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (vat.isNegative() || vat.greaterThan(totalRefund)) {
+    throw new Error("Approved distributor refund VAT is invalid.");
+  }
+  const netReturn = totalRefund.minus(vat);
+  const distributor = await client.distributor.findUnique({
+    where: { id: returnRecord.distributorId },
+    select: { id: true, name: true },
+  });
+  if (!distributor) throw new Error("Distributor for return refund payable was not found.");
+  const distributorParty = await ensureAccountingParty({
+    partyType: "DISTRIBUTOR",
+    sourceEntityId: distributor.id,
+    displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
+  }, { client });
+
+  const lines = [
+    {
+      mappingKey: "SALES_RETURNS",
+      debit: netReturn,
+      credit: 0,
+      description: `Sales return for distributor-refunded RMA #${returnRecord.id.slice(-6)}`,
+      accountingPartyId: distributorParty.id,
+    },
+    {
+      mappingKey: "OUTPUT_VAT_PAYABLE",
+      debit: vat,
+      credit: 0,
+      description: `Output VAT reversal for distributor-refunded RMA #${returnRecord.id.slice(-6)}`,
+    },
+    {
+      mappingKey: "DISTRIBUTOR_PAYABLE",
+      debit: 0,
+      credit: totalRefund,
+      description: `Customer refund reimbursement payable to ${distributor.name}`,
+      accountingPartyId: distributorParty.id,
+    },
+  ];
+  const transactionDate = returnRecord.completedAt || returnRecord.inspectedAt || new Date();
+  return postJournalEntry({
+    transactionDate: new Date(transactionDate),
+    sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+    sourceId: returnRecord.id,
+    idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
+    referenceNumber: `RMA-${returnRecord.id.slice(-6)}`,
+    description: `Verified customer refund paid by distributor for RMA #${returnRecord.id.slice(-6)}`,
+    lines,
+    client,
+    afterPost: async (tx, postedEntry) => {
+      await createAccountingDocument({
+        documentType: "BILL",
+        documentNumber: `DREF-${returnRecord.id}`,
+        partyId: distributorParty.id,
+        side: "PAYABLE",
+        sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+        sourceId: returnRecord.id,
+        amount: totalRefund,
+        issueDate: transactionDate,
+        idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
+        notes: `Admin-verified customer refund paid by distributor for RMA ${returnRecord.id}.`,
+      }, { client: tx });
+      await recordSalesInvoiceReturnAdjustment({
+        client: tx,
+        orderId: returnRecord.orderId,
+        returnId: returnRecord.id,
+        totalRefund,
+        vat,
+        journalNumber: postedEntry.journalNumber,
+        occurredAt: new Date(transactionDate),
+      });
+    },
+  });
+};
+
+export const postOrderExchangeAccounting = async ({ exchangeRequest, client = prisma } = {}) => {
+  if (!exchangeRequest?.id || !exchangeRequest.orderId) {
+    throw new Error("Order exchange accounting requires a persisted exchange request.");
+  }
+  const order = await client.order.findUnique({
+    where: { id: exchangeRequest.orderId },
+    select: { id: true, userId: true, date: true },
+  });
+  if (!order) throw new Error("The original order for this exchange could not be found.");
+
+  const returnedItems = parseItemsForAccounting(exchangeRequest.items);
+  const replacementItems = parseItemsForAccounting(exchangeRequest.replacementItems);
+  if (!returnedItems.length || !replacementItems.length) {
+    throw new Error("Exchange accounting requires returned and replacement item snapshots.");
+  }
+  const totalOf = (items) => items.reduce(
+    (total, item) => total.plus(new Prisma.Decimal(String(item.unitPrice ?? 0)).mul(Number(item.quantity || 0))),
+    new Prisma.Decimal(0),
+  ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const originalGross = totalOf(returnedItems);
+  const replacementGross = totalOf(replacementItems);
+  const recordedOriginal = new Prisma.Decimal(String(exchangeRequest.originalTotalValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const recordedReplacement = new Prisma.Decimal(String(exchangeRequest.replacementTotalValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (
+    (!recordedOriginal.isZero() && !recordedOriginal.equals(originalGross)) ||
+    (!recordedReplacement.isZero() && !recordedReplacement.equals(replacementGross))
+  ) {
+    throw new Error("Exchange value snapshots do not match the recorded item prices.");
+  }
+
+  const transactionDate = new Date();
+  const originalDate = await resolveOrderTaxPoint(order, { client });
+  if (Number.isNaN(originalDate.getTime())) throw new Error("The original order date is invalid for VAT reversal.");
+  const [originalVatRate, replacementVatRate] = await Promise.all([
+    resolveOutputVatRatePercent(originalDate, { client }),
+    resolveOutputVatRatePercent(transactionDate, { client }),
+  ]);
+  const vatForGross = (gross, rate) => {
+    const net = gross.div(new Prisma.Decimal(1).plus(rate.div(100)))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    return { net, vat: gross.minus(net) };
+  };
+  const originalAmounts = vatForGross(originalGross, originalVatRate);
+  const replacementAmounts = vatForGross(replacementGross, replacementVatRate);
+  const revenueChange = replacementAmounts.net.minus(originalAmounts.net)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const vatChange = replacementAmounts.vat.minus(originalAmounts.vat)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const grossChange = replacementGross.minus(originalGross)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+  const lines = [];
+  const exchangeItemKey = (item) => JSON.stringify([
+    String(item.productId || ""),
+    String(item.size || "Standard").trim().replace(/\s+/g, " ").toLowerCase(),
+    String(item.color || "Standard").trim().replace(/\s+/g, " ").toLowerCase(),
+  ]);
+  const addSignedLine = (mappingKey, amount, description, productId = null, customerId = null, customerName = "") => {
+    const value = new Prisma.Decimal(String(amount)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (value.isZero()) return;
+    lines.push({
+      mappingKey,
+      debit: value.isNegative() ? value.abs() : new Prisma.Decimal(0),
+      credit: value.isPositive() ? value : new Prisma.Decimal(0),
+      description,
+      productId,
+      customerId,
+      customerName,
+    });
+  };
+  const customer = await client.user.findUnique({
+    where: { id: order.userId },
+    select: { name: true },
+  });
+  const customerName = customer?.name || "Customer";
+  if (revenueChange.isPositive()) {
+    lines.push({
+      mappingKey: "PRODUCT_SALES_REVENUE",
+      debit: 0,
+      credit: revenueChange,
+      description: `Exchange product revenue increase for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (revenueChange.isNegative()) {
+    lines.push({
+      mappingKey: "SALES_RETURNS",
+      debit: revenueChange.abs(),
+      credit: 0,
+      description: `Exchange price reduction for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  }
+  addSignedLine(
+    "OUTPUT_VAT_PAYABLE",
+    vatChange,
+    `Exchange VAT change for Order #${order.id.slice(-6)}`,
+    null,
+    order.userId,
+    customerName,
+  );
+
+  let distributorParty = null;
+  const isDistributorRoute = exchangeRequest.deliveryRoute === "DISTRIBUTOR";
+  const settlementDistributorId = isDistributorRoute
+    ? exchangeRequest.distributorId
+    : exchangeRequest.settlementDistributorId;
+  if (grossChange.isPositive() || grossChange.isNegative()) {
+    if (!settlementDistributorId) {
+      throw new Error("A distributor must be assigned to settle an exchange price difference.");
+    }
+    const distributor = await client.distributor.findUnique({
+      where: { id: settlementDistributorId },
+      select: { id: true, name: true },
+    });
+    if (!distributor) throw new Error("The distributor for this exchange accounting entry could not be found.");
+    distributorParty = await ensureAccountingParty({
+      partyType: "DISTRIBUTOR",
+      sourceEntityId: distributor.id,
+      displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
+    }, { client });
+  }
+
+  if (grossChange.isPositive() && distributorParty) {
+    lines.push({
+      mappingKey: "DISTRIBUTOR_COD_RECEIVABLE",
+      debit: grossChange,
+      credit: 0,
+      description: `Distributor-collected exchange upgrade amount for Order #${order.id.slice(-6)}`,
+      accountingPartyId: distributorParty?.id || null,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isPositive()) {
+    lines.push({
+      mappingKey: "NCM_COD_RECEIVABLE",
+      debit: grossChange,
+      credit: 0,
+      description: `Exchange price upgrade COD receivable for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isNegative() && distributorParty) {
+    lines.push({
+      mappingKey: "DISTRIBUTOR_PAYABLE",
+      debit: 0,
+      credit: grossChange.abs(),
+      description: `Distributor-funded exchange downgrade refund for ${customerName}`,
+      accountingPartyId: distributorParty.id,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isNegative()) {
+    lines.push({
+      accountCode: "2110",
+      debit: 0,
+      credit: grossChange.abs(),
+      description: `Customer exchange downgrade refund payable for ${customerName}`,
+      customerId: order.userId,
+      customerName,
+    });
+  }
+
+  const events = await client.orderExchangeEvent.findMany({
+    where: {
+      exchangeRequestId: exchangeRequest.id,
+      eventType: "DISTRIBUTOR_RETURN_INSPECTED",
+    },
+    select: { metadata: true },
+    orderBy: { occurredAt: "desc" },
+  });
+  const inspectedItems = events.flatMap((event) =>
+    Array.isArray(event.metadata?.inspectedItems) ? event.metadata.inspectedItems : []
+  );
+  const inspectionByKey = new Map(inspectedItems.map((item) => [
+    exchangeItemKey(item),
+    String(item.condition || "").toUpperCase(),
+  ]));
+  const inspectionResult = String(exchangeRequest.inspectionResult || "").toUpperCase();
+  const fallbackCondition = inspectionResult === "RESTOCKABLE"
+    ? "GOOD"
+    : inspectionResult;
+  let hasScrap = false;
+  for (const item of returnedItems) {
+    const condition = inspectionByKey.get(exchangeItemKey(item))
+      || fallbackCondition;
+    if (!["GOOD", "RESTOCKABLE", "DAMAGED"].includes(condition)) continue;
+    const unitCost = item.unitCostPrice;
+    if (unitCost === null || unitCost === undefined || !new Prisma.Decimal(String(unitCost)).isFinite()) {
+      throw new Error(`The original cost snapshot is missing for returned product ${item.name || item.productId}.`);
+    }
+    const cost = new Prisma.Decimal(String(unitCost))
+      .mul(Number(item.quantity || 0))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (cost.isNegative()) throw new Error("Exchange item cost snapshots cannot be negative.");
+    if (condition === "DAMAGED") {
+      hasScrap = hasScrap || cost.greaterThan(0);
+      lines.push(
+        {
+          accountCode: "5500",
+          debit: cost,
+          credit: 0,
+          description: `Damaged exchange return scrap loss for ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+        {
+          mappingKey: "COGS",
+          debit: 0,
+          credit: cost,
+          description: `Relieve sold COGS for damaged exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+      );
+    } else {
+      lines.push(
+        {
+          mappingKey: "INVENTORY",
+          debit: cost,
+          credit: 0,
+          description: `Restock exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+        {
+          mappingKey: "COGS",
+          debit: 0,
+          credit: cost,
+          description: `Reverse COGS for exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+      );
+    }
+  }
+  for (const item of replacementItems) {
+    const unitCost = item.unitCostPrice;
+    if (unitCost === null || unitCost === undefined || !new Prisma.Decimal(String(unitCost)).isFinite()) {
+      throw new Error(`The replacement catalog cost snapshot is missing for ${item.name || item.productId}.`);
+    }
+    const cost = new Prisma.Decimal(String(unitCost))
+      .mul(Number(item.quantity || 0))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (cost.isNegative()) throw new Error("Exchange item cost snapshots cannot be negative.");
+    lines.push(
+      {
+        mappingKey: "COGS",
+        debit: cost,
+        credit: 0,
+        description: `Recognize replacement COGS for ${item.name || item.productId}`,
+        productId: item.productId,
+      },
+      {
+        mappingKey: "INVENTORY",
+        debit: 0,
+        credit: cost,
+        description: `Relieve replacement inventory for ${item.name || item.productId}`,
+        productId: item.productId,
+      },
+    );
+  }
+
+  const totalDebits = lines.reduce((total, line) => total.plus(line.debit || 0), new Prisma.Decimal(0));
+  const totalCredits = lines.reduce((total, line) => total.plus(line.credit || 0), new Prisma.Decimal(0));
+  if (totalDebits.isZero() && totalCredits.isZero()) return null;
+
+  const sourceId = `EXCHANGE-${exchangeRequest.id}`;
+  const refundAmount = grossChange.isNegative() ? grossChange.abs() : new Prisma.Decimal(0);
+  const entry = await postJournalEntry({
+    transactionDate,
+    sourceType: "ORDER_EXCHANGE",
+    sourceId,
+    idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}`,
+    referenceNumber: `ORD-${order.id.slice(-6)}`,
+    description: `Return and exchange accounting for Order #${order.id.slice(-6)}`,
+    createdBy: "SYSTEM",
+    lines,
+    client,
+    afterPost: async (tx, postedEntry) => {
+      if (grossChange.isPositive() && distributorParty) {
+        const document = await createAccountingDocument({
+          documentType: "INVOICE",
+          documentNumber: `DEX-${crypto.createHash("sha256").update(exchangeRequest.id).digest("hex").slice(0, 24).toUpperCase()}`,
+          partyId: distributorParty.id,
+          side: "RECEIVABLE",
+          sourceType: "DISTRIBUTOR_COD_SALE",
+          sourceId,
+          amount: grossChange,
+          issueDate: transactionDate,
+          idempotencyKey: `DISTRIBUTOR_COD_SALE:${sourceId}`,
+          notes: `Distributor-collected exchange upgrade amount for Order ${order.id}.`,
+        }, { client: tx });
+        await tx.distributorCashEvent.updateMany({
+          where: {
+            orderExchangeRequestId: exchangeRequest.id,
+            eventType: "EXCHANGE_UPGRADE_COLLECTION",
+            status: { in: ["PENDING_VERIFICATION", "VERIFIED"] },
+          },
+          data: { accountingDocumentId: document.id, journalEntryId: postedEntry.id },
+        });
+      }
+      if (grossChange.isNegative() && distributorParty) {
+        const document = await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `DEXR-${crypto.createHash("sha256").update(exchangeRequest.id).digest("hex").slice(0, 23).toUpperCase()}`,
+          partyId: distributorParty.id,
+          side: "PAYABLE",
+          sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+          sourceId,
+          amount: refundAmount,
+          issueDate: transactionDate,
+          idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${sourceId}`,
+          notes: `Distributor-paid customer exchange downgrade refund for Order ${order.id}.`,
+        }, { client: tx });
+        await tx.distributorCashEvent.updateMany({
+          where: {
+            orderExchangeRequestId: exchangeRequest.id,
+            eventType: "EXCHANGE_DOWNGRADE_REFUND",
+            status: { in: ["PENDING_VERIFICATION", "VERIFIED"] },
+          },
+          data: { accountingDocumentId: document.id, journalEntryId: postedEntry.id },
+        });
+      }
+      if (grossChange.isNegative() && !distributorParty) {
+        const existingPayable = await tx.accountPayable.findFirst({
+          where: { referenceType: "CUSTOMER_EXCHANGE_REFUND", referenceId: exchangeRequest.id },
+          select: { id: true },
+        });
+        if (!existingPayable) {
+          await tx.accountPayable.create({
+            data: {
+              title: `Customer exchange refund #${exchangeRequest.id.slice(0, 8)}`,
+              payeeName: customerName,
+              category: "OPERATING_EXPENSE",
+              referenceType: "CUSTOMER_EXCHANGE_REFUND",
+              referenceId: exchangeRequest.id,
+              totalAmount: refundAmount,
+              paidAmount: 0,
+              remainingBalance: refundAmount,
+              status: "UNPAID",
+              priority: "HIGH",
+              notes: `NCM-route exchange downgrade refund for Order ${order.id}.`,
+            },
+          });
+        }
+      }
+      if (
+        exchangeRequest.orderId &&
+        tx.salesInvoice?.findUnique &&
+        tx.salesInvoiceAdjustment?.upsert
+      ) {
+        const invoice = await tx.salesInvoice.findUnique({
+          where: { orderId: exchangeRequest.orderId },
+          select: { id: true, status: true },
+        });
+        if (invoice) {
+          const sameBillRetained = grossChange.isZero() && vatChange.isZero();
+          const adjustmentType = sameBillRetained
+            ? "SAME_VALUE_EXCHANGE"
+            : grossChange.isNegative() || (grossChange.isZero() && vatChange.isNegative())
+              ? "CREDIT_NOTE"
+              : "DEBIT_NOTE";
+          const externalDocumentNumber = sameBillRetained
+            ? null
+            : exchangeRequest.taxCreditNoteNumber ||
+              `${adjustmentType === "CREDIT_NOTE" ? "CN" : "DN"}-${postedEntry.journalNumber}`;
+          await tx.salesInvoiceAdjustment.upsert({
+            where: { idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}` },
+            create: {
+              salesInvoiceId: invoice.id,
+              sourceType: "ORDER_EXCHANGE",
+              sourceId: String(exchangeRequest.id),
+              idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}`,
+              adjustmentType,
+              status: sameBillRetained
+                ? "SAME_BILL_RETAINED"
+                : !["PAPER_ISSUED", "PAPER_BILL_TYPE_MISMATCH"].includes(invoice.status)
+                  ? "REVERSED"
+                  : adjustmentType === "CREDIT_NOTE"
+                    ? "CREDIT_NOTE_REQUIRED"
+                    : "DEBIT_NOTE_REQUIRED",
+              amount: grossChange.abs().isZero() ? vatChange.abs() : grossChange.abs(),
+              vatAmount: vatChange.abs(),
+              internalReference: postedEntry.journalNumber,
+              externalDocumentNumber,
+              occurredAt: transactionDate,
+            },
+            update: {},
+          });
+          const assignment = await tx.orderAssignment.findUnique({
+            where: { orderId: exchangeRequest.orderId },
+            select: { id: true, paperBillNumber: true },
+          });
+          if (assignment?.paperBillNumber && !sameBillRetained) {
+            await tx.orderAssignment.update({
+              where: { id: assignment.id },
+              data: {
+                paperBillStatus: "PARTIALLY_CREDITED",
+                paperBillAdjustedAt: new Date(),
+                paperBillAdjustmentReason: `Exchange adjustment ${externalDocumentNumber || postedEntry.journalNumber}`.slice(0, 500),
+              },
+            });
+            await tx.salesInvoice.update({
+              where: { id: invoice.id },
+              data: { status: "PARTIALLY_CREDITED" },
+            });
+          }
+        }
+      }
+      return postedEntry;
+    },
+  });
+
+  await client.orderExchangeRequest.update({
+    where: { id: exchangeRequest.id },
+    data: {
+      exchangeJournalEntryId: entry.id,
+      ...(hasScrap ? { scrapJournalEntryId: entry.id } : {}),
+      ...(grossChange.isNegative() ? { taxCreditNoteNumber: `CN-${entry.journalNumber}` } : {}),
+    },
+  });
+  return entry;
+};
+
+const parseItemsForAccounting = (items) => {
+  return parseAccountingItems(items, "Accounting source");
 };
 
 /**
@@ -1302,13 +3053,87 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
  */
 export const postDirectExpenseAccounting = async (params) => {
   return postExpenseAccounting({
-    expenseId: params.expenseId || `EXP-${Date.now()}`,
+    expenseId: params.expenseId,
     category: params.category || "EXPENSE",
     title: params.description || params.title || "Operating Expense",
     amount: params.amount,
-    paidFromAccountType: params.fromAccountId ? "BANK" : "BANK",
-    isPayable: false,
+    paidFromAccountCode: params.paidFromAccountCode,
+    paidAmount: params.paidAmount,
+    payableAmount: params.payableAmount,
+    idempotencyKey: params.idempotencyKey,
+    referenceNumber: params.referenceNumber,
+    isPayable: params.isPayable,
     payeeName: params.payeeName || "Vendor",
+    supplierId: params.supplierId,
+    accountingPartyId: params.accountingPartyId,
+    client: params.client || prisma,
+    throwOnError: params.throwOnError === true,
+  });
+};
+
+export const postTreasuryMovementAccounting = async ({
+  movementType,
+  category,
+  amount,
+  sourceId,
+  idempotencyKey,
+  referenceNumber,
+  fromAccountCode,
+  toAccountCode,
+  description,
+  partyName,
+  client = prisma,
+  transactionDate = new Date(),
+}) => {
+  const normalizedType = String(movementType || "").toUpperCase();
+  const normalizedCategory = String(category || "").toUpperCase();
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) throw new Error("Treasury movement amount must be positive.");
+  if (!sourceId || !idempotencyKey || !referenceNumber) {
+    throw new Error("Treasury movement posting requires a stable source, idempotency key, and payload reference.");
+  }
+
+  let lines;
+  if (normalizedType === "TRANSFER") {
+    if (!fromAccountCode || !toAccountCode) {
+      throw new Error("Internal Treasury transfers require mapped source and destination GL accounts.");
+    }
+    lines = [
+      { accountCode: toAccountCode, debit: value, credit: 0, description: description || "Treasury transfer received" },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Treasury transfer sent" },
+    ];
+  } else if (normalizedType === "INFLOW" && normalizedCategory === "MISC_INFLOW") {
+    if (!toAccountCode) throw new Error("Other receipts require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: toAccountCode, debit: value, credit: 0, description: description || "Other non-sales receipt" },
+      { accountCode: "8100", debit: 0, credit: value, description: description || "Other income" },
+    ];
+  } else if (normalizedType === "OUTFLOW" && normalizedCategory === "EXPENSE") {
+    if (!fromAccountCode) throw new Error("Direct expenses require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: getOperatingExpenseAccountCode("MISCELLANEOUS"), debit: value, credit: 0, description: description || "Direct operating expense" },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Direct operating expense paid" },
+    ];
+  } else if (normalizedType === "OUTFLOW" && normalizedCategory === "DRAWINGS") {
+    if (!fromAccountCode) throw new Error("Drawings require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: "3500", debit: value, credit: 0, description: description || `Owner / partner drawings${partyName ? `: ${partyName}` : ""}` },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Drawings paid" },
+    ];
+  } else {
+    throw new Error("This direct Treasury movement category is not supported. Use its dedicated finance workflow.");
+  }
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: normalizedType === "TRANSFER" ? "INTERNAL_TREASURY_TRANSFER" : "DIRECT_CASH_ENTRY",
+    sourceId,
+    idempotencyKey,
+    referenceNumber,
+    description: description || `Treasury ${normalizedType.toLowerCase()} - ${normalizedCategory}`,
+    lines,
+    client,
+    throwOnIdempotencyConflict: true,
   });
 };
 
@@ -1323,49 +3148,192 @@ export const postExpenseAccounting = async ({
   title,
   amount,
   paidFromAccountType = "BANK",
+  paidFromAccountCode,
+  paidAmount,
+  payableAmount,
+  idempotencyKey,
+  referenceNumber,
   isPayable = false,
   payeeName,
+  supplierId = null,
+  accountingPartyId = null,
+  transactionDate = new Date(),
+  client = prisma,
+  throwOnError = false,
 }) => {
   try {
-    const amt = Number(amount || 0);
-    if (amt <= 0) return;
+    const amt = quantizeNprAmount(accountingDecimal(amount ?? "0", "Expense amount"));
+    if (!amt.isFinite() || !amt.isPositive()) {
+      if (throwOnError) throw new Error("Expense amount must be positive before posting.");
+      return null;
+    }
+    const sourceId = String(expenseId || "").trim();
+    if (!sourceId) throw new Error("Expense posting requires a stable source expense ID.");
 
-    let expenseCode = "6700"; // Miscellaneous
-    const cat = (category || "").toUpperCase();
-    if (cat.includes("SALAR")) expenseCode = "6100";
-    else if (cat.includes("RENT")) expenseCode = "6200";
-    else if (cat.includes("UTILIT")) expenseCode = "6300";
-    else if (cat.includes("MARKET") || cat.includes("ADS")) expenseCode = "6400";
-    else if (cat.includes("SOFTWARE") || cat.includes("TOOL")) expenseCode = "6500";
+    const expenseCode = getOperatingExpenseAccountCode(category);
 
-    const creditCode = isPayable ? "2110" : paidFromAccountType === "CASH" ? "1110" : "1120";
+    const hasSplitAmounts = paidAmount !== undefined || payableAmount !== undefined;
+    const paid = quantizeNprAmount(accountingDecimal(
+      hasSplitAmounts ? paidAmount ?? "0" : isPayable ? "0" : amt,
+      "Expense paid amount",
+    ));
+    const payable = quantizeNprAmount(accountingDecimal(
+      hasSplitAmounts ? payableAmount ?? "0" : isPayable ? amt : "0",
+      "Expense payable amount",
+    ));
+    if (
+      !paid.isFinite() ||
+      !payable.isFinite() ||
+      paid.isNegative() ||
+      payable.isNegative() ||
+      !paid.plus(payable).equals(amt)
+    ) {
+      throw new Error("Expense paid and payable portions must be non-negative and equal the total expense.");
+    }
+    const normalizedPaymentDate = transactionDate ? new Date(transactionDate) : new Date();
+    const postingPayloadHash = crypto.createHash("sha256").update(JSON.stringify({
+      sourceId,
+      category: String(category || "").trim().toUpperCase(),
+      title: String(title || ""),
+      amount: amt.toFixed(2),
+      paidAmount: paid.toFixed(2),
+      payableAmount: payable.toFixed(2),
+      paidFromAccountCode: paid.isPositive()
+        ? paidFromAccountCode || (paidFromAccountType === "CASH" ? "1110" : "1120")
+        : null,
+      payeeName: String(payeeName || ""),
+      supplierId: supplierId || null,
+      accountingPartyId: accountingPartyId || null,
+      transactionDate: normalizedPaymentDate.toISOString(),
+    })).digest("hex");
+    const stableIdempotencyKey = idempotencyKey || `EXPENSE:${sourceId}`;
+    const stableReferenceNumber = referenceNumber || postingPayloadHash;
+    const existingEntry = await client.journalEntry.findUnique({
+      where: { idempotencyKey: stableIdempotencyKey },
+      include: { lines: { include: { account: true } } },
+    });
+    if (existingEntry) {
+      if (
+        existingEntry.status !== "POSTED" ||
+        existingEntry.sourceType !== "EXPENSE_PAYMENT" ||
+        existingEntry.sourceId !== sourceId ||
+        existingEntry.referenceNumber !== stableReferenceNumber
+      ) {
+        const conflict = new Error("Expense idempotency key was reused with different posting details.");
+        conflict.statusCode = 409;
+        conflict.code = "IDEMPOTENCY_KEY_REUSED";
+        throw conflict;
+      }
+      return existingEntry;
+    }
 
-    await postJournalEntry({
-      transactionDate: new Date(),
+    const lines = [{
+      accountCode: expenseCode,
+      debit: amt,
+      credit: 0,
+      description: title || `Expense: ${category}`,
+      ...(supplierId ? { supplierId } : {}),
+      ...(payeeName ? { supplierName: payeeName } : {}),
+      ...(accountingPartyId ? { accountingPartyId } : {}),
+    }];
+    if (paid.isPositive()) {
+      lines.push({
+        accountCode: paidFromAccountCode || (paidFromAccountType === "CASH" ? "1110" : "1120"),
+        debit: 0,
+        credit: paid,
+        description: "Paid from mapped Treasury account",
+        ...(supplierId ? { supplierId } : {}),
+        supplierName: payeeName,
+        ...(accountingPartyId ? { accountingPartyId } : {}),
+      });
+    }
+    if (payable.isPositive()) {
+      lines.push({
+        accountCode: "2110",
+        debit: 0,
+        credit: payable,
+        description: `Recorded as liability to ${payeeName || "Vendor"}`,
+        ...(supplierId ? { supplierId } : {}),
+        supplierName: payeeName,
+        ...(accountingPartyId ? { accountingPartyId } : {}),
+      });
+    }
+
+    return await postJournalEntry({
+      transactionDate,
       sourceType: "EXPENSE_PAYMENT",
-      sourceId: expenseId,
-      idempotencyKey: `EXPENSE:${expenseId}:${amt}`,
-      referenceNumber: `EXP-${expenseId ? expenseId.slice(-6) : Date.now()}`,
+      sourceId,
+      idempotencyKey: stableIdempotencyKey,
+      referenceNumber: stableReferenceNumber,
       description: title || `Operating expense: ${category}`,
-      lines: [
-        {
-          accountCode: expenseCode,
-          debit: amt,
-          credit: 0,
-          description: title || `Expense: ${category}`,
-        },
-        {
-          accountCode: creditCode,
-          debit: 0,
-          credit: amt,
-          description: isPayable ? `Recorded as liability to ${payeeName || "Vendor"}` : `Paid from liquid treasury`,
-          supplierName: payeeName,
-        },
-      ],
+      lines,
+      client,
+      throwOnIdempotencyConflict: true,
     });
   } catch (error) {
     console.error("Error in postExpenseAccounting:", error);
+    if (throwOnError) throw error;
+    return null;
   }
+};
+
+export const postDirectIncomeAccounting = async ({
+  incomeId,
+  category,
+  title,
+  amount,
+  depositAccountCode,
+  payerName,
+  invoiceNumber,
+  transactionDate = new Date(),
+  client = prisma,
+}) => {
+  const normalizedCategory = String(category || "").trim().toUpperCase();
+  if (normalizedCategory !== "OTHER") {
+    throw new Error("Manual income posting supports Other Income only. Record sales, scrap disposals, and services through their tax-aware accounting workflows.");
+  }
+  if (!incomeId) throw new Error("Direct income posting requires a saved income record.");
+  if (!depositAccountCode) throw new Error("Direct income posting requires the mapped Treasury GL account.");
+
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    throw new Error("Direct income amount must be positive.");
+  }
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "DIRECT_INCOME",
+    sourceId: incomeId,
+    idempotencyKey: `DIRECT_INCOME:${incomeId}`,
+    referenceNumber: invoiceNumber || `INC-${incomeId.slice(-6)}`,
+    description: `Other income: ${title || "Income"} from ${payerName || "Payer"}`,
+    lines: [
+      {
+        accountCode: depositAccountCode,
+        debit: amt,
+        credit: 0,
+        description: `Other income receipt${invoiceNumber ? ` (${invoiceNumber})` : ""}`,
+      },
+      {
+        accountCode: "8100",
+        debit: 0,
+        credit: amt,
+        description: `Other income: ${title || "Income"}`,
+      },
+    ],
+    client,
+  });
+};
+
+export const getOperatingExpenseAccountCode = (category) => {
+  const cat = String(category || "").toUpperCase();
+  if (cat.includes("SALAR")) return "6100";
+  if (cat.includes("RENT")) return "6200";
+  if (cat.includes("UTILIT")) return "6300";
+  if (cat.includes("MARKET") || cat.includes("ADS")) return "6400";
+  if (cat.includes("SOFTWARE") || cat.includes("TOOL")) return "6500";
+  if (cat.includes("DELIVERY") || cat.includes("COURIER")) return "6430";
+  return "6700";
 };
 
 /**
@@ -1406,10 +3374,10 @@ export const postFixedAssetPurchaseAccounting = async (assetOrParams, opts = {})
 
     if (paidAmount > 0) {
       lines.push({
-        accountCode: "1120",
+        accountCode: opts.cashAccountCode || "1120",
         debit: 0,
         credit: paidAmount,
-        description: `Paid from liquid bank account for ${asset.assetName}`,
+        description: `Paid from mapped Treasury account for ${asset.assetName}`,
         supplierName: vendorName,
       });
     }
@@ -1432,12 +3400,86 @@ export const postFixedAssetPurchaseAccounting = async (assetOrParams, opts = {})
       referenceNumber: asset.assetTag || asset.id,
       description: `Fixed Asset Acquisition: ${asset.assetName} (${asset.assetTag || asset.id}) from ${vendorName}`,
       lines,
+      client: opts.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postFixedAssetPurchaseAccounting:", error);
     throw error;
   }
+};
+
+export const postFixedAssetDisposalAccounting = async (asset, params, options = {}) => {
+  const cost = Number(asset.purchaseCost || 0);
+  const accumulatedDepreciation = Number(asset.accumulatedDepreciation || 0);
+  const bookValue = Number(asset.currentBookValue || 0);
+  const recoveredAmount = Number(params.recoveredAmount || 0);
+  const categoryAccountCode = asset.category === "FURNITURE_FIXTURES"
+    ? "1520"
+    : asset.category === "VEHICLES" ? "1530" : "1510";
+  const balanceDifference = Number((cost - accumulatedDepreciation - bookValue).toFixed(2));
+  if (cost <= 0 || Math.abs(balanceDifference) > 0.01) {
+    const error = new Error(`Asset ${asset.assetTag} gross cost, accumulated depreciation, and book value do not reconcile.`);
+    error.statusCode = 409;
+    error.code = "FIXED_ASSET_BOOK_RECONCILIATION_REQUIRED";
+    throw error;
+  }
+
+  const lines = [];
+  if (accumulatedDepreciation > 0) {
+    lines.push({
+      accountCode: "1590",
+      debit: accumulatedDepreciation,
+      credit: 0,
+      description: `Remove accumulated depreciation for ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  if (recoveredAmount > 0) {
+    lines.push({
+      accountCode: options.cashAccountCode,
+      debit: recoveredAmount,
+      credit: 0,
+      description: `Disposal proceeds received for ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  if (bookValue > recoveredAmount) {
+    lines.push({
+      accountCode: "6800",
+      debit: Number((bookValue - recoveredAmount).toFixed(2)),
+      credit: 0,
+      description: `Loss on disposal of ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  } else if (recoveredAmount > bookValue) {
+    lines.push({
+      accountCode: "8100",
+      debit: 0,
+      credit: Number((recoveredAmount - bookValue).toFixed(2)),
+      description: `Gain on disposal of ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  lines.push({
+    accountCode: categoryAccountCode,
+    debit: 0,
+    credit: cost,
+    description: `Derecognize ${asset.assetName} (${asset.assetTag})`,
+    assetId: asset.id,
+  });
+
+  return postJournalEntry({
+    transactionDate: params.disposalDate,
+    sourceType: "ASSET_DISPOSAL",
+    sourceId: asset.id,
+    idempotencyKey: params.idempotencyKey,
+    referenceNumber: params.payloadHash,
+    description: `${params.status}: ${params.damageNotes || `Disposal of ${asset.assetName}`}`,
+    lines,
+    client: options.client || prisma,
+    throwOnIdempotencyConflict: true,
+  });
 };
 
 /**
@@ -1451,13 +3493,13 @@ export const postDepreciationAccounting = async (params) => {
     if (depAmt <= 0) return;
 
     const periodName = params.periodName ||
-      (params.date ? `${new Date(params.date).getFullYear()}-${String(new Date(params.date).getMonth() + 1).padStart(2, '0')}` : `BATCH-${Date.now()}`);
+      (params.date ? `${new Date(params.date).getFullYear()}-${String(new Date(params.date).getMonth() + 1).padStart(2, "0")}` : `BATCH-${Date.now()}`);
 
     const result = await postJournalEntry({
       transactionDate: params.date ? new Date(params.date) : new Date(),
       sourceType: "ASSET_DEPRECIATION",
-      sourceId: `DEP-${periodName}`,
-      idempotencyKey: `ASSET_DEPRECIATION:${periodName}:${depAmt}`,
+      sourceId: params.sourceId || `DEP-${periodName}`,
+      idempotencyKey: params.idempotencyKey || `ASSET_DEPRECIATION:${periodName}:${depAmt}`,
       referenceNumber: `DEP-${periodName}`,
       description: `Fixed Asset Depreciation batch for period ${periodName} (${params.count || 1} assets)`,
       lines: [
@@ -1474,27 +3516,33 @@ export const postDepreciationAccounting = async (params) => {
           description: `Accumulated depreciation for ${periodName}`,
         },
       ],
+      client: params.client || prisma,
+      throwOnIdempotencyConflict: params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postDepreciationAccounting:", error);
+    if (params.throwOnError) throw error;
   }
 };
 
 /**
  * 9. Loan Disbursement - flexible: accepts full entity or named params
- * DR Bank Accounts (1120)
+ * DR Mapped Treasury GL account
  * CR Bank Term Loans & Borrowings (2510)
  */
-export const postLoanDisbursementAccounting = async (loanOrParams) => {
+export const postLoanDisbursementAccounting = async (loanOrParams, options = {}) => {
   try {
     const principal = Number(loanOrParams.principalAmount || loanOrParams.principal || 0);
     const lenderName = loanOrParams.investorName || loanOrParams.lenderName || "Lender";
     const loanId = loanOrParams.id || loanOrParams.loanId || `LOAN-${Date.now()}`;
-    if (principal <= 0) return;
+    if (!Number.isFinite(principal) || principal <= 0) {
+      if (options.throwOnError) throw new Error("Loan disbursement principal must be positive.");
+      return null;
+    }
 
     const result = await postJournalEntry({
-      transactionDate: loanOrParams.startDate ? new Date(loanOrParams.startDate) : new Date(),
+      transactionDate: options.transactionDate || loanOrParams.startDate || new Date(),
       sourceType: "LOAN_DISBURSEMENT",
       sourceId: loanId,
       idempotencyKey: `LOAN_DISBURSEMENT:${loanId}`,
@@ -1502,7 +3550,7 @@ export const postLoanDisbursementAccounting = async (loanOrParams) => {
       description: `Loan facility disbursement from ${lenderName} (Rs ${principal.toLocaleString()} at ${loanOrParams.interestRate || 0}% APR)`,
       lines: [
         {
-          accountCode: "1120",
+          accountCode: options.cashAccountCode || "1120",
           debit: principal,
           credit: 0,
           description: `Loan funds received into bank from ${lenderName}`,
@@ -1514,30 +3562,43 @@ export const postLoanDisbursementAccounting = async (loanOrParams) => {
           description: `Borrowing liability created to ${lenderName}`,
         },
       ],
+      client: options.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postLoanDisbursementAccounting:", error);
+    if (options.throwOnError) throw error;
   }
 };
 
 /**
  * 10. Loan Repayment (Principal + Interest Split) - flexible signature
  * DR Bank Term Loans (2510): Principal Portion
- * DR Loan Interest Expense (7100): Interest Expense Portion  
- * CR Bank Accounts (1120): Total Repayment
+ * DR Loan Interest Expense (7100): Interest Expense Portion
+ * CR Mapped Treasury GL account: Total Repayment
  */
-export const postLoanRepaymentAccounting = async (params) => {
+export const postLoanRepaymentAccounting = async (params, options = {}) => {
   try {
     // Support both: ({ liability, amount, principalPortion, interestPortion }) and ({ liabilityId, lenderName, totalAmount, principalPortion, interestPortion })
     const liability = params.liability || {};
     const total = Number(params.amount || params.totalAmount || 0);
-    const p = Number(params.principalPortion || total);
+    const p = Number(params.principalPortion ?? total);
     const i = Number(params.interestPortion || 0);
     const lenderName = liability.investorName || params.lenderName || "Lender";
     const liabilityId = liability.id || params.liabilityId || `REPAY-${Date.now()}`;
 
-    if (total <= 0) return;
+    const totalAmount = new Prisma.Decimal(String(total));
+    const principalAmount = new Prisma.Decimal(String(p));
+    const interestAmount = new Prisma.Decimal(String(i));
+    if (
+      !totalAmount.isFinite() || totalAmount.lessThanOrEqualTo(0) ||
+      !principalAmount.isFinite() || principalAmount.isNegative() ||
+      !interestAmount.isFinite() || interestAmount.isNegative() ||
+      !principalAmount.plus(interestAmount).equals(totalAmount)
+    ) {
+      if (options.throwOnError) throw new Error("Loan repayment principal and interest must be non-negative and equal the total payment.");
+      return null;
+    }
 
     const lines = [
       {
@@ -1558,24 +3619,30 @@ export const postLoanRepaymentAccounting = async (params) => {
     }
 
     lines.push({
-      accountCode: "1120",
+      accountCode: options.cashAccountCode || "1120",
       debit: 0,
       credit: total,
-      description: `EMI payment disbursed from bank to ${lenderName}`,
+      description: `Loan repayment disbursed from Treasury to ${lenderName}`,
     });
 
+    if (options.throwOnError && !options.idempotencyKey) {
+      throw new Error("A stable idempotency key is required for strict loan repayment posting.");
+    }
+    const idempotencyKey = options.idempotencyKey || `LOAN_REPAYMENT:${liabilityId}:${total}:${Date.now()}`;
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: options.transactionDate || new Date(),
       sourceType: "LOAN_REPAYMENT",
       sourceId: liabilityId,
-      idempotencyKey: `LOAN_REPAYMENT:${liabilityId}:${total}:${Date.now()}`,
+      idempotencyKey,
       referenceNumber: `EMI-${liabilityId.slice(-6)}`,
       description: `Loan EMI repayment to ${lenderName} (Principal: Rs ${p}, Interest: Rs ${i})`,
       lines,
+      client: options.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postLoanRepaymentAccounting:", error);
+    if (options.throwOnError) throw error;
   }
 };
 
@@ -1584,7 +3651,7 @@ export const postLoanRepaymentAccounting = async (params) => {
  * DR Bank Accounts (1120): Investment Inflow
  * CR Share Capital (3100): Share Capital Issued
  */
-export const postShareIssuanceAccounting = async (params) => {
+export const postShareIssuanceAccounting = async (params, options = {}) => {
   try {
     // Support: ({ investorPartner, valuationRecord, invAmt, depositAccountId }) and ({ investorName, investmentAmount, roundName })
     const investorName = params.investorName ||
@@ -1597,15 +3664,15 @@ export const postShareIssuanceAccounting = async (params) => {
     if (amount <= 0) return;
 
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: params.transactionDate || new Date(),
       sourceType: "CAPITAL_INJECTION",
       sourceId,
-      idempotencyKey: `CAPITAL_INJECTION:${sourceId}`,
-      referenceNumber: roundName || "EQUITY-ROUND",
+      idempotencyKey: params.idempotencyKey || `CAPITAL_INJECTION:${sourceId}`,
+      referenceNumber: params.referenceNumber || roundName || "EQUITY-ROUND",
       description: `Primary Share Issuance: ${investorName} invested Rs ${amount.toLocaleString()}`,
       lines: [
         {
-          accountCode: "1120",
+          accountCode: params.cashAccountCode || "1120",
           debit: amount,
           credit: 0,
           description: `Capital inflow from ${investorName}`,
@@ -1617,10 +3684,13 @@ export const postShareIssuanceAccounting = async (params) => {
           description: `Share Capital equity issued in ${roundName}`,
         },
       ],
+      client: options.client || params.client || prisma,
+      throwOnIdempotencyConflict: options.throwOnIdempotencyConflict === true || params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postShareIssuanceAccounting:", error);
+    if (options.throwOnError === true || params.throwOnError === true) throw error;
   }
 };
 
@@ -1629,19 +3699,19 @@ export const postShareIssuanceAccounting = async (params) => {
  * DR Share Capital (3100): Face Value Retired
  * CR Bank Accounts (1120): Buyback Payout
  */
-export const postShareBuybackAccounting = async (params) => {
+export const postShareBuybackAccounting = async (params, options = {}) => {
   try {
     const total = Number(params.totalTransactionValue || params.totalAmount || 0);
     if (total <= 0) return;
     const sellerName = params.seller ? params.seller.partnerName : (params.sellerName || "Shareholder");
-    const sourceId = `BUYBACK-${params.seller ? params.seller.id : Date.now()}`;
+    const sourceId = params.sourceId || `BUYBACK-${params.seller ? params.seller.id : Date.now()}`;
 
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: params.transactionDate || new Date(),
       sourceType: "SHARE_BUYBACK",
       sourceId,
-      idempotencyKey: `SHARE_BUYBACK:${sourceId}`,
-      referenceNumber: sourceId,
+      idempotencyKey: params.idempotencyKey || `SHARE_BUYBACK:${sourceId}`,
+      referenceNumber: params.referenceNumber || sourceId,
       description: `Company Share Buyback: Repurchased from ${sellerName}`,
       lines: [
         {
@@ -1651,16 +3721,73 @@ export const postShareBuybackAccounting = async (params) => {
           description: `Share capital retired - bought back from ${sellerName}`,
         },
         {
-          accountCode: "1120",
+          accountCode: params.cashAccountCode || "1120",
           debit: 0,
           credit: total,
           description: `Buyback payout to ${sellerName}`,
         },
       ],
+      client: options.client || params.client || prisma,
+      throwOnIdempotencyConflict: options.throwOnIdempotencyConflict === true || params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postShareBuybackAccounting:", error);
+    if (options.throwOnError === true || params.throwOnError === true) throw error;
+  }
+};
+
+/**
+ * 11c. Partner Profit Distribution Accounting
+ * DR Partner Drawings (3500)
+ * CR Bank Accounts (1120) or Partner Profit Distributions Payable (2150)
+ */
+export const postProfitDistributionAccounting = async ({
+  distributionId,
+  partnerId,
+  partnerName,
+  amount,
+  fiscalYear = "FY",
+  isImmediatePayout = false,
+  cashAccountCode = "1120",
+  createdBy = "system",
+  client = prisma,
+}) => {
+  try {
+    const distAmount = Number(amount || 0);
+    if (distAmount <= 0) return null;
+
+    const lines = [
+      {
+        accountCode: "3500",
+        debit: distAmount,
+        credit: 0,
+        description: `Profit distribution dividend declared for ${partnerName} (${fiscalYear})`,
+      },
+      {
+        accountCode: isImmediatePayout ? cashAccountCode : "2150",
+        debit: 0,
+        credit: distAmount,
+        description: isImmediatePayout
+          ? `Dividend paid out to ${partnerName}`
+          : `Dividend payable accrued for ${partnerName}`,
+      },
+    ];
+
+    return await postJournalEntry({
+      transactionDate: new Date(),
+      sourceType: "PROFIT_DISTRIBUTION",
+      sourceId: `${distributionId}-${partnerId}`,
+      idempotencyKey: `PROFIT_DISTRIBUTION:${distributionId}:${partnerId}`,
+      referenceNumber: `DIST-${String(distributionId).slice(-6)}`,
+      description: `Profit Distribution to ${partnerName} - Rs ${distAmount.toFixed(2)} (${fiscalYear})`,
+      lines,
+      createdBy,
+      client,
+    });
+  } catch (error) {
+    console.error("Error in postProfitDistributionAccounting:", error);
+    throw error;
   }
 };
 
@@ -1668,63 +3795,247 @@ export const postShareBuybackAccounting = async (params) => {
  * 12. Reversal Engine
  * Reverses a posted journal entry atomically with reciprocal DR/CR.
  */
-export const reverseJournalEntryById = async ({ journalEntryId, reversalReason, reversedBy = "admin" }) => {
-  const original = await prisma.journalEntry.findUnique({
-    where: { id: journalEntryId },
-    include: { lines: true },
-  });
-
-  if (!original) {
-    throw new Error("Journal entry not found.");
+export const assertManualJournalReversible = (journalEntry) => {
+  if (journalEntry?.sourceType !== "MANUAL_JOURNAL") {
+    const error = new Error("Source-backed journal entries must be corrected through their originating business workflow.");
+    error.statusCode = 409;
+    error.code = "SOURCE_JOURNAL_REVERSAL_FORBIDDEN";
+    throw error;
   }
-  if (original.status === "REVERSED") {
-    throw new Error("Journal entry is already reversed.");
+};
+
+export const reverseJournalEntryById = async ({
+  journalEntryId,
+  reversalReason,
+  reversedBy,
+  actorContext = {},
+  client = prisma,
+}) => {
+  const reason = String(reversalReason || "").trim();
+  if (reason.length < 3) {
+    const error = new Error("A reversal reason of at least three characters is required.");
+    error.statusCode = 400;
+    error.code = "REVERSAL_REASON_REQUIRED";
+    throw error;
+  }
+  if (!reversedBy) {
+    const error = new Error("An authenticated actor is required to reverse a journal entry.");
+    error.statusCode = 401;
+    error.code = "REVERSAL_ACTOR_REQUIRED";
+    throw error;
   }
 
-  // Create reciprocal reversed lines (DR becomes CR, CR becomes DR)
-  const reversedLines = original.lines.map((l) => ({
-    accountId: l.accountId,
-    debit: l.credit,
-    credit: l.debit,
-    description: `Reversal of ${original.journalNumber}: ${l.description || ""}`,
-    customerId: l.customerId,
-    customerName: l.customerName,
-    supplierId: l.supplierId,
-    supplierName: l.supplierName,
-    productId: l.productId,
-    assetId: l.assetId,
-  }));
+  const reverseWithinTransaction = async (tx) => {
+    const original = await tx.journalEntry.findUnique({
+      where: { id: journalEntryId },
+      include: { lines: true },
+    });
 
-  const reversalResult = await postJournalEntry({
-    transactionDate: new Date(),
-    sourceType: "REVERSAL",
-    sourceId: `REV-${original.id}`,
-    idempotencyKey: `REVERSAL:${original.id}`,
-    referenceNumber: `REV-${original.journalNumber}`,
-    description: `Reversal of ${original.journalNumber}. Reason: ${reversalReason || "User Requested Reversal"}`,
-    lines: reversedLines,
-    createdBy: reversedBy,
-    allowClosedPeriod: true,
-  });
+    if (!original) throw new Error("Journal entry not found.");
+    if (original.status === "REVERSED") throw new Error("Journal entry is already reversed.");
+    assertManualJournalReversible(original);
 
-  // Mark original as REVERSED
-  await prisma.journalEntry.update({
-    where: { id: original.id },
-    data: {
-      status: "REVERSED",
-      reversedEntryId: reversalResult.id,
-      reversalReason: reversalReason || "Reversed by user",
-    },
-  });
+    const reversedLines = original.lines.map((line) => ({
+      accountId: line.accountId,
+      debit: line.credit,
+      credit: line.debit,
+      description: `Reversal of ${original.journalNumber}: ${line.description || ""}`,
+      customerId: line.customerId,
+      customerName: line.customerName,
+      supplierId: line.supplierId,
+      supplierName: line.supplierName,
+      productId: line.productId,
+      assetId: line.assetId,
+    }));
 
-  return reversalResult;
+    const reversalResult = await postJournalEntry({
+      transactionDate: new Date(),
+      sourceType: "REVERSAL",
+      sourceId: `REV-${original.id}`,
+      idempotencyKey: `REVERSAL:${original.id}`,
+      referenceNumber: `REV-${original.journalNumber}`,
+      description: `Reversal of ${original.journalNumber}. Reason: ${reason}`,
+      lines: reversedLines,
+      createdBy: reversedBy,
+      allowClosedPeriod: true,
+      client: tx,
+    });
+    const marked = await tx.journalEntry.updateMany({
+      where: { id: original.id, status: "POSTED" },
+      data: {
+        status: "REVERSED",
+        reversedEntryId: reversalResult.id,
+        reversalReason: reason,
+      },
+    });
+    if (marked.count !== 1) {
+      const error = new Error("Journal entry changed while reversal was being processed. Refresh and retry.");
+      error.statusCode = 409;
+      error.code = "JOURNAL_REVERSAL_CONFLICT";
+      throw error;
+    }
+
+    await recordSystemAudit({
+      ...actorContext,
+      actorId: reversedBy,
+      actorRole: actorContext.actorRole || "ADMIN",
+      portalSource: actorContext.portalSource || "ADMIN",
+    }, {
+      action: "MANUAL_JOURNAL_REVERSED",
+      entityType: "JournalEntry",
+      entityId: original.id,
+      beforeState: { status: original.status },
+      afterState: {
+        status: "REVERSED",
+        reversalEntryId: reversalResult.id,
+        reversalReason: reason,
+      },
+    }, { client: tx });
+
+    return reversalResult;
+  };
+  return client === prisma
+    ? prisma.$transaction(reverseWithinTransaction, { isolationLevel: "Serializable" })
+    : reverseWithinTransaction(client);
 };
 
 /**
  * reverseJournalEntry - convenience alias accepting (journalEntryId, reason) args
  */
-export const reverseJournalEntry = async (journalEntryId, reversalReason = "Reversal") => {
-  return reverseJournalEntryById({ journalEntryId, reversalReason });
+export const reverseJournalEntry = async (
+  journalEntryId,
+  reversalReason = "Reversal",
+  reversedBy,
+  actorContext = {}
+) => {
+  return reverseJournalEntryById({ journalEntryId, reversalReason, reversedBy, actorContext });
+};
+
+export const reverseSettlementJournalEntry = async ({
+  journalEntryId,
+  expectedSourceType,
+  expectedSourceId,
+  reversalReason,
+  reversedBy,
+  actorContext = {},
+  client = prisma,
+}) => {
+  const reason = String(reversalReason || "").trim();
+  if (reason.length < 3) {
+    throw Object.assign(new Error("A settlement correction reason of at least three characters is required."), {
+      statusCode: 400,
+      code: "SETTLEMENT_CORRECTION_REASON_REQUIRED",
+    });
+  }
+  if (!reversedBy) {
+    throw Object.assign(new Error("An authenticated actor is required to correct a settlement journal."), {
+      statusCode: 401,
+      code: "SETTLEMENT_CORRECTION_ACTOR_REQUIRED",
+    });
+  }
+  const isNcmRemittanceJournal = expectedSourceType === "PAYMENT" &&
+    typeof expectedSourceId === "string" &&
+    expectedSourceId.startsWith("NCM-REMIT-");
+  if (
+    !["SUPPLIER_PAYMENT", "CUSTOMER_PAYMENT", "MARKETING_CPA_PAYMENT", "NCM_CARRIER_FEE_ACCRUAL", "NCM_VARIANCE_RESOLUTION"].includes(expectedSourceType) &&
+    !isNcmRemittanceJournal
+  ) {
+    throw Object.assign(new Error("This settlement source does not support this correction workflow."), {
+      statusCode: 400,
+      code: "SETTLEMENT_CORRECTION_SOURCE_UNSUPPORTED",
+    });
+  }
+
+  const execute = async (tx) => {
+    const original = await tx.journalEntry.findUnique({
+      where: { id: journalEntryId },
+      include: { lines: true },
+    });
+    if (!original) {
+      throw Object.assign(new Error("The posted settlement journal was not found."), {
+        statusCode: 409,
+        code: "SETTLEMENT_JOURNAL_NOT_FOUND",
+      });
+    }
+    if (original.sourceType !== expectedSourceType || original.sourceId !== expectedSourceId) {
+      throw Object.assign(new Error("The settlement journal does not match the source transaction."), {
+        statusCode: 409,
+        code: "SETTLEMENT_JOURNAL_SOURCE_MISMATCH",
+      });
+    }
+    if (original.status !== "POSTED") {
+      throw Object.assign(new Error("Only a posted, unreversed settlement journal can be corrected."), {
+        statusCode: 409,
+        code: "SETTLEMENT_JOURNAL_NOT_POSTED",
+      });
+    }
+
+    const reversal = await postJournalEntry({
+      transactionDate: new Date(),
+      sourceType: "SETTLEMENT_CORRECTION",
+      sourceId: original.id,
+      idempotencyKey: `SETTLEMENT_CORRECTION:${original.id}`,
+      referenceNumber: `CORR-${original.journalNumber}`,
+      description: `Settlement correction of ${original.journalNumber}. Reason: ${reason}`,
+      createdBy: reversedBy,
+      allowClosedPeriod: true,
+      lines: original.lines.map((line) => ({
+        accountId: line.accountId,
+        debit: line.credit,
+        credit: line.debit,
+        description: `Settlement correction of ${original.journalNumber}: ${line.description || ""}`,
+        customerId: line.customerId,
+        customerName: line.customerName,
+        supplierId: line.supplierId,
+        supplierName: line.supplierName,
+        productId: line.productId,
+        assetId: line.assetId,
+        accountingPartyId: line.accountingPartyId,
+        costCenter: line.costCenter,
+      })),
+      client: tx,
+    });
+
+    const changed = await tx.journalEntry.updateMany({
+      where: { id: original.id, status: "POSTED" },
+      data: {
+        status: "REVERSED",
+        reversedEntryId: reversal.id,
+        reversalReason: reason,
+      },
+    });
+    if (changed.count !== 1) {
+      throw Object.assign(new Error("Settlement journal changed during correction; refresh and retry."), {
+        statusCode: 409,
+        code: "SETTLEMENT_JOURNAL_CONFLICT",
+      });
+    }
+
+    await recordSystemAudit({
+      ...actorContext,
+      actorId: reversedBy,
+      actorRole: actorContext.actorRole || "ADMIN",
+      portalSource: actorContext.portalSource || "ADMIN",
+    }, {
+      action: "SETTLEMENT_SOURCE_JOURNAL_REVERSED",
+      entityType: "JournalEntry",
+      entityId: original.id,
+      beforeState: { status: original.status },
+      afterState: {
+        status: "REVERSED",
+        reversalEntryId: reversal.id,
+        reversalReason: reason,
+        sourceType: original.sourceType,
+        sourceId: original.sourceId,
+      },
+    }, { client: tx });
+
+    return reversal;
+  };
+
+  return typeof client.$transaction === "function"
+    ? client.$transaction(execute, { isolationLevel: "Serializable" })
+    : execute(client);
 };
 
 /**
@@ -1749,34 +4060,66 @@ export const postNcmRemittanceAccounting = async ({
   settlementId,
   codCollected,
   deliveryFeeActual = 0,
+  actualNetDeposit = null,
   isCash = false,
   cashAccountCode,
   destinationAccountName = "Bank Account",
   createdBy = "admin",
+  ncmPartyId = null,
 }, { client = prisma } = {}) => {
   const codDecimal = new Prisma.Decimal(codCollected || 0);
   const feeDecimal = new Prisma.Decimal(deliveryFeeActual || 0);
-  const netDecimal = codDecimal.minus(feeDecimal);
+  const expectedNetDecimal = codDecimal.minus(feeDecimal);
+  const actualNetDecimal = actualNetDeposit === null || actualNetDeposit === undefined
+    ? expectedNetDecimal
+    : new Prisma.Decimal(String(actualNetDeposit));
 
-  if (codDecimal.lte(0)) {
+  if (!codDecimal.isFinite() || codDecimal.lte(0) || !feeDecimal.isFinite() || feeDecimal.isNegative()) {
     throw new Error("COD collected amount must be greater than zero for remittance posting.");
   }
+  if (expectedNetDecimal.isNegative()) {
+    throw new Error("Carrier fee cannot exceed NCM COD collected in a remittance posting.");
+  }
+  if (!actualNetDecimal.isFinite() || actualNetDecimal.isNegative()) {
+    throw new Error("Actual NCM remittance deposit cannot be negative.");
+  }
 
-  const lines = [
-    {
+  const lines = [];
+  if (actualNetDecimal.greaterThan(0)) {
+    lines.push({
       accountCode: cashAccountCode || (isCash ? "1110" : "1120"),
-      debit: netDecimal,
+      debit: actualNetDecimal,
       credit: 0,
-      description: `Net COD remittance received into ${destinationAccountName}`,
-    },
-  ];
+      description: `NCM COD remittance received into ${destinationAccountName}`,
+    });
+  }
 
   if (feeDecimal.greaterThan(0)) {
     lines.push({
-      mappingKey: "DELIVERY_EXPENSE",
+      mappingKey: "NCM_CARRIER_PAYABLE",
       debit: feeDecimal,
       credit: 0,
-      description: `NCM carrier delivery fee deducted from COD remittance`,
+      description: `Clear NCM carrier fee payable from COD remittance`,
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
+    });
+  }
+
+  const variance = actualNetDecimal.minus(expectedNetDecimal);
+  if (variance.isNegative()) {
+    lines.push({
+      mappingKey: "NCM_COD_RECEIVABLE",
+      debit: variance.abs(),
+      credit: 0,
+      description: "Unpaid NCM settlement variance retained as COD receivable suspense.",
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
+    });
+  } else if (variance.greaterThan(0)) {
+    lines.push({
+      mappingKey: "NCM_REMITTANCE_VARIANCE_PAYABLE",
+      debit: 0,
+      credit: variance,
+      description: "NCM remittance overpayment held in suspense pending reconciliation.",
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
     });
   }
 
@@ -1785,6 +4128,7 @@ export const postNcmRemittanceAccounting = async ({
     debit: 0,
     credit: codDecimal,
     description: `NCM COD collection settled`,
+    ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
   });
 
   return await postJournalEntry({
@@ -1793,7 +4137,7 @@ export const postNcmRemittanceAccounting = async ({
     sourceId: `NCM-REMIT-${settlementId}`,
     idempotencyKey: `NCM_REMITTANCE:${settlementId}`,
     referenceNumber: `NCM-REMIT-${String(settlementId).slice(-6)}`,
-    description: `NCM COD Remittance settlement of Rs ${codDecimal.toString()}`,
+    description: `NCM COD remittance settlement of Rs ${actualNetDecimal.toString()}`,
     lines,
     createdBy,
     client,

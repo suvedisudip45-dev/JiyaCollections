@@ -5,8 +5,10 @@ import axios from "axios";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
 import { Star, Sparkles, SlidersHorizontal, Eye, Edit, Trash2 } from "lucide-react";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const Categories = ({ token }) => {
+  const { can } = usePermissions();
   const [categories, setCategories] = useState([]);
   const [subCategories, setSubCategories] = useState([]);
   const [colors, setColors] = useState([]);
@@ -90,6 +92,7 @@ const Categories = ({ token }) => {
   // Add Category Handler
   const addCategoryHandler = async (e) => {
     e.preventDefault();
+    if (!can("category:create")) return;
     if (!newCategory.trim()) return;
     try {
       const response = await axios.post(
@@ -112,6 +115,7 @@ const Categories = ({ token }) => {
 
   // Remove Category Handler
   const removeCategoryHandler = async (id, name) => {
+    if (!can("category:delete")) return;
     if (!window.confirm(`Are you sure you want to delete category "${name}"?`)) return;
     try {
       const response = await axios.post(
@@ -149,6 +153,7 @@ const Categories = ({ token }) => {
   // Add SubCategory Handler
   const addSubCategoryHandler = async (e) => {
     e.preventDefault();
+    if (!can("subcategory:create")) return;
     if (!newSubCategory.trim()) {
       toast.warning("Subcategory name is required");
       return;
@@ -227,6 +232,7 @@ const Categories = ({ token }) => {
   // Save Edit SubCategory
   const updateSubCategoryHandler = async (e) => {
     e.preventDefault();
+    if (!can("subcategory:update")) return;
     if (!editingSubCategory || !editName.trim()) {
       toast.warning("Subcategory name is required");
       return;
@@ -273,6 +279,7 @@ const Categories = ({ token }) => {
       if (sub.category?.name) params.set("category", sub.category.name);
       params.set("subcategory", sub.name);
       params.set("admin", "true");
+      params.set("limit", "50");
 
       const response = await axios.get(`${backendUrl}/api/product/list?${params.toString()}`, {
         headers: { token },
@@ -299,6 +306,7 @@ const Categories = ({ token }) => {
 
   // Toggle Bestseller status for a product in this subcategory
   const handleToggleProductBestseller = async (productId) => {
+    if (!can("product:update")) return;
     try {
       const response = await axios.post(
         `${backendUrl}/api/product/toggle-bestseller`,
@@ -321,6 +329,7 @@ const Categories = ({ token }) => {
 
   // Remove SubCategory Handler
   const removeSubCategoryHandler = async (id, name) => {
+    if (!can("subcategory:delete")) return;
     if (!window.confirm(`Are you sure you want to delete subcategory "${name}"?`)) return;
     try {
       const response = await axios.post(
@@ -343,6 +352,7 @@ const Categories = ({ token }) => {
   // Add Color Handler
   const addColorHandler = async (e) => {
     e.preventDefault();
+    if (!can("color:create")) return;
     if (!newColor.trim()) return;
     try {
       const response = await axios.post(
@@ -366,6 +376,7 @@ const Categories = ({ token }) => {
 
   // Remove Color Handler
   const removeColorHandler = async (id, name) => {
+    if (!can("color:delete")) return;
     if (!window.confirm(`Are you sure you want to delete color "${name}"?`)) return;
     try {
       const response = await axios.post(
@@ -435,7 +446,7 @@ const Categories = ({ token }) => {
         </div>
 
         {/* Add Subcategory Form */}
-        <form onSubmit={addSubCategoryHandler} className="bg-gray-50/70 p-5 rounded-lg border border-gray-200 mb-8">
+        {can("subcategory:create") && <form onSubmit={addSubCategoryHandler} className="bg-gray-50/70 p-5 rounded-lg border border-gray-200 mb-8">
           <p className="text-xs font-bold uppercase tracking-wider text-gray-600 mb-4">Add New Subcategory</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -524,7 +535,7 @@ const Categories = ({ token }) => {
               {submittingSubCategory ? "Adding..." : "Add Subcategory"}
             </button>
           </div>
-        </form>
+        </form>}
 
         {/* Subcategories Category Filter Tabs & Search */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-4">
@@ -618,7 +629,7 @@ const Categories = ({ token }) => {
                   )}
                 </div>
                 <div>
-                  <button
+                  {can("product:update") && <button
                     type="button"
                     onClick={() => openBestsellerModal(item)}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100 transition-colors"
@@ -626,26 +637,26 @@ const Categories = ({ token }) => {
                   >
                     <Star size={13} className="text-amber-500 fill-amber-500" />
                     <span>{item.bestsellerCount ?? 0} Best Sellers</span>
-                  </button>
+                  </button>}
                 </div>
                 <div className="text-xs text-gray-600 line-clamp-2 pr-3">
                   {item.description || <span className="text-gray-400 italic">No description</span>}
                 </div>
                 <div className="flex items-center justify-end gap-1.5">
-                  <button
+                  {can("subcategory:update") && <button
                     type="button"
                     onClick={() => openEditModal(item)}
                     className="text-xs font-semibold px-2.5 py-1 bg-gray-100 hover:bg-black hover:text-white rounded text-gray-800 transition-colors"
                   >
                     Edit
-                  </button>
-                  <button
+                  </button>}
+                  {can("subcategory:delete") && <button
                     type="button"
                     onClick={() => removeSubCategoryHandler(item.id, item.name)}
                     className="text-xs font-semibold px-2.5 py-1 text-red-600 hover:bg-red-50 rounded transition-colors"
                   >
                     Delete
-                  </button>
+                  </button>}
                 </div>
               </div>
             ))
@@ -656,7 +667,7 @@ const Categories = ({ token }) => {
       {/* --- CATEGORIES SECTION --- */}
       <div className="border border-gray-200 p-6 rounded-xl bg-white shadow-sm">
         <h2 className="text-lg font-bold text-gray-900 mb-4">Product Categories</h2>
-        <form onSubmit={addCategoryHandler} className="flex gap-3 mb-6">
+        {can("category:create") && <form onSubmit={addCategoryHandler} className="flex gap-3 mb-6">
           <input
             type="text"
             placeholder="Add new category (e.g. Men, Women, Kids)"
@@ -671,7 +682,7 @@ const Categories = ({ token }) => {
           >
             Add Category
           </button>
-        </form>
+        </form>}
 
         <div className="border border-gray-200 rounded-lg overflow-hidden">
           <div className="grid grid-cols-[3fr_1fr] bg-gray-100 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-gray-700 border-b">
@@ -688,12 +699,12 @@ const Categories = ({ token }) => {
               >
                 <span className="font-medium text-gray-900">{item.name}</span>
                 <div className="text-right">
-                  <button
+                  {can("category:delete") && <button
                     onClick={() => removeCategoryHandler(item.id, item.name)}
                     className="text-xs font-semibold text-red-600 hover:text-red-800"
                   >
                     Delete
-                  </button>
+                  </button>}
                 </div>
               </div>
             ))
@@ -704,7 +715,7 @@ const Categories = ({ token }) => {
       {/* --- COLORS SECTION --- */}
       <div className="border border-gray-200 p-6 rounded-xl bg-white shadow-sm">
         <h2 className="text-lg font-bold text-gray-900 mb-4">Product Colors</h2>
-        <form onSubmit={addColorHandler} className="flex flex-wrap gap-3 mb-6">
+        {can("color:create") && <form onSubmit={addColorHandler} className="flex flex-wrap gap-3 mb-6">
           <input
             type="text"
             placeholder="Add new color (e.g. Black, Olive)"
@@ -726,7 +737,7 @@ const Categories = ({ token }) => {
           >
             Add Color
           </button>
-        </form>
+        </form>}
 
         <div className="border border-gray-200 rounded-lg overflow-hidden">
           <div className="grid grid-cols-[3fr_1fr] bg-gray-100 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-gray-700 border-b">
@@ -750,12 +761,12 @@ const Categories = ({ token }) => {
                   {item.nepaliName && <span className="text-xs text-gray-400">({item.nepaliName})</span>}
                 </span>
                 <div className="text-right">
-                  <button
+                  {can("color:delete") && <button
                     onClick={() => removeColorHandler(item.id, item.name)}
                     className="text-xs font-semibold text-red-600 hover:text-red-800"
                   >
                     Delete
-                  </button>
+                  </button>}
                 </div>
               </div>
             ))
@@ -764,7 +775,7 @@ const Categories = ({ token }) => {
       </div>
 
       {/* --- SUBCATEGORY BEST SELLERS CURATOR MODAL --- */}
-      {bestsellerModalSub && (
+      {bestsellerModalSub && can("product:update") && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden border border-gray-200 animate-in fade-in zoom-in-95 duration-150 max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-amber-50/60">

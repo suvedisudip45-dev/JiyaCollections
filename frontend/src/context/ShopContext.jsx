@@ -1,8 +1,9 @@
-import { createContext, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { clearAuthTokens, getAccessToken } from "../auth/tokenStorage";
+import { DEFAULT_STOREFRONT_CONTENT } from "../constants/storefrontContent";
 
 export const ShopContext = createContext();
 
@@ -12,6 +13,8 @@ const ShopContextProvider = (props) => {
   const backendUrl = import.meta.env.VITE_BACKEND_URL;
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [platformFeatures, setPlatformFeatures] = useState(null);
+  const [storefrontContent, setStorefrontContent] = useState(DEFAULT_STOREFRONT_CONTENT);
   const [cartItems, setCartItems] = useState({});
   const [products, setProducts] = useState([]);
   const [priceLocation, setPriceLocation] = useState(null);
@@ -24,6 +27,36 @@ const ShopContextProvider = (props) => {
   });
   const [token, setToken] = useState(() => getAccessToken());
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/features`)
+      .then((response) => {
+        if (mounted && response.data?.success) setPlatformFeatures(response.data.features || {});
+      })
+      .catch((error) => {
+        console.error("Unable to load platform feature settings:", error);
+        if (mounted) setPlatformFeatures({});
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [backendUrl]);
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/storefront-content`)
+      .then((response) => {
+        if (!response.data?.success) throw new Error(response.data?.message || "Unable to load storefront content.");
+        if (mounted) setStorefrontContent(response.data.content);
+      })
+      .catch((error) => {
+        console.error("Unable to load storefront content:", error);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [backendUrl]);
 
   useEffect(() => {
     const updateToken = (event) => {
@@ -46,6 +79,9 @@ const ShopContextProvider = (props) => {
   const [shippingConfig, setShippingConfig] = useState({
     sameDistrictFee: 50,
     differentDistrictFee: 120,
+    sameProvinceFee: 120,
+    differentProvinceFee: 120,
+    routeOverrides: [],
     freeShippingMin: 0,
   });
 
@@ -57,6 +93,9 @@ const ShopContextProvider = (props) => {
         setShippingConfig({
           sameDistrictFee: Number(c.sameDistrictFee ?? c.sameCityFee ?? 50),
           differentDistrictFee: Number(c.differentDistrictFee ?? c.differentCityFee ?? 120),
+          sameProvinceFee: Number(c.sameProvinceFee ?? c.differentDistrictFee ?? 120),
+          differentProvinceFee: Number(c.differentProvinceFee ?? c.differentDistrictFee ?? 120),
+          routeOverrides: Array.isArray(c.routeOverrides) ? c.routeOverrides : [],
           freeShippingMin: Number(c.freeShippingMin ?? 0),
         });
       }
@@ -66,25 +105,31 @@ const ShopContextProvider = (props) => {
   };
 
   // Authoritative backend shipping rate calculation
-  const calculateShippingRate = async (district, province = "", subtotal = 0) => {
+  const calculateShippingRate = useCallback(async (district, province = "", subtotal = 0, items = [], ncmBranch = "", deliveryType = "Door2Door") => {
     try {
-      const res = await axios.get(backendUrl + "/api/shipping/calculate", {
-        params: { district, province, subtotal },
+      const res = await axios.post(backendUrl + "/api/shipping/calculate", {
+        district,
+        province,
+        subtotal,
+        items,
+        ncmBranch,
+        deliveryType,
       });
       if (res.data.success) {
         return res.data;
       }
+      throw new Error(res.data?.message || "Unable to calculate shipping for this delivery location.");
     } catch (err) {
-      console.error("Error fetching calculated shipping rate:", err);
+      const responseData = err.response?.data;
+      if (responseData?.code !== "INSUFFICIENT_DISTRIBUTOR_STOCK") {
+        console.error("Error fetching calculated shipping rate:", err);
+      }
+      const quoteError = new Error(responseData?.message || err.message || "Unable to calculate shipping for this delivery location.");
+      quoteError.code = responseData?.code;
+      quoteError.stockShortages = responseData?.stockShortages || [];
+      throw quoteError;
     }
-    return {
-      fee: shippingConfig.differentDistrictFee || 120,
-      tier: "DIFFERENT_DISTRICT",
-      label: "Outside District Delivery",
-      sameDistrictFee: shippingConfig.sameDistrictFee,
-      differentDistrictFee: shippingConfig.differentDistrictFee,
-    };
-  };
+  }, [backendUrl]);
 
   // Backwards compatibility helper for instant display
   const calculateDeliveryFee = (district, subtotal) => {
@@ -317,8 +362,8 @@ const ShopContextProvider = (props) => {
     try {
       const response = await axios.get(backendUrl + "/api/product/list", {
         params: locationOverride?.province && locationOverride?.district
-          ? { province: locationOverride.province, district: locationOverride.district }
-          : {},
+          ? { limit: 50, province: locationOverride.province, district: locationOverride.district }
+          : { limit: 50 },
       });
       if (response.data.success) {
         setProducts(response.data.products);
@@ -331,12 +376,12 @@ const ShopContextProvider = (props) => {
     }
   };
 
-  const resolveLocationPrices = async ({ items, province, district, eligibilityMode = "WHOLE_BASKET" }) => {
+  const resolveLocationPrices = async ({ items, province, district, ncmBranch = "" }) => {
     const response = await axios.post(backendUrl + "/api/product/resolve-prices", {
       items,
       province,
       district,
-      eligibilityMode,
+      ncmBranch,
     });
     if (!response.data?.success) {
       throw new Error(response.data?.message || "Unable to verify location pricing");
@@ -360,7 +405,11 @@ const ShopContextProvider = (props) => {
       const province = address?.province || address?.state || "";
       const district = address?.district || "";
       if (province && district) {
-        setPriceLocation({ province, district });
+        setPriceLocation({
+          province,
+          district,
+          ncmBranch: address?.ncmBranch || address?.city || "",
+        });
       } else {
         setPriceLocation(null);
       }
@@ -390,9 +439,7 @@ const ShopContextProvider = (props) => {
           { headers: { token: userToken } }
         );
         if (syncRes.data.success) {
-          setCartItems(syncRes.data.cartData || {});
           localStorage.removeItem("cartItems");
-          return;
         }
       }
 
@@ -428,6 +475,74 @@ const ShopContextProvider = (props) => {
   useEffect(() => {
     getProductsData(priceLocation);
   }, [priceLocation?.province, priceLocation?.district]);
+
+  const cartProductIds = Object.entries(cartItems)
+    .filter(([, variants]) => Object.values(variants || {}).some((quantity) => Number(quantity) > 0))
+    .map(([productId]) => productId);
+  const cartProductIdsKey = cartProductIds.join(",");
+
+  useEffect(() => {
+    if (!cartProductIdsKey) return undefined;
+    let active = true;
+    const requestedIds = cartProductIdsKey.split(",");
+    const fetchCartProducts = async () => {
+      try {
+        const productPages = await Promise.all(
+          Array.from({ length: Math.ceil(requestedIds.length / 50) }, (_, index) =>
+            axios.get(`${backendUrl}/api/product/list`, {
+              params: {
+                ids: requestedIds.slice(index * 50, (index + 1) * 50).join(","),
+                limit: 50,
+              },
+            })
+          )
+        );
+        if (!active) return;
+        const cartProducts = productPages.flatMap((response) => {
+          if (!response.data?.success) {
+            throw new Error(response.data?.message || "Unable to verify cart products.");
+          }
+          return response.data.products || [];
+        });
+        const availableProductIds = new Set(
+          cartProducts.map((product) => product._id || product.id)
+        );
+        const removedProductIds = requestedIds.filter((productId) => !availableProductIds.has(productId));
+
+        setProducts((currentProducts) => {
+          const mergedProducts = [...currentProducts];
+          let changed = false;
+          cartProducts.forEach((product) => {
+            const productId = product._id || product.id;
+            if (productId && !mergedProducts.some((entry) => (entry._id || entry.id) === productId)) {
+              mergedProducts.push(product);
+              changed = true;
+            }
+          });
+          return changed ? mergedProducts : currentProducts;
+        });
+
+        if (removedProductIds.length > 0) {
+          setCartItems((currentCart) => {
+            const nextCart = { ...currentCart };
+            removedProductIds.forEach((productId) => delete nextCart[productId]);
+            if (!token) localStorage.setItem("cartItems", JSON.stringify(nextCart));
+            return nextCart;
+          });
+          toast.info("Unavailable products were removed from your cart.");
+        }
+      } catch (error) {
+        if (active) {
+          console.error("Unable to verify products saved in the cart:", error);
+        }
+      }
+    };
+
+    fetchCartProducts();
+    return () => {
+      active = false;
+    };
+  }, [backendUrl, cartProductIdsKey, products, token]);
 
   useEffect(() => {
     const storedToken = getAccessToken();
@@ -478,6 +593,9 @@ const ShopContextProvider = (props) => {
     getCartAmount,
     navigate,
     backendUrl,
+    platformFeatures,
+    storefrontContent,
+    setStorefrontContent,
     setToken,
     token,
     getMaxStock,

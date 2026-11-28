@@ -1,7 +1,10 @@
 import axios from "axios";
+import { clearResponseCache, installResponseCache } from "./responseCache";
+import { signRequestWithLegacyHmac } from "../utils/hmac";
 import {
   clearAuthTokens,
   getAccessToken,
+  getActiveWorkspace,
   getRefreshTokenExpiresAt,
   ACCESS_TOKEN_KEY,
   REFRESH_EXPIRY_KEY,
@@ -27,6 +30,19 @@ const redirectToLogin = () => {
 const readHeader = (headers, name) =>
   headers?.get?.(name) || headers?.[name] || headers?.[name.toLowerCase()] || "";
 
+const isTransientDriverRefreshFailure = (error) => (
+  getActiveWorkspace() === "DRIVER" &&
+  (!error?.response || error.response.status >= 500 || error.response.status === 429)
+);
+
+const handleScheduledRefreshFailure = (error) => {
+  if (isTransientDriverRefreshFailure(error)) {
+    console.warn("Driver session refresh is temporarily unavailable; local driver data remains read-only.");
+    return;
+  }
+  redirectToLogin();
+};
+
 const getRequestAccessToken = (headers) => {
   const tokenHeader = readHeader(headers, "token");
   const authorization = readHeader(headers, "Authorization");
@@ -41,7 +57,7 @@ const refreshAccessToken = (staleAccessToken = getAccessToken()) => {
 
       const refreshResponse = await axios.post(
         `${backendUrl}/api/auth/refresh`,
-        { portal: "MANUFACTURER" },
+        { portal: getActiveWorkspace() },
         { withCredentials: true }
       );
       const accessToken = storeAuthTokens(refreshResponse.data);
@@ -69,12 +85,16 @@ const scheduleSessionExpiry = () => {
 
   const expiresAt = getRefreshTokenExpiresAt();
   if (!expiresAt) {
-    refreshAccessToken().catch(redirectToLogin);
+    refreshAccessToken().catch(handleScheduledRefreshFailure);
     return;
   }
 
   const remaining = expiresAt - Date.now();
   if (remaining <= 0) {
+    if (getActiveWorkspace() === "DRIVER" && !navigator.onLine) {
+      console.warn("Driver refresh session expired while offline; cached driver data remains read-only.");
+      return;
+    }
     redirectToLogin();
     return;
   }
@@ -86,8 +106,9 @@ export const installAuthInterceptor = (redirectPath = "/") => {
   if (installed) return;
   installed = true;
   loginPath = redirectPath;
+  installResponseCache(axios, getAccessToken, getActiveWorkspace);
 
-  axios.interceptors.request.use((config) => {
+  axios.interceptors.request.use(async (config) => {
     config.withCredentials = true;
     const accessToken = getAccessToken();
     if (accessToken) {
@@ -95,6 +116,9 @@ export const installAuthInterceptor = (redirectPath = "/") => {
       config.headers.Authorization = `Bearer ${accessToken}`;
       config.headers.token = accessToken;
     }
+
+    await signRequestWithLegacyHmac(config);
+
     return config;
   });
 
@@ -102,6 +126,10 @@ export const installAuthInterceptor = (redirectPath = "/") => {
     (response) => response,
     async (error) => {
       const originalRequest = error.config;
+      const errorCode = error.response?.data?.code;
+      if (typeof errorCode === "string" && errorCode.startsWith("HMAC_")) {
+        return Promise.reject(error);
+      }
       const isAuthRequest = /\/api\/auth\/(login|refresh|2fa\/)/.test(originalRequest?.url || "");
       const headers = originalRequest?.headers;
       const hasAccessToken = Boolean(
@@ -124,14 +152,23 @@ export const installAuthInterceptor = (redirectPath = "/") => {
         originalRequest.headers.token = accessToken;
         return axios(originalRequest);
       } catch (refreshError) {
+        if (isTransientDriverRefreshFailure(refreshError)) {
+          return Promise.reject(refreshError);
+        }
         redirectToLogin();
         return Promise.reject(refreshError);
       }
     }
   );
 
-  window.addEventListener("auth:tokens-updated", scheduleSessionExpiry);
-  window.addEventListener("auth:tokens-cleared", () => window.clearTimeout(expiryTimer));
+  window.addEventListener("auth:tokens-updated", () => {
+    clearResponseCache();
+    scheduleSessionExpiry();
+  });
+  window.addEventListener("auth:tokens-cleared", () => {
+    clearResponseCache();
+    window.clearTimeout(expiryTimer);
+  });
   window.addEventListener("storage", (event) => {
     if (event.key === ACCESS_TOKEN_KEY) {
       if (event.newValue) {
@@ -144,6 +181,7 @@ export const installAuthInterceptor = (redirectPath = "/") => {
     }
   });
   window.addEventListener("focus", scheduleSessionExpiry);
+  window.addEventListener("online", scheduleSessionExpiry);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) scheduleSessionExpiry();
   });

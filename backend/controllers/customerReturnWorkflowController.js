@@ -7,11 +7,18 @@ import {
   listCustomerReturnRequests,
   listManufacturerCustomerReturns,
   markCustomerReturnRefunded,
+  reconcileCustomerReturnNcmStatus,
   resolveUnknownCustomerReturn,
   submitApprovedCustomerReturn,
 } from "../services/customerReturnWorkflowService.js";
+import {
+  reviewDistributorCustomerRefund,
+  submitDistributorCustomerRefund,
+} from "../services/distributorReturnRefundService.js";
+import { requestAccountingActionApproval } from "../services/accountingActionApprovalService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
-const sendError = (res, error) => res.status(error.status || 400).json({
+const sendError = (res, error) => res.status(error.statusCode || error.status || 400).json({
   success: false,
   code: error.code || "RETURN_REQUEST_FAILED",
   message: error.message || "Return request failed.",
@@ -53,7 +60,10 @@ export const customerListReturnRequests = async (req, res) => {
 
 export const manufacturerListReturnRequests = async (req, res) => {
   try {
-    const returns = await listManufacturerCustomerReturns({ manufacturerId: req.manufacturerId });
+    const returns = await listManufacturerCustomerReturns({
+      manufacturerId: req.manufacturerId,
+      distributorId: req.distributorId,
+    });
     return res.json({ success: true, returns });
   } catch (error) {
     return sendError(res, error);
@@ -153,6 +163,76 @@ export const adminCompleteReturnRefund = async (req, res) => {
   }
 };
 
+export const distributorSubmitCustomerRefund = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, code: "DISTRIBUTOR_PROFILE_REQUIRED", message: "An approved distributor profile is required." });
+    }
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/customer_refunds");
+    const result = await submitDistributorCustomerRefund({
+      distributorId,
+      returnId: req.params.id,
+      amount: req.body?.amount,
+      adjustmentReason: req.body?.adjustmentReason,
+      paymentMethod: req.body?.paymentMethod,
+      externalReference: req.body?.externalReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      idempotencyKey: req.body?.idempotencyKey || req.headers?.["idempotency-key"],
+      recordedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    return sendError(res, error);
+  }
+};
+
+export const adminReviewDistributorCustomerRefund = async (req, res) => {
+  try {
+    const result = await reviewDistributorCustomerRefund({
+      distributorId: req.body?.distributorId,
+      returnId: req.params.id,
+      decision: req.body?.decision,
+      reviewNotes: req.body?.reviewNotes,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: actorContextFromRequest(req),
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const adminSettleDistributorRefundPayable = async (req, res) => {
+  try {
+    const result = await requestAccountingActionApproval({
+      actionType: "DISTRIBUTOR_REFUND_PAYOUT",
+      requestKey: req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "",
+      payload: {
+        distributorId: req.body?.distributorId,
+        accountingDocumentId: req.params.documentId,
+        financialAccountId: req.body?.financialAccountId,
+        amount: req.body?.amount,
+        reason: req.body?.reason,
+      },
+      actor: {
+        accountId: req.auth?.accountId || req.auth?.userId || null,
+        role: req.auth?.role,
+      },
+      auditContext: actorContextFromRequest(req),
+    });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This distributor refund payout request already exists." : "Distributor refund payout submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
 export const adminResolveUnknownReturn = async (req, res) => {
   try {
     const returnRecord = await resolveUnknownCustomerReturn({
@@ -162,6 +242,21 @@ export const adminResolveUnknownReturn = async (req, res) => {
       reason: req.body.reason,
     });
     return res.json({ success: true, returnRecord });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const adminReconcileCustomerReturnNcmStatus = async (req, res) => {
+  try {
+    const result = await reconcileCustomerReturnNcmStatus({
+      returnId: req.params.id,
+      adminId: req.adminId,
+    });
+    return res.json({
+      success: true,
+      ...result,
+    });
   } catch (error) {
     return sendError(res, error);
   }

@@ -22,20 +22,43 @@ import {
 } from "lucide-react";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
+import NepaliDatePicker from "../components/NepaliDatePicker";
+import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
+import { usePermissions } from "../auth/PermissionsContext";
+import {
+  formatNepaliDate,
+  getAdDateForNepaliDate,
+  getNepaliDateForAdDate,
+  getNepaliDateRangeForDate,
+} from "../utils/nepaliDate";
+import {
+  compareDecimalStrings,
+  formatNprAmount,
+  subtractDecimalStrings,
+} from "../utils/decimalDisplay";
 
 const ExpenseManagement = ({ token }) => {
+  const initialBsDate = formatNepaliDate(new Date());
   const [activeTab, setActiveTab] = useState("EXPENSES"); // EXPENSES | INCOMES | CATEGORIES
   const [expenses, setExpenses] = useState([]);
   const [incomes, setIncomes] = useState([]);
   const [categories, setCategories] = useState({ expense: [], income: [], custom: [] });
   const [treasuryAccounts, setTreasuryAccounts] = useState([]);
+  const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [todayInputDate, setTodayInputDate] = useState(initialBsDate);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [dateRangeEnabled, setDateRangeEnabled] = useState(false);
+  const [dateRangeDraft, setDateRangeDraft] = useState(() => getNepaliDateRangeForDate(initialBsDate));
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
 
@@ -45,13 +68,22 @@ const ExpenseManagement = ({ token }) => {
     totalPaid: 0,
     totalPayable: 0,
     totalVatClaimable: 0,
+    pendingVatReview: 0,
     byCategory: {},
   });
 
   // Expense Modal State
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [expenseIdempotencyKey, setExpenseIdempotencyKey] = useState(
+    () => sessionStorage.getItem("operating-expense-idempotency-key") || "",
+  );
+  const [supplierPartyId, setSupplierPartyId] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [vendorModalOpen, setVendorModalOpen] = useState(false);
+  const [vendorDisplayName, setVendorDisplayName] = useState("");
+  const [vendorLegalName, setVendorLegalName] = useState("");
+  const [vendorCreateKey, setVendorCreateKey] = useState("");
 
   // Expense Form State
   const [title, setTitle] = useState("");
@@ -59,7 +91,10 @@ const ExpenseManagement = ({ token }) => {
   const [amount, setAmount] = useState("");
   const [isVatBill, setIsVatBill] = useState(false);
   const [vatAmount, setVatAmount] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [purchaseVatRate, setPurchaseVatRate] = useState("");
+  const [supplierVatNumber, setSupplierVatNumber] = useState("");
+  const [invoiceEvidenceUrl, setInvoiceEvidenceUrl] = useState("");
+  const [date, setDate] = useState(initialBsDate);
   const [paymentStatus, setPaymentStatus] = useState("PAID"); // PAID or PAYABLE
   const [paymentAccountId, setPaymentAccountId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
@@ -68,16 +103,18 @@ const ExpenseManagement = ({ token }) => {
   const [dueDate, setDueDate] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
   const [notes, setNotes] = useState("");
+  const { canAny } = usePermissions();
+  const canReviewPurchaseVat = canAny(["finance:tax_configure"]);
 
   // Income Modal State
   const [incomeModalOpen, setIncomeModalOpen] = useState(false);
   const [incomeTitle, setIncomeTitle] = useState("");
-  const [incomeCategory, setIncomeCategory] = useState("DIRECT_SALES");
+  const [incomeCategory] = useState("OTHER");
   const [incomeAmount, setIncomeAmount] = useState("");
   const [incomeToAccountId, setIncomeToAccountId] = useState("");
   const [incomePayerName, setIncomePayerName] = useState("");
   const [incomeInvoiceNumber, setIncomeInvoiceNumber] = useState("");
-  const [incomeDate, setIncomeDate] = useState(new Date().toISOString().split("T")[0]);
+  const [incomeDate, setIncomeDate] = useState(initialBsDate);
   const [incomeNotes, setIncomeNotes] = useState("");
 
   // Category Modal State
@@ -89,21 +126,24 @@ const ExpenseManagement = ({ token }) => {
 
   // Solvency helper for selected account
   const selectedAccount = treasuryAccounts.find((a) => a.id === paymentAccountId);
-  const numAmount = parseFloat(amount) || 0;
+  const validExpenseAmount = /^\d+(?:\.\d+)?$/.test(amount.trim());
   const isInsufficient =
     paymentStatus === "PAID" &&
     selectedAccount &&
-    numAmount > 0 &&
-    Number(selectedAccount.currentBalance || 0) < numAmount;
-  const shortfall = isInsufficient ? numAmount - Number(selectedAccount.currentBalance || 0) : 0;
+    validExpenseAmount &&
+    compareDecimalStrings(amount, selectedAccount.currentBalance || "0") > 0;
+  const shortfall = isInsufficient
+    ? subtractDecimalStrings(amount, selectedAccount.currentBalance || "0")
+    : "0";
 
   // 1. Fetch Categories & Treasury Accounts
   const fetchMetadata = useCallback(async () => {
     if (!token) return;
     try {
-      const [catRes, accRes] = await Promise.all([
+      const [catRes, accRes, vendorRes] = await Promise.all([
         axios.get(`${backendUrl}/api/expense/categories`, { headers: { token } }),
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/expense/vendors`, { headers: { token } }),
       ]);
       if (catRes.data.success) {
         setCategories(catRes.data.categories || { expense: [], income: [], custom: [] });
@@ -115,6 +155,7 @@ const ExpenseManagement = ({ token }) => {
           setPaymentAccountId(accs[0].id);
           setIncomeToAccountId(accs[0].id);
         }
+        if (vendorRes.data.success) setVendors(vendorRes.data.vendors || []);
       }
     } catch {
       console.error("Failed to load metadata");
@@ -130,6 +171,7 @@ const ExpenseManagement = ({ token }) => {
       if (selectedCategory && selectedCategory !== "ALL") params.category = selectedCategory;
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
+      params.calendar = "BS";
       if (searchTerm) params.search = searchTerm;
       params.page = page;
       params.limit = 10;
@@ -141,7 +183,7 @@ const ExpenseManagement = ({ token }) => {
         }),
         axios.get(`${backendUrl}/api/expense/summary`, {
           headers: { token },
-          params: { startDate, endDate },
+          params: { startDate, endDate, calendar: "BS" },
         }),
       ]);
 
@@ -155,6 +197,7 @@ const ExpenseManagement = ({ token }) => {
           totalPaid: summaryRes.data.totalPaid || 0,
           totalPayable: summaryRes.data.totalPayable || 0,
           totalVatClaimable: summaryRes.data.totalVatClaimable || 0,
+          pendingVatReview: summaryRes.data.pendingVatReview || 0,
           byCategory: summaryRes.data.byCategory || {},
         });
       }
@@ -170,7 +213,7 @@ const ExpenseManagement = ({ token }) => {
     if (!token) return;
     setLoading(true);
     try {
-      const params = { page, limit: 10 };
+      const params = { page, limit: 10, calendar: "BS" };
       if (searchTerm) params.search = searchTerm;
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
@@ -191,36 +234,62 @@ const ExpenseManagement = ({ token }) => {
   }, [token, page, searchTerm, startDate, endDate]);
 
   useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (!active) return;
+        const currentDate = response.data.currentDate;
+        setCalendarYears(response.data.years);
+        setTodayInputDate(currentDate);
+        setDate(currentDate);
+        setIncomeDate(currentDate);
+        setDateRangeDraft(getNepaliDateRangeForDate(currentDate));
+        setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load expense calendar error:", error);
+        if (!active) return;
+        const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+        setCalendarError(message);
+        setLoading(false);
+        toast.error(message);
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
+
+  useEffect(() => {
     fetchMetadata();
   }, [fetchMetadata]);
 
   useEffect(() => {
+    if (!calendarReady) return;
     if (activeTab === "EXPENSES") fetchExpenses();
     else if (activeTab === "INCOMES") fetchIncomes();
     else setLoading(false);
-  }, [activeTab, fetchExpenses, fetchIncomes]);
+  }, [activeTab, calendarReady, fetchExpenses, fetchIncomes]);
 
   const handlePageChange = (nextPage) => setPage(nextPage);
 
-  // Auto-compute VAT amount
-  useEffect(() => {
-    if (isVatBill && amount && !isNaN(parseFloat(amount))) {
-      const numAmt = parseFloat(amount);
-      const computedVat = (numAmt - numAmt / 1.13).toFixed(2);
-      setVatAmount(computedVat);
-    } else if (!isVatBill) {
-      setVatAmount("0");
-    }
-  }, [amount, isVatBill]);
-
   const handleOpenAddModal = () => {
     setEditingId(null);
+    const requestKey = expenseIdempotencyKey || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-idempotency-key", requestKey);
+    setExpenseIdempotencyKey(requestKey);
     setTitle("");
     setCategory(categories.expense[0]?.code || "PRINTING");
     setAmount("");
     setIsVatBill(false);
     setVatAmount("");
-    setDate(new Date().toISOString().split("T")[0]);
+    setPurchaseVatRate("");
+    setSupplierVatNumber("");
+    setSupplierPartyId("");
+    setInvoiceEvidenceUrl("");
+    setDate(todayInputDate);
     setPaymentStatus("PAID");
     if (treasuryAccounts.length > 0) setPaymentAccountId(treasuryAccounts[0].id);
     setPaymentMethod("CASH");
@@ -239,7 +308,11 @@ const ExpenseManagement = ({ token }) => {
     setAmount(exp.amount?.toString() || "");
     setIsVatBill(exp.isVatBill ?? false);
     setVatAmount(exp.vatAmount?.toString() || "");
-    setDate(exp.date ? new Date(exp.date).toISOString().split("T")[0] : "");
+    setPurchaseVatRate(exp.purchaseVatRate?.toString() || "");
+    setSupplierVatNumber(exp.supplierVatNumber || "");
+    setSupplierPartyId(exp.accountingPartyId || "");
+    setInvoiceEvidenceUrl(exp.invoiceEvidenceUrl || "");
+    setDate(exp.date ? getNepaliDateForAdDate(exp.date, calendarYears) : todayInputDate);
     setPaymentStatus(exp.paymentStatus || "PAID");
     setPaymentAccountId(exp.financialAccountId || (treasuryAccounts[0]?.id || ""));
     setPaymentMethod(exp.paymentMethod || "CASH");
@@ -249,13 +322,60 @@ const ExpenseManagement = ({ token }) => {
     setModalOpen(true);
   };
 
+  const handleOpenVendorModal = () => {
+    const storedKey = sessionStorage.getItem("operating-expense-vendor-idempotency-key") || "";
+    const requestKey = storedKey || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-vendor-idempotency-key", requestKey);
+    setVendorCreateKey(requestKey);
+    setVendorDisplayName("");
+    setVendorLegalName("");
+    setVendorModalOpen(true);
+  };
+
+  const handleSubmitVendor = async (e) => {
+    e.preventDefault();
+    const requestKey = vendorCreateKey
+      || sessionStorage.getItem("operating-expense-vendor-idempotency-key")
+      || window.crypto.randomUUID();
+    sessionStorage.setItem("operating-expense-vendor-idempotency-key", requestKey);
+    setVendorCreateKey(requestKey);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/expense/vendors/add`,
+        { displayName: vendorDisplayName.trim(), legalName: vendorLegalName.trim() || undefined },
+        { headers: { token, "Idempotency-Key": requestKey } },
+      );
+      if (!response.data?.success || !response.data.vendor) {
+        throw new Error(response.data?.message || "Supplier could not be saved.");
+      }
+      const vendor = response.data.vendor;
+      setVendors((current) => [
+        ...current.filter((item) => item.id !== vendor.id),
+        vendor,
+      ].sort((left, right) => left.displayName.localeCompare(right.displayName)));
+      setSupplierPartyId(vendor.id);
+      setVendorName(vendor.displayName);
+      setVendorModalOpen(false);
+      sessionStorage.removeItem("operating-expense-vendor-idempotency-key");
+      setVendorCreateKey("");
+      toast.success(response.data.replayed ? "Supplier already registered." : "Supplier registered.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Supplier could not be saved.");
+    }
+  };
+
   // Convert to Payable 1-Click Action
   const handleConvertToPayable = () => {
     setPaymentStatus("PAYABLE");
-    const nextWeek = new Date();
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    setDueDate(nextWeek.toISOString().split("T")[0]);
+    setDueDate(getDefaultDueDate());
     toast.info("Switched payment method to Accounts Payable (Pay Later).");
+  };
+
+  const getDefaultDueDate = () => {
+    const adToday = getAdDateForNepaliDate(todayInputDate, calendarYears);
+    const nextWeek = new Date(`${adToday}T00:00:00.000Z`);
+    nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
+    return getNepaliDateForAdDate(nextWeek.toISOString().slice(0, 10), calendarYears);
   };
 
   // Submit Expense
@@ -266,8 +386,7 @@ const ExpenseManagement = ({ token }) => {
       return;
     }
 
-    const parsedAmount = parseFloat(amount);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    if (!/^\d+(?:\.\d+)?$/.test(amount.trim()) || compareDecimalStrings(amount, "0") <= 0) {
       toast.error("Expense amount must be a positive number.");
       return;
     }
@@ -282,26 +401,37 @@ const ExpenseManagement = ({ token }) => {
       const payload = {
         title: title.trim(),
         category,
-        amount: parsedAmount,
+        amount: amount.trim(),
         isVatBill,
-        vatAmount: parseFloat(vatAmount) || 0,
+        vatAmount: isVatBill && vatAmount.trim() ? vatAmount.trim() : undefined,
+        purchaseVatRate: isVatBill ? purchaseVatRate.trim() : undefined,
+        accountingPartyId: supplierPartyId || undefined,
+        supplierVatNumber: String(supplierVatNumber || "").trim() || undefined,
+        invoiceEvidenceUrl: String(invoiceEvidenceUrl || "").trim() || undefined,
         date,
         paymentStatus,
         paymentAccountId: paymentStatus === "PAID" ? paymentAccountId : null,
         paymentMethod: paymentStatus === "PAID" ? paymentMethod : "CREDIT",
-        vendorName: vendorName.trim() || undefined,
-        invoiceNumber: invoiceNumber.trim() || undefined,
+        vendorName: String(vendorName || "").trim() || undefined,
+        invoiceNumber: String(invoiceNumber || "").trim() || undefined,
         dueDate: paymentStatus === "PAYABLE" ? dueDate : undefined,
         priority: paymentStatus === "PAYABLE" ? priority : undefined,
-        notes: notes.trim() || undefined,
+        notes: String(notes || "").trim() || undefined,
+        calendar: "BS",
       };
 
       const url = editingId ? `${backendUrl}/api/expense/update` : `${backendUrl}/api/expense/add`;
       const reqBody = editingId ? { id: editingId, ...payload } : payload;
 
-      const res = await axios.post(url, reqBody, { headers: { token } });
+      const headers = { token };
+      if (!editingId) headers["Idempotency-Key"] = expenseIdempotencyKey;
+      const res = await axios.post(url, reqBody, { headers });
 
       if (res.data.success) {
+        if (!editingId) {
+          sessionStorage.removeItem("operating-expense-idempotency-key");
+          setExpenseIdempotencyKey("");
+        }
         toast.success(res.data.message || "Expense recorded successfully!");
         setModalOpen(false);
         fetchExpenses();
@@ -315,6 +445,31 @@ const ExpenseManagement = ({ token }) => {
       toast.error(err.response?.data?.message || "Error saving expense.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReviewPurchaseVat = async (expense, decision) => {
+    const reason = window.prompt(
+      decision === "APPROVE"
+        ? `Confirm you reviewed supplier VAT invoice ${expense.invoiceNumber || ""}, its evidence, supplier VAT number, and the business registration date. Enter review reason:`
+        : "Enter why this supplier input VAT document is rejected:",
+    );
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      toast.error("Enter a review reason of at least 3 characters.");
+      return;
+    }
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/expense/${expense.id}/input-vat-review`,
+        { decision, reason: reason.trim() },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Input VAT review failed.");
+      toast.success(response.data.message || "Supplier input VAT reviewed.");
+      await fetchExpenses();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Input VAT review failed.");
     }
   };
 
@@ -345,6 +500,7 @@ const ExpenseManagement = ({ token }) => {
           invoiceNumber: incomeInvoiceNumber.trim() || undefined,
           date: incomeDate,
           notes: incomeNotes.trim() || undefined,
+          calendar: "BS",
         },
         { headers: { token } }
       );
@@ -409,6 +565,29 @@ const ExpenseManagement = ({ token }) => {
       toast.error("Error deleting expense.");
     }
   };
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
+
+  if (!calendarReady) {
+    return (
+      <div className="flex min-h-[300px] items-center justify-center">
+        <p className="text-sm font-semibold text-slate-500">Loading configured Nepali calendar...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -510,10 +689,10 @@ const ExpenseManagement = ({ token }) => {
               Total Expenses
             </span>
             <p className="text-2xl font-black text-slate-900 mt-1">
-              Rs {Number(summaryMetrics.totalAmount || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.totalAmount || "0")}
             </p>
             <span className="text-[10px] text-slate-500 mt-1 block">
-              Paid: Rs {Number(summaryMetrics.totalPaid || 0).toLocaleString()} | Due: Rs {Number(summaryMetrics.totalPayable || 0).toLocaleString()}
+              Paid: Rs {formatNprAmount(summaryMetrics.totalPaid || "0")} | Due: Rs {formatNprAmount(summaryMetrics.totalPayable || "0")}
             </span>
           </div>
 
@@ -522,7 +701,7 @@ const ExpenseManagement = ({ token }) => {
               Printing &amp; Packaging
             </span>
             <p className="text-2xl font-black text-blue-700 mt-1">
-              Rs {Number(summaryMetrics.byCategory?.PRINTING || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.byCategory?.PRINTING || "0")}
             </p>
             <span className="text-[10px] text-blue-600 mt-1 block">Branded Tags, Bags &amp; Cartons</span>
           </div>
@@ -532,19 +711,22 @@ const ExpenseManagement = ({ token }) => {
               Staff Salaries &amp; Wages
             </span>
             <p className="text-2xl font-black text-emerald-700 mt-1">
-              Rs {Number(summaryMetrics.byCategory?.SALARIES || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.byCategory?.SALARIES || "0")}
             </p>
             <span className="text-[10px] text-emerald-600 mt-1 block">Payroll &amp; Contract Labor</span>
           </div>
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              Input VAT Claimable
+              Finance-Reviewed Input VAT
             </span>
             <p className="text-2xl font-black text-purple-700 mt-1">
-              Rs {Number(summaryMetrics.totalVatClaimable || 0).toLocaleString()}
+              Rs {formatNprAmount(summaryMetrics.totalVatClaimable || "0")}
             </p>
-            <span className="text-[10px] text-purple-600 mt-1 block">13% Tax Credit from VAT Bills</span>
+            <span className="text-[10px] text-purple-600 mt-1 block">
+              Recorded invoice evidence reviewed internally; not independently supplier- or tax-authority-verified.
+              {compareDecimalStrings(summaryMetrics.pendingVatReview || "0", "0") > 0 && ` · Rs ${formatNprAmount(summaryMetrics.pendingVatReview)} pending review`}
+            </span>
           </div>
         </div>
       )}
@@ -592,34 +774,51 @@ const ExpenseManagement = ({ token }) => {
                 />
               </div>
 
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-slate-400" />
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-400 font-medium">to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
-                />
-                {(startDate || endDate || searchTerm) && (
+              <div className="flex flex-wrap items-end gap-2">
+                {dateRangeEnabled ? (
+                  <>
+                    <NepaliDateRangePicker
+                      startDate={dateRangeDraft.startDate}
+                      endDate={dateRangeDraft.endDate}
+                      onApply={({ startDate: nextStart, endDate: nextEnd }) => {
+                        setStartDate(nextStart);
+                        setEndDate(nextEnd);
+                        setPage(1);
+                      }}
+                      calendars={calendarYears}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDateRangeEnabled(false);
+                        setStartDate("");
+                        setEndDate("");
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-600 underline"
+                    >
+                      Clear dates
+                    </button>
+                  </>
+                ) : (
                   <button
+                    type="button"
                     onClick={() => {
-                      setStartDate("");
-                      setEndDate("");
-                      setSearchTerm("");
+                      setDateRangeDraft(getNepaliDateRangeForDate(todayInputDate));
+                      setDateRangeEnabled(true);
                     }}
-                    className="text-xs text-slate-400 hover:text-slate-600 underline cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700"
                   >
-                    Clear
+                    <Calendar className="h-4 w-4 text-slate-400" />
+                    Filter by BS date
+                  </button>
+                )}
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm("")}
+                    className="text-xs text-slate-400 hover:text-slate-600 underline"
+                  >
+                    Clear search
                   </button>
                 )}
               </div>
@@ -654,7 +853,7 @@ const ExpenseManagement = ({ token }) => {
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium">
                     {expenses.map((exp) => {
-                      const dateStr = exp.date ? new Date(exp.date).toLocaleDateString() : "N/A";
+                      const dateStr = exp.date ? formatNepaliDate(exp.date, calendarYears) : "N/A";
                       const isPayable = exp.paymentStatus === "PAYABLE";
 
                       return (
@@ -700,10 +899,20 @@ const ExpenseManagement = ({ token }) => {
 
                           <td className="py-3.5 px-4 text-center align-top">
                             {exp.isVatBill ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                                <ShieldCheck className="w-3 h-3" />
-                                13% VAT (Rs {exp.vatAmount})
-                              </span>
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  exp.purchaseVatStatus === "VERIFIED"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : exp.purchaseVatStatus === "REJECTED"
+                                      ? "bg-rose-50 text-rose-700 border-rose-200"
+                                      : "bg-amber-50 text-amber-700 border-amber-200"
+                                }`}>
+                                  {exp.purchaseVatStatus === "VERIFIED" ? <ShieldCheck className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                                  {exp.purchaseVatStatus === "VERIFIED" ? "Finance reviewed" : exp.purchaseVatStatus === "REJECTED" ? "Rejected" : "Pending review"}
+                                </span>
+                                <span className="text-[10px] text-slate-500">{exp.purchaseVatRate == null ? "Rate not recorded" : `${exp.purchaseVatRate}%`} · Rs {formatNprAmount(exp.vatAmount || "0")}</span>
+                                {exp.invoiceEvidenceUrl && <a href={exp.invoiceEvidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-indigo-600 underline">Invoice evidence</a>}
+                              </div>
                             ) : (
                               <span className="text-[10px] text-slate-400">Non-VAT</span>
                             )}
@@ -711,21 +920,31 @@ const ExpenseManagement = ({ token }) => {
 
                           <td className="py-3.5 px-4 text-right align-top">
                             <span className="font-bold text-slate-900 text-sm block">
-                              Rs {Number(exp.amount || 0).toLocaleString()}
+                              Rs {formatNprAmount(exp.amount || "0")}
                             </span>
                           </td>
 
                           <td className="py-3.5 px-4 text-right align-top">
                             <div className="flex items-center justify-end gap-1.5">
+                              {canReviewPurchaseVat && exp.purchaseVatStatus === "PENDING_REVIEW" && (
+                                <>
+                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "APPROVE")} className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100">Approve VAT</button>
+                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "REJECT")} className="rounded-lg bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-100">Reject</button>
+                                </>
+                              )}
                               <button
                                 onClick={() => handleOpenEditModal(exp)}
-                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
+                                disabled={exp.hasPostedJournal || exp.purchaseVatStatus === "VERIFIED"}
+                                title={exp.hasPostedJournal ? "Posted expenses require a linked correction workflow." : undefined}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteExpense(exp.id)}
-                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 cursor-pointer"
+                                disabled={exp.hasPostedJournal || exp.purchaseVatStatus === "VERIFIED"}
+                                title={exp.hasPostedJournal ? "Posted expenses require a linked correction workflow." : undefined}
+                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -784,7 +1003,7 @@ const ExpenseManagement = ({ token }) => {
                       <td className="py-3 px-4">
                         <span className="font-bold text-slate-900 block">{inc.title}</span>
                         <span className="text-[10px] text-slate-400 font-mono">
-                          {new Date(inc.date).toLocaleDateString()}
+                          {formatNepaliDate(inc.date, calendarYears)}
                         </span>
                       </td>
                       <td className="py-3 px-4">
@@ -881,6 +1100,7 @@ const ExpenseManagement = ({ token }) => {
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
                 />
               </div>
+              <NepaliDatePicker label="Expense date" value={date} onChange={setDate} calendars={calendarYears} />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -954,7 +1174,7 @@ const ExpenseManagement = ({ token }) => {
                     >
                       {treasuryAccounts.map((acc) => (
                         <option key={acc.id} value={acc.id}>
-                          {acc.accountName} ({acc.accountType}) — Available: Rs {Number(acc.currentBalance || 0).toLocaleString()}
+                          {acc.accountName} ({acc.accountType}) — Available: Rs {formatNprAmount(acc.currentBalance || "0")}
                         </option>
                       ))}
                     </select>
@@ -967,7 +1187,7 @@ const ExpenseManagement = ({ token }) => {
                           <div>
                             <p className="font-bold">Insufficient Liquid Balance</p>
                             <p className="text-[11px] text-red-700">
-                              <b>{selectedAccount?.accountName}</b> has only Rs {Number(selectedAccount?.currentBalance || 0).toLocaleString()} available (Shortfall: Rs {shortfall.toLocaleString()}).
+                              <b>{selectedAccount?.accountName}</b> has only Rs {formatNprAmount(selectedAccount?.currentBalance || "0")} available (Shortfall: Rs {formatNprAmount(shortfall)}).
                             </p>
                           </div>
                         </div>
@@ -987,13 +1207,18 @@ const ExpenseManagement = ({ token }) => {
                 {paymentStatus === "PAYABLE" && (
                   <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200">
                     <div>
-                      <label className="block font-bold text-slate-700 mb-1">Due Date</label>
-                      <input
-                        type="date"
-                        value={dueDate}
-                        onChange={(e) => setDueDate(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-900"
-                      />
+                      {dueDate ? (
+                        <>
+                          <NepaliDatePicker label="Due date" value={dueDate} onChange={setDueDate} calendars={calendarYears} />
+                          <button type="button" onClick={() => setDueDate("")} className="mt-1 text-[10px] text-slate-500 underline">
+                            Remove due date
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => setDueDate(getDefaultDueDate())} className="text-xs font-semibold text-slate-700 underline">
+                          Add optional due date
+                        </button>
+                      )}
                     </div>
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">Priority</label>
@@ -1018,29 +1243,55 @@ const ExpenseManagement = ({ token }) => {
                   <input
                     type="checkbox"
                     checked={isVatBill}
-                    onChange={(e) => setIsVatBill(e.target.checked)}
+                    onChange={(e) => {
+                      setIsVatBill(e.target.checked);
+                      setVatAmount("");
+                    }}
                     className="w-4 h-4 text-purple-600 rounded cursor-pointer"
                   />
-                  13% Tax Invoice (Input VAT Reclaimable)
+                  Supplier says this is a VAT tax invoice
                 </label>
                 {isVatBill && (
                   <div className="flex items-center justify-between text-purple-800 text-[11px] pt-1">
-                    <span>Embedded 13% Tax Credit:</span>
-                    <strong className="font-bold">Rs {vatAmount || "0.00"}</strong>
+                    <span>Invoice VAT (blank uses an internal estimate; pending review):</span>
+                    <strong className="font-bold">{vatAmount ? `Rs ${vatAmount}` : "Estimate on save"}</strong>
                   </div>
+                )}
+                {isVatBill && (
+                  <p className="text-[10px] text-purple-700">Finance reviews the recorded supplier VAT number and invoice evidence, checks the amounts and registration date, and records the decision. No independent supplier or tax-authority validation is performed.</p>
                 )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Vendor / Payee Name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Printing Press, Landlord, Employee"
-                    value={vendorName}
-                    onChange={(e) => setVendorName(e.target.value)}
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Registered supplier {(paymentStatus === "PAYABLE" || isVatBill || String(invoiceNumber || "").trim()) ? "*" : ""}
+                  </label>
+                  <select
+                    value={supplierPartyId}
+                    required={paymentStatus === "PAYABLE" || isVatBill || Boolean(String(invoiceNumber || "").trim())}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSupplierPartyId(nextId);
+                      const selectedVendor = vendors.find((vendor) => vendor.id === nextId);
+                      setVendorName(selectedVendor?.displayName || "");
+                    }}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
-                  />
+                  >
+                    <option value="">Select a supplier when recording a bill</option>
+                    {vendors.map((vendor) => (
+                      <option key={vendor.id} value={vendor.id}>
+                        {vendor.displayName}{vendor.legalName ? ` · ${vendor.legalName}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleOpenVendorModal}
+                    className="mt-1 text-[10px] font-semibold text-emerald-700 underline"
+                  >
+                    + Register supplier
+                  </button>
                 </div>
 
                 <div>
@@ -1050,10 +1301,59 @@ const ExpenseManagement = ({ token }) => {
                     placeholder="e.g. PRT-9921"
                     value={invoiceNumber}
                     onChange={(e) => setInvoiceNumber(e.target.value)}
+                    required={isVatBill}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
                   />
                 </div>
               </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Vendor / Payee Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Landlord or Employee for non-bill expenses"
+                  value={vendorName}
+                  readOnly={Boolean(supplierPartyId)}
+                  onChange={(e) => setVendorName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900 read-only:opacity-70"
+                />
+              </div>
+              {isVatBill && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Supplier VAT number (9 digits)</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]{9}"
+                      maxLength={9}
+                      required
+                      value={supplierVatNumber}
+                      onChange={(e) => setSupplierVatNumber(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Supplier invoice evidence URL</label>
+                    <input
+                      type="url"
+                      required
+                      value={invoiceEvidenceUrl}
+                      onChange={(e) => setInvoiceEvidenceUrl(e.target.value)}
+                      placeholder="https://..."
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Invoice VAT rate (%)</label>
+                    <input type="number" min="0.01" max="100" step="0.01" required value={purchaseVatRate} onChange={(e) => setPurchaseVatRate(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                    <span className="mt-1 block text-[10px] font-normal text-slate-500">Enter the rate shown on this supplier invoice; no default rate is applied.</span>
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">VAT amount printed on invoice (optional)</label>
+                    <input type="number" min="0" step="0.01" value={vatAmount} onChange={(e) => setVatAmount(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Notes</label>
@@ -1087,6 +1387,57 @@ const ExpenseManagement = ({ token }) => {
         </div>
       )}
 
+      {vendorModalOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl">
+            <div className="mb-4">
+              <h3 className="text-base font-bold text-slate-900">Register supplier</h3>
+              <p className="mt-1 text-xs text-slate-500">
+                This creates a persistent accounting identity. Duplicate-looking names remain separate until Finance verifies they are the same supplier.
+              </p>
+            </div>
+            <form onSubmit={handleSubmitVendor} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Display name *</label>
+                <input
+                  type="text"
+                  required
+                  maxLength={255}
+                  value={vendorDisplayName}
+                  onChange={(e) => setVendorDisplayName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-700">Legal name (optional)</label>
+                <input
+                  type="text"
+                  maxLength={255}
+                  value={vendorLegalName}
+                  onChange={(e) => setVendorLegalName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900"
+                />
+              </div>
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setVendorModalOpen(false)}
+                  className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white"
+                >
+                  Save supplier
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* --- MODAL 2: RECORD DIRECT INCOME --- */}
       {incomeModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1094,7 +1445,7 @@ const ExpenseManagement = ({ token }) => {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">Record Direct Income</h3>
-                <p className="text-xs text-slate-500">Deposit incoming funds directly into Bank or Cash account.</p>
+                <p className="text-xs text-slate-500">Record a non-sales Other Income receipt into a mapped Treasury account.</p>
               </div>
               <button
                 onClick={() => setIncomeModalOpen(false)}
@@ -1110,27 +1461,20 @@ const ExpenseManagement = ({ token }) => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Scrap Fabric Waste Sale, Printing Service Fee"
+                  placeholder="e.g. Approved non-sales other receipt"
                   value={incomeTitle}
                   onChange={(e) => setIncomeTitle(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none text-slate-900"
                 />
               </div>
+              <NepaliDatePicker label="Income date" value={incomeDate} onChange={setIncomeDate} calendars={calendarYears} />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Category *</label>
-                  <select
-                    value={incomeCategory}
-                    onChange={(e) => setIncomeCategory(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-900"
-                  >
-                    {categories.income.map((cat) => (
-                      <option key={cat.code} value={cat.code}>
-                        {cat.name}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="block font-bold text-slate-700 mb-1">Income Category</label>
+                  <div className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 font-medium text-slate-700">
+                    Other Income (GL 8100)
+                  </div>
                 </div>
 
                 <div>
@@ -1148,6 +1492,10 @@ const ExpenseManagement = ({ token }) => {
                 </div>
               </div>
 
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+                Do not use this form for sales, scrap disposals, or services that may require output VAT. Use the relevant sales/accounting workflow; this form is limited to receipts confirmed by finance as not requiring output VAT.
+              </p>
+
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Deposit Into Account *</label>
                 <select
@@ -1157,7 +1505,7 @@ const ExpenseManagement = ({ token }) => {
                 >
                   {treasuryAccounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
-                      {acc.accountName} ({acc.accountType}) — Balance: Rs {Number(acc.currentBalance || 0).toLocaleString()}
+                      {acc.accountName} ({acc.accountType}) — Balance: Rs {formatNprAmount(acc.currentBalance || "0")}
                     </option>
                   ))}
                 </select>
@@ -1165,7 +1513,7 @@ const ExpenseManagement = ({ token }) => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Payer / Buyer Name</label>
+                  <label className="block font-bold text-slate-700 mb-1">Source / Payer Name</label>
                   <input
                     type="text"
                     placeholder="e.g. Recycling Vendor"

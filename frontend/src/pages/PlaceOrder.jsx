@@ -1,21 +1,17 @@
 /* eslint-disable no-unused-vars */
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
-import { assets } from "../assets/assets";
+import { roundOrderTotal } from "../utils/orderAmount";
 import { ShopContext } from "../context/ShopContext";
 import { getSharedComboBundleVariants } from "../utils/comboBundleVariants";
 import { clearAuthTokens } from "../auth/tokenStorage";
+import { sanitizeInput } from "../utils/sanitize";
 import axios from "axios";
 import { toast } from "react-toastify";
 import NepalMapModal from "../components/NepalMapModal";
-import {
-  NEPAL_CITIES,
-  NEPAL_PROVINCES,
-  getCityInfo,
-} from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, getBranchesForLocation, useLocationLookups } from "../utils/locationLookups";
 
 const isValidNepalMobileNumber = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
@@ -23,11 +19,18 @@ const isValidNepalMobileNumber = (value = "") => {
   return /^9[78]\d{8}$/.test(normalized);
 };
 
+const normalizeMapLocationName = (value = "") => String(value)
+  .toLocaleLowerCase()
+  .replace(/\s*\([^)]*\)/g, "")
+  .replace(/\s+district$/, "")
+  .trim();
+
 const PlaceOrder = () => {
   const location = useLocation();
   const [
     method, setMethod
   ] = useState("cod");
+  const [deliveryType, setDeliveryType] = useState("Door2Door");
   const {
     navigate,
     backendUrl,
@@ -36,14 +39,14 @@ const PlaceOrder = () => {
     cartItems,
     setCartItems,
     getCartAmount,
-    delivery_fee,
     shippingConfig,
-    calculateDeliveryFee,
     calculateShippingRate,
+    platformFeatures,
     products,
     getMaxStock,
     getProductsData,
   } = useContext(ShopContext);
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -60,8 +63,13 @@ const PlaceOrder = () => {
     state: "Bagmati Province",
     country: "Nepal",
   });
-  const [locationPriceQuote, setLocationPriceQuote] = useState(null);
-  const [locationPriceStatus, setLocationPriceStatus] = useState("idle");
+  const [locationPriceResult, setLocationPriceResult] = useState({
+    key: null,
+    status: "idle",
+    quote: null,
+    error: "",
+  });
+  const [locationPriceRetry, setLocationPriceRetry] = useState(0);
 
   const [comboBundlePurchase, setComboBundlePurchase] = useState(() => {
     if (location.state?.comboBundlePurchase) return location.state.comboBundlePurchase;
@@ -79,24 +87,77 @@ const PlaceOrder = () => {
         Number(comboBundlePurchase?.quantity || 1)
       ).find((variant) => variant.size.toLowerCase() === String(comboBundlePurchase?.size || "").toLowerCase())
     : null;
-  const orderSubtotal = comboBundleData
+  const baseOrderSubtotal = comboBundleData
     ? Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0) * Number(comboBundlePurchase?.quantity || 1)
     : getCartAmount();
 
-  const cartPricingItems = Object.entries(cartItems).flatMap(([productId, variants]) =>
+  const cartPricingItems = useMemo(() => Object.entries(cartItems).flatMap(([productId, variants]) =>
     Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
       const [size, color] = variantKey.split("-");
       return { productId, size, color: color || "", quantity: Number(quantity) };
     })
-  );
+  ), [cartItems]);
+  const shippingQuoteItems = useMemo(() => {
+    if (!comboBundleData) return cartPricingItems;
+    return (comboBundleData.products || []).map((entry, index) => ({
+      productId: entry.product?._id || entry.product?.id || "",
+      size: checkoutBundleVariant?.size || "",
+      color: checkoutBundleVariant?.productVariants?.[index]?.color || "",
+      quantity: Number(comboBundlePurchase?.quantity || 1),
+    })).filter((item) => item.productId);
+  }, [cartPricingItems, comboBundleData, comboBundlePurchase?.quantity, checkoutBundleVariant]);
+  const hasComboBundle = Boolean(comboBundleData);
   const checkoutPriceKey = JSON.stringify({
     province: formData.province,
     district: formData.district,
+    ncmBranch: formData.city || formData.ncmBranch || "",
     items: cartPricingItems,
   });
+  const hasMatchingPriceResult = locationPriceResult.key === checkoutPriceKey;
+  const locationPriceQuote = hasMatchingPriceResult ? locationPriceResult.quote : null;
+  const locationPriceStatus = hasMatchingPriceResult
+    ? locationPriceResult.status
+    : !hasComboBundle && cartPricingItems.length > 0
+      ? "loading"
+      : "idle";
+  const locationPriceError = hasMatchingPriceResult ? locationPriceResult.error : "";
   const hasCurrentLocationQuote = Boolean(
-    locationPriceQuote && locationPriceQuote.key === checkoutPriceKey && locationPriceStatus === "ready"
+    locationPriceQuote && locationPriceStatus === "ready"
   );
+  const orderSubtotal = hasCurrentLocationQuote
+    ? locationPriceQuote.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0)
+    : baseOrderSubtotal;
+  const shippingQuoteKey = JSON.stringify({
+    province: formData.province,
+    district: formData.district,
+    ncmBranch: formData.city || formData.ncmBranch || "",
+    subtotal: orderSubtotal,
+    items: shippingQuoteItems,
+    deliveryType,
+  });
+  const [shippingQuoteResult, setShippingQuoteResult] = useState({
+    key: null,
+    status: "idle",
+    error: "",
+    stockShortages: [],
+    quote: null,
+  });
+  const [shippingQuoteRetry, setShippingQuoteRetry] = useState(0);
+  const hasMatchingShippingQuote = shippingQuoteResult.key === shippingQuoteKey;
+  const shippingQuoteStatus = hasMatchingShippingQuote
+    ? shippingQuoteResult.status
+    : formData.province && formData.district && shippingQuoteItems.length > 0
+      ? "loading"
+      : "idle";
+  const shippingQuoteError = hasMatchingShippingQuote ? shippingQuoteResult.error : "";
+  const shippingStockShortages = hasMatchingShippingQuote ? shippingQuoteResult.stockShortages : [];
+  const locationPricingStatusMessage = locationPriceQuote?.fulfillmentSelectionError
+    ? `${locationPriceQuote.fulfillmentSelectionError.message} Standard product pricing is shown.`
+    : locationPriceQuote?.fulfillmentConfirmed
+      ? locationPriceQuote.locationDiscountApplied
+        ? "Distributor stock verified; matching place-wise pricing is applied."
+        : "Distributor stock verified; standard product pricing applies."
+      : "Standard product pricing applies.";
   const locationPriceByVariant = new Map((hasCurrentLocationQuote ? locationPriceQuote.items : []).map((item) => [
     `${item.productId}|${item.size}|${item.color}`,
     item,
@@ -157,12 +218,12 @@ const PlaceOrder = () => {
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [ncmBranches, setNcmBranches] = useState([]);
-  const [coveredAreas, setCoveredAreas] = useState([]);
-  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+  const submittingRef = useRef(false);
+  const ncmBranches = getBranchesForLocation(locationLookups, formData.province, formData.district);
+  const loadingNcmBranches = !locationLookups && !lookupError;
 
-  // Dynamic delivery fee - recalculated when city changes
-  const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(delivery_fee);
+  // Dynamic delivery fee - recalculated when address or cart contents change
+  const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(undefined);
   const [shippingTierLabel, setShippingTierLabel] = useState("");
   const [loyaltyData, setLoyaltyData] = useState(null);
   const [loyaltyDiscountAmount, setLoyaltyDiscountAmount] = useState(0);
@@ -173,10 +234,18 @@ const PlaceOrder = () => {
   const [rewardChoice, setRewardChoice] = useState("");
   const [rewardsInitialized, setRewardsInitialized] = useState(false);
 
-  const checkoutCardRewards = claimedCardRewards.filter((reward) => reward.benefit?.benefitType === "DISCOUNT");
+  const checkoutCardRewards = claimedCardRewards.filter((reward) => (
+    ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
+  ));
   const selectedCardReward = checkoutCardRewards.find((reward) => reward.cardId === selectedCardRewardId) || null;
+  const selectedCardRewardValue = Number(selectedCardReward?.benefit?.value);
   const cardRewardDiscountAmount = rewardChoice === "CARD" && selectedCardReward
-    ? Math.min(orderSubtotal, Math.round(orderSubtotal * Number(selectedCardReward.benefit.value) / 100))
+    && Number.isFinite(selectedCardRewardValue) && selectedCardRewardValue > 0
+    ? selectedCardReward.benefit.benefitType === "VOUCHER"
+      ? Math.min(orderSubtotal, selectedCardRewardValue)
+      : selectedCardRewardValue <= 100
+        ? Math.min(orderSubtotal, Math.round(orderSubtotal * selectedCardRewardValue / 100))
+        : 0
     : 0;
 
   // Fetch logged-in user profile & saved addresses & loyalty status
@@ -186,7 +255,9 @@ const PlaceOrder = () => {
       setLoadingProfile(true);
       const [profRes, loyRes] = await Promise.all([
         axios.get(`${backendUrl}/api/user/profile`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } }),
+        platformFeatures?.loyaltyEnabled
+          ? axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } })
+          : Promise.resolve({ data: { success: false } }),
       ]);
 
       if (profRes.data.success && profRes.data.user) {
@@ -240,12 +311,14 @@ const PlaceOrder = () => {
       if (loyRes.data.success && loyRes.data.loyalty) {
         setLoyaltyData(loyRes.data.loyalty);
       }
-      const rewardsRes = await axios.get(`${backendUrl}/api/marketing-cards/customer/rewards`, { headers: { token } });
+      const rewardsRes = platformFeatures?.marketingCardsEnabled
+        ? await axios.get(`${backendUrl}/api/marketing-cards/customer/rewards`, { headers: { token } })
+        : { data: { success: false } };
       if (rewardsRes.data.success) {
         const rewards = rewardsRes.data.rewards || [];
         setClaimedCardRewards(rewards);
         setSelectedCardRewardId((currentId) => currentId || rewards.find(
-          (reward) => reward.benefit?.benefitType === "DISCOUNT"
+          (reward) => ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
         )?.cardId || "");
       }
     } catch (err) {
@@ -293,179 +366,225 @@ const PlaceOrder = () => {
       navigate("/login", { state: { from: "/place-order" } });
       return;
     }
-    fetchUserProfile();
-  }, [token]);
+    if (platformFeatures) fetchUserProfile();
+  }, [token, platformFeatures]);
 
   useEffect(() => {
     if (!rewardsInitialized || rewardChoice) return;
-    const hasCardReward = claimedCardRewards.some((reward) => reward.benefit?.benefitType === "DISCOUNT");
-    const hasLoyaltyReward = Boolean(loyaltyData?.activeReward?.isEligible);
-    setRewardChoice(hasCardReward ? "CARD" : hasLoyaltyReward ? "LOYALTY" : "NONE");
-  }, [claimedCardRewards, loyaltyData, rewardChoice, rewardsInitialized]);
+    const hasCardReward = claimedCardRewards.some((reward) => (
+      ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
+    ));
+    setRewardChoice(hasCardReward ? "CARD" : "NONE");
+  }, [claimedCardRewards, rewardChoice, rewardsInitialized]);
 
   useEffect(() => {
-    const fetchDistrictBranches = async () => {
-      if (!formData.province || !formData.district) {
-        setNcmBranches([]);
-        setCoveredAreas([]);
-        return;
-      }
-      setLoadingNcmBranches(true);
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { province: formData.province, district: formData.district },
-        });
-        setNcmBranches(response.data.success ? response.data.branches || [] : []);
-      } catch (error) {
-        setNcmBranches([]);
-        console.error("Failed to load NCM branches for district", error);
-      } finally {
-        setLoadingNcmBranches(false);
-      }
-    };
+    if (hasComboBundle || cartPricingItems.length === 0) {
+      setLocationPriceResult({
+        key: checkoutPriceKey,
+        status: "idle",
+        quote: null,
+        error: "",
+      });
+      return undefined;
+    }
 
-    fetchDistrictBranches();
-  }, [backendUrl, formData.province, formData.district]);
-
-  useEffect(() => {
-    const fetchCoveredAreas = async () => {
-      if (!formData.city) {
-        setCoveredAreas([]);
-        return;
-      }
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { branch: formData.city, district: formData.district, province: formData.province },
-        });
-        setCoveredAreas(response.data.success ? response.data.coveredAreas || [] : []);
-      } catch (error) {
-        setCoveredAreas([]);
-      }
-    };
-    fetchCoveredAreas();
-  }, [backendUrl, formData.city, formData.district, formData.province]);
-
-  useEffect(() => {
-    if (comboBundleData || cartPricingItems.length === 0 || !formData.province || !formData.district) {
-      setLocationPriceQuote(null);
-      setLocationPriceStatus(comboBundleData ? "idle" : cartPricingItems.length === 0 ? "idle" : "error");
+    if (!formData.province?.trim() || !formData.district?.trim()) {
+      setLocationPriceResult({
+        key: checkoutPriceKey,
+        status: "error",
+        quote: null,
+        error: "Select a province and district to verify checkout pricing.",
+      });
       return undefined;
     }
 
     let cancelled = false;
-    setLocationPriceStatus("loading");
+    setLocationPriceResult({
+      key: checkoutPriceKey,
+      status: "loading",
+      quote: null,
+      error: "",
+    });
     axios.post(`${backendUrl}/api/product/resolve-prices`, {
       items: cartPricingItems,
       province: formData.province,
       district: formData.district,
-      eligibilityMode: "WHOLE_BASKET",
+      ncmBranch: formData.city || formData.ncmBranch || "",
     }).then((response) => {
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to resolve the delivery-location price");
       if (!cancelled) {
-        setLocationPriceQuote({ key: checkoutPriceKey, ...response.data });
-        setLocationPriceStatus("ready");
+        setLocationPriceResult({
+          key: checkoutPriceKey,
+          status: "ready",
+          quote: response.data,
+          error: "",
+        });
       }
     }).catch((error) => {
       if (!cancelled) {
-        setLocationPriceQuote(null);
-        setLocationPriceStatus("error");
+        console.error("Failed to verify checkout pricing:", error);
+        setLocationPriceResult({
+          key: checkoutPriceKey,
+          status: "error",
+          quote: null,
+          error: error.response?.data?.message || "Could not reach the server to verify checkout pricing.",
+        });
       }
     });
 
     return () => { cancelled = true; };
-  }, [backendUrl, checkoutPriceKey, comboBundleData?.id]);
+  }, [
+    backendUrl,
+    cartPricingItems,
+    checkoutPriceKey,
+    formData.city,
+    formData.district,
+    formData.ncmBranch,
+    formData.province,
+    hasComboBundle,
+    locationPriceRetry,
+  ]);
 
   // Recalculate fee & loyalty rewards whenever district, province, shippingConfig or loyalty changes
   useEffect(() => {
     let isCancelled = false;
-    const updateRates = async () => {
-      const subtotal = orderSubtotal;
-      const district = formData.district || "Kathmandu";
-      const province = formData.province || "Bagmati Province";
-
-      let serverFee = 120;
-      let serverLabel = "Outside District Delivery";
-
-      if (calculateShippingRate) {
-        const rateResult = await calculateShippingRate(district, province, subtotal);
-        if (!isCancelled && rateResult) {
-          serverFee = rateResult.fee !== undefined ? rateResult.fee : 120;
-          serverLabel = rateResult.label || "Standard Shipping";
-        }
-      } else {
-        serverFee = calculateDeliveryFee ? calculateDeliveryFee(district, subtotal) : 50;
+    const fetchQuote = async () => {
+      if (!formData.province || !formData.district || shippingQuoteItems.length === 0) {
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "idle",
+          error: "",
+          stockShortages: [],
+          quote: null,
+        });
+        return;
       }
 
-      if (isCancelled) return;
+      setShippingQuoteResult({
+        key: shippingQuoteKey,
+        status: "loading",
+        error: "",
+        stockShortages: [],
+        quote: null,
+      });
 
-      let fee = serverFee;
-      let tierLabel = serverLabel;
-
-      // ---- Modular loyalty reward resolution ----
-      let isLoyaltyFreeShipping = false;
-      let discAmount = 0;
-      let discLabel = "";
-      let giftInfo = null;
-
-      if (rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible) {
-        const act = loyaltyData.activeReward;
-        const lvl = loyaltyData.currentLevel;
-        const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
-
-        // Free Delivery
-        if (act.freeShipping) {
-          isLoyaltyFreeShipping = true;
-          fee = 0;
-          tierLabel = `Free Delivery · ${lvl.name} (${usageText})`;
+      try {
+        const quote = await calculateShippingRate(
+          formData.district,
+          formData.province,
+          orderSubtotal,
+          shippingQuoteItems,
+          formData.city || formData.ncmBranch || "",
+          deliveryType
+        );
+        if (!quote?.probableDistributor && !quote?.splitShipment) {
+          throw new Error("A distributor for this cart and delivery location could not be confirmed.");
         }
-
-        // Price Discount
-        if (Number(act.discountAmount) > 0) {
-          discAmount = Math.min(subtotal, Number(act.discountAmount));
-          const parts = [];
-          if (act.freeShipping) parts.push("Free Delivery");
-          parts.push(`Rs. ${discAmount} Off`);
-          discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
-        } else if (act.freeShipping) {
-          discLabel = `${lvl.name} · Free Delivery (${usageText})`;
+        if (quote?.splitShipment && (!Array.isArray(quote.shipments) || quote.shipments.length < 2)) {
+          throw new Error("The split-shipment quote did not include at least two confirmed distributor hubs.");
         }
-
-        // Gift / Letter / Custom Perk
-        if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
-          giftInfo = {
-            amount: Number(act.giftAmount || 0),
-            description: act.giftDescription || "",
-            letterIncluded: Boolean(act.letterIncluded),
-            customPerk: act.customPerk || "",
-          };
+        if (!Number.isFinite(Number(quote.fee)) || Number(quote.fee) < 0) {
+          throw new Error("The shipping quote returned an invalid delivery charge.");
         }
+        if (!isCancelled) {
+          setShippingQuoteResult({
+            key: shippingQuoteKey,
+            status: "ready",
+            error: "",
+            stockShortages: [],
+            quote,
+          });
+        }
+      } catch (error) {
+        if (isCancelled) return;
+        if (error.code !== "INSUFFICIENT_DISTRIBUTOR_STOCK") {
+          console.error("Failed to fetch a distributor-based shipping quote:", error);
+        }
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "error",
+          error: error.message || "Unable to calculate delivery for this address.",
+          stockShortages: error.stockShortages || [],
+          quote: null,
+        });
       }
-
-      setShippingTierLabel(tierLabel);
-      setDynamicDeliveryFee(fee);
-      setLoyaltyDiscountAmount(discAmount);
-      setLoyaltyDiscountLabel(discLabel);
-      setLoyaltyGiftInfo(giftInfo);
     };
 
-    updateRates();
+    fetchQuote();
 
     return () => {
       isCancelled = true;
     };
-  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData, orderSubtotal, rewardChoice]);
+  }, [shippingQuoteKey, shippingQuoteRetry, calculateShippingRate, deliveryType]);
+
+  useEffect(() => {
+    if (shippingQuoteResult.key !== shippingQuoteKey || shippingQuoteResult.status !== "ready" || !shippingQuoteResult.quote) {
+      setDynamicDeliveryFee(undefined);
+      setShippingTierLabel("");
+      setLoyaltyDiscountAmount(0);
+      setLoyaltyDiscountLabel("");
+      setLoyaltyGiftInfo(null);
+      return;
+    }
+
+    const subtotal = orderSubtotal;
+    const quote = shippingQuoteResult.quote;
+    let fee = Number(quote.fee);
+    let tierLabel = `${quote.label || "Standard Shipping"}${
+      quote.splitShipment ? " · multiple packages" : ""
+    }`;
+    let discAmount = 0;
+    let discLabel = "";
+    let giftInfo = null;
+
+    if (rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible) {
+      const act = loyaltyData.activeReward;
+      const lvl = loyaltyData.currentLevel;
+      const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
+
+      if (act.freeShipping) {
+        fee = 0;
+        tierLabel = `Free Delivery · ${lvl.name} (${usageText})`;
+      }
+
+      if (Number(act.discountAmount) > 0) {
+        discAmount = Math.min(subtotal, Number(act.discountAmount));
+        const parts = [];
+        if (act.freeShipping) parts.push("Free Delivery");
+        parts.push(`Rs. ${discAmount} Off`);
+        discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
+      } else if (act.freeShipping) {
+        discLabel = `${lvl.name} · Free Delivery (${usageText})`;
+      }
+
+      if (act.letterIncluded || act.customPerk) {
+        giftInfo = {
+          amount: 0,
+          description: "",
+          letterIncluded: Boolean(act.letterIncluded),
+          customPerk: act.customPerk || "",
+        };
+      }
+    }
+
+    setShippingTierLabel(tierLabel);
+    setDynamicDeliveryFee(fee);
+    setLoyaltyDiscountAmount(discAmount);
+    setLoyaltyDiscountLabel(discLabel);
+    setLoyaltyGiftInfo(giftInfo);
+  }, [shippingQuoteResult, shippingQuoteKey, orderSubtotal, rewardChoice, loyaltyData]);
 
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
 
     if (name === "province") {
-      const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
-      setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "", street: "" }));
+      const nextDistrict = getDistrictsForProvince(locationLookups, value)[0] || "";
+      setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "" }));
       return;
     }
 
     if (name === "district") {
-      setFormData((data) => ({ ...data, district: value, city: "", ncmBranch: "", street: "" }));
+      setFormData((data) => ({ ...data, district: value, city: "", ncmBranch: "" }));
       return;
     }
 
@@ -476,13 +595,20 @@ const PlaceOrder = () => {
 
     // Keep the submitted branch synchronized with the live NCM selection.
     if (name === "city") {
-      const cityInfo = getCityInfo(value);
+      const branchInfo = ncmBranches.find((branch) => branch.name === value);
       setFormData((data) => ({
         ...data,
         city: value,
         ncmBranch: value,
-        street: "",
-        state: cityInfo?.province || data.state,
+        state: branchInfo?.province || data.state,
+      }));
+      return;
+    }
+
+    if (name === "street") {
+      setFormData((data) => ({
+        ...data,
+        street: sanitizeInput(value, { stripAllHtml: true }).slice(0, 255),
       }));
       return;
     }
@@ -493,20 +619,43 @@ const PlaceOrder = () => {
     }));
   };
 
-  // Handle map location selected
-  const handleMapLocationSelect = (loc) => {
+  const handleMapLocationSelect = (location) => {
+    const province = locationLookups?.provinces?.find(
+      (value) => normalizeMapLocationName(value) === normalizeMapLocationName(location.state)
+    ) || formData.province;
+    const districts = getDistrictsForProvince(locationLookups, province);
+    const selectedDistrict = districts.find(
+      (value) => normalizeMapLocationName(value) === normalizeMapLocationName(location.district)
+    ) || (province === formData.province && districts.includes(formData.district)
+      ? formData.district
+      : "");
+    const branches = getBranchesForLocation(locationLookups, province, selectedDistrict);
+    const selectedBranch = branches.find(
+      (branch) => normalizeMapLocationName(branch.name) === normalizeMapLocationName(location.city)
+    )?.name || branches.find(
+      (branch) => branch.name === formData.city
+    )?.name || "";
+    const street = sanitizeInput(
+      location.addressSnippet || location.area || location.city || "",
+      { stripAllHtml: true }
+    ).slice(0, 255);
+    const landmark = sanitizeInput(
+      location.area || location.city || location.addressSnippet || "",
+      { stripAllHtml: true }
+    ).slice(0, 255);
+
     setSelectedSavedId(null);
     setFormData((prev) => ({
       ...prev,
-      province: loc.state || prev.province,
-      state: loc.state || prev.state,
-      district: loc.city || prev.district,
-      city: loc.city || prev.city,
-      ncmBranch: "",
-      street: loc.addressSnippet || loc.city || prev.street,
-      landmark: loc.addressSnippet || `${loc.city || "Selected map location"} (${loc.lat}, ${loc.lng})`,
+      province,
+      state: province,
+      district: selectedDistrict,
+      city: selectedBranch,
+      ncmBranch: selectedBranch,
+      street,
+      landmark,
     }));
-    toast.success(`Location set: ${loc.city}, ${loc.state}`);
+    toast.success("Map location added to your delivery address.");
   };
 
   // Select a saved address
@@ -553,15 +702,23 @@ const PlaceOrder = () => {
 
   const onSubmitHandler = async (event) => {
     event.preventDefault();
+    if (submittingRef.current) return;
     if (!token) {
       toast.error("Please login to place your order");
       navigate("/login");
       return;
     }
 
+    if (shippingQuoteStatus !== "ready") {
+      toast.error(shippingQuoteStatus === "error"
+        ? shippingQuoteError || "Unable to verify shipping for this delivery location. Please retry."
+        : "Confirming the distributor and shipping fee. Please wait.");
+      return;
+    }
+
     if (!comboBundleData && cartPricingItems.length > 0 && !hasCurrentLocationQuote) {
       toast.error(locationPriceStatus === "error"
-        ? "Unable to verify the price for this delivery location. Please retry before confirming."
+        ? locationPriceError || "Unable to verify the price for this delivery location. Please retry before confirming."
         : "Verifying the delivery-location price. Please wait before confirming.");
       return;
     }
@@ -579,8 +736,13 @@ const PlaceOrder = () => {
       toast.error("Please provide a valid mobile number starting with 98 or 97");
       return;
     }
-    if (!formData.street.trim()) {
-      toast.error("Please select an NCM covered area");
+    const street = sanitizeInput(formData.street, { stripAllHtml: true });
+    if (!street) {
+      toast.error("Please enter your street address or neighborhood.");
+      return;
+    }
+    if (street.length > 255) {
+      toast.error("Street address must be 255 characters or fewer.");
       return;
     }
     if (!formData.landmark.trim()) {
@@ -591,12 +753,8 @@ const PlaceOrder = () => {
       toast.error("Please select your province, district, and NCM delivery town");
       return;
     }
-    if (!ncmBranches.includes(formData.city)) {
+    if (!ncmBranches.some((branch) => branch.name.toLocaleLowerCase() === formData.city.toLocaleLowerCase())) {
       toast.error("Please select a valid NCM branch for this district");
-      return;
-    }
-    if (!coveredAreas.includes(formData.street)) {
-      toast.error("Please select a covered area provided by NCM");
       return;
     }
     if (rewardChoice === "CARD" && !selectedCardReward) {
@@ -605,6 +763,7 @@ const PlaceOrder = () => {
     }
 
     try {
+      submittingRef.current = true;
       setSubmitting(true);
       let orderItems = [];
       if (comboBundleData) {
@@ -655,10 +814,11 @@ const PlaceOrder = () => {
       let orderData = {
         address: {
           ...formData,
-          street: formData.street,
+          street,
           province: formData.province,
           district: formData.district,
           ncmBranch: formData.ncmBranch || formData.city,
+          deliveryType: shippingQuoteResult.quote.deliveryType || deliveryType,
           deliveryInstruction: formData.deliveryInstruction.trim(),
           country: "Nepal",
         },
@@ -671,7 +831,7 @@ const PlaceOrder = () => {
           },
         }),
         deliveryFee: dynamicDeliveryFee,
-        amount: orderSubtotal + dynamicDeliveryFee - loyaltyDiscountAmount - cardRewardDiscountAmount,
+        amount: roundOrderTotal(orderSubtotal + dynamicDeliveryFee - loyaltyDiscountAmount - cardRewardDiscountAmount),
         rewardChoice: rewardChoice || "NONE",
         ...(rewardChoice === "CARD" && { marketingCardId: selectedCardReward.cardId }),
       };
@@ -693,7 +853,11 @@ const PlaceOrder = () => {
             if (getProductsData) {
               await getProductsData();
             }
-            toast.success("Order Placed Successfully!");
+            if (response.data.allocation?.status === "PENDING_ASSIGNMENT") {
+              toast.warning(response.data.message || "Order placed, but distributor assignment is pending.");
+            } else {
+              toast.success(response.data.message || "Order placed and assigned successfully.");
+            }
             navigate("/orders");
           } else {
             toast.error(response.data.message);
@@ -705,6 +869,7 @@ const PlaceOrder = () => {
       console.log(error);
       toast.error(error.response?.data?.message || error.message);
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -721,7 +886,6 @@ const PlaceOrder = () => {
             <div className="text-xl sm:text-2xl">
               <Title text1={"DELIVERY"} text2={"INFORMATION"} />
             </div>
-            {/* Map / GPS Picker Button */}
             <button
               type="button"
               onClick={() => setIsMapOpen(true)}
@@ -731,7 +895,7 @@ const PlaceOrder = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              <span>Choose on Map / GPS</span>
+              <span>Choose on Map</span>
             </button>
           </div>
 
@@ -861,7 +1025,7 @@ const PlaceOrder = () => {
                 onChange={onChangeHandler}
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
               >
-                {NEPAL_PROVINCES.map((province) => (
+                {(locationLookups?.provinces || []).map((province) => (
                   <option key={province} value={province}>{province}</option>
                 ))}
               </select>
@@ -878,7 +1042,8 @@ const PlaceOrder = () => {
                 onChange={onChangeHandler}
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
               >
-                {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((district) => (
+                <option value="">Select district</option>
+                {getDistrictsForProvince(locationLookups, formData.province).map((district) => (
                   <option key={district} value={district}>{district}</option>
                 ))}
               </select>
@@ -895,7 +1060,7 @@ const PlaceOrder = () => {
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
               >
                 <option value="">{loadingNcmBranches ? "Loading NCM branches..." : "Select NCM branch"}</option>
-                {ncmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                {ncmBranches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
               </select>
               {!loadingNcmBranches && ncmBranches.length === 0 && (
                 <p className="text-[10px] text-rose-600 mt-1">NCM has no branch listed for this district.</p>
@@ -903,25 +1068,20 @@ const PlaceOrder = () => {
             </div>
           </div>
 
-          {/* Covered area selection */}
+          {/* Customer delivery address */}
           <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Street / Covered Area *</label>
-            <select
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Street Address / Neighborhood *</label>
+            <input
+              type="text"
               required
+              maxLength={255}
               name="street"
               value={formData.street}
               onChange={onChangeHandler}
-              disabled={!formData.city || coveredAreas.length === 0}
-              className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
-            >
-              <option value="">{formData.city && coveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select a covered area"}</option>
-              {coveredAreas.map((area) => (
-                <option key={area} value={area}>{area}</option>
-              ))}
-            </select>
-            {formData.city && coveredAreas.length === 0 && (
-              <p className="text-[11px] text-rose-600 mt-1">This branch has no covered areas in NCM. Choose another branch.</p>
-            )}
+              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
+              placeholder="Enter your street, neighborhood, or tole"
+              autoComplete="street-address"
+            />
           </div>
 
           {/* Precise nearest location */}
@@ -966,10 +1126,19 @@ const PlaceOrder = () => {
                 {!comboBundleData && cartPricingItems.length > 0 && (
                   <p className={`mt-2 text-[11px] ${locationPriceStatus === "error" ? "text-rose-700" : "text-slate-500"}`}>
                     {locationPriceStatus === "loading" && "Verifying local stock and checkout prices…"}
-                    {locationPriceStatus === "error" && "Price verification failed. Retry before confirming your order."}
-                    {hasCurrentLocationQuote && (locationPriceQuote.locationDiscountManufacturerId
-                      ? "Local hub stock verified; qualifying location discounts are applied."
-                      : "No mapped local hub can fulfill the full cart; standard product pricing applies.")}
+                    {locationPriceStatus === "error" && (
+                      <span>
+                        {locationPriceError || "Price verification failed."}{" "}
+                        <button
+                          type="button"
+                          className="font-semibold underline"
+                          onClick={() => setLocationPriceRetry((retry) => retry + 1)}
+                        >
+                          Retry
+                        </button>
+                      </span>
+                    )}
+                    {hasCurrentLocationQuote && locationPricingStatusMessage}
                   </p>
                 )}
                 <div className="mt-3 divide-y divide-gray-100">
@@ -999,7 +1168,7 @@ const PlaceOrder = () => {
                           <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{categoryNames || "Uncategorized"}</p>
                           {entry.product.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{entry.product.description}</p>}
                           <p className="mt-1 text-[10px] text-gray-600">Size {entry.size}{entry.color ? ` · ${entry.color}` : ""} · Qty {entry.quantity}</p>
-                          {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% location discount · price locked at checkout</p>}
+                          {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% place-wise discount · price locked at checkout</p>}
                         </div>
                         <p className="shrink-0 font-bold text-gray-900">Rs. {entry.lineTotal.toLocaleString()}</p>
                       </div>
@@ -1029,7 +1198,13 @@ const PlaceOrder = () => {
                           <span className="min-w-0 flex-1">
                             <span className="block text-xs font-bold text-gray-900">Marketing Card Reward</span>
                             <span className="mt-0.5 block text-[11px] text-gray-600">
-                              {selectedCardReward?.benefit?.name || "Select a claimed reward"} · {selectedCardReward?.benefit?.value}% off
+                              {selectedCardReward?.benefit?.name || "Select a claimed reward"} · {
+                                selectedCardReward?.benefit?.benefitType === "VOUCHER"
+                                  ? `Rs ${selectedCardReward.benefit.value} off`
+                                  : `${selectedCardReward?.benefit?.value}% off`
+                              }{selectedCardReward?.benefit?.benefitType === "DISCOUNT" && selectedCardReward.benefit.maxDiscountAmount
+                                ? ` (up to Rs ${selectedCardReward.benefit.maxDiscountAmount})`
+                                : ""}
                             </span>
                           </span>
                           {rewardChoice === "CARD" && <span className="text-xs font-bold text-orange-700">Selected</span>}
@@ -1047,7 +1222,11 @@ const PlaceOrder = () => {
                           >
                             {checkoutCardRewards.map((reward) => (
                               <option key={reward.cardId} value={reward.cardId}>
-                                {reward.benefit.name} — {reward.benefit.value}% off
+                                {reward.benefit.name} — {
+                                  reward.benefit.benefitType === "VOUCHER"
+                                    ? `Rs ${reward.benefit.value} off`
+                                    : `${reward.benefit.value}% off${reward.benefit.maxDiscountAmount ? ` (up to Rs ${reward.benefit.maxDiscountAmount})` : ""}`
+                                }
                               </option>
                             ))}
                           </select>
@@ -1069,6 +1248,11 @@ const PlaceOrder = () => {
                           <span className="mt-0.5 block text-[11px] text-gray-600">
                             {loyaltyData.activeReward.title} · {loyaltyData.currentLevel?.name}
                           </span>
+                          {Number(loyaltyData.activeReward.giftAmount) > 0 && (
+                            <span className="mt-1 block text-[11px] text-gray-600">
+                              Includes a gift valued exactly Rs. {loyaltyData.activeReward.giftAmount}. If assigned distributors cannot fulfill it, the order proceeds and the gift is carried forward.
+                            </span>
+                          )}
                         </span>
                         {rewardChoice === "LOYALTY" && <span className="text-xs font-bold text-amber-700">Selected</span>}
                       </label>
@@ -1141,21 +1325,8 @@ const PlaceOrder = () => {
                       </div>
                     )}
 
-                    {/* Gift Voucher / Item Perk */}
-                    {(Number(loyaltyData.activeReward.giftAmount) > 0 || loyaltyData.activeReward.giftDescription) && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px] font-bold flex-shrink-0">+</span>
-                        <div className="flex-1">
-                          <span className="font-bold text-indigo-800">Special Gift Included</span>
-                        </div>
-                        {Number(loyaltyData.activeReward.giftAmount) > 0 && (
-                          <span className="font-black text-indigo-700 text-sm">Rs. {loyaltyData.activeReward.giftAmount}</span>
-                        )}
-                      </div>
-                    )}
-
                     {/* Handwritten Letter */}
-                    {loyaltyData.activeReward.letterIncluded && (
+                    {platformFeatures?.lettersEnabled && loyaltyData.activeReward.letterIncluded && (
                       <div className="flex items-center gap-2 text-xs">
                         <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-800 flex items-center justify-center text-[10px] font-bold flex-shrink-0">✉</span>
                         <span className="font-bold text-violet-800">Handwritten Thank-You Letter</span>
@@ -1188,23 +1359,98 @@ const PlaceOrder = () => {
               )}
               {/* ===== END VIP BANNER ===== */}
 
+              {shippingQuoteStatus === "loading" && (
+                <div role="status" className="mb-3 flex items-center gap-2 border border-status-info-border bg-status-info-bg px-3.5 py-3 text-xs text-status-info-text">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-status-info-text/30 border-t-status-info-text" aria-hidden="true" />
+                  <span>Calculating delivery options and charge for this address…</span>
+                </div>
+              )}
+              {shippingQuoteStatus === "error" && (
+                <div role="alert" className="mb-3 border border-status-error-border bg-status-error-bg px-3.5 py-3 text-xs text-status-error-text">
+                  <span>{shippingQuoteError}</span>
+                  {shippingStockShortages.length > 0 && (
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {shippingStockShortages.flatMap((hub) =>
+                        hub.shortages.map((shortage) => {
+                            const product = products.find((item) =>
+                              String(item._id || item.id) === String(shortage.productId)
+                            );
+                            return (
+                              <li key={`${hub.distributor}-${shortage.productId}-${shortage.size}-${shortage.color}`}>
+                                {product?.name || "An item"} ({shortage.size} / {shortage.color || "Default"}): {shortage.availableQuantity} of {shortage.requiredQuantity} available.
+                              </li>
+                            );
+                          })
+                      )}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShippingQuoteRetry((retry) => retry + 1)}
+                    className="ml-2 min-h-11 px-2 font-semibold underline underline-offset-2"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {shippingQuoteStatus === "ready" && shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                <fieldset className="mb-3 rounded-xl border border-gray-200 bg-white p-3.5">
+                  <legend className="px-1 text-xs font-bold text-gray-900">Choose delivery method</legend>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(shippingQuoteResult.quote.deliveryOptions || []).map((option) => (
+                      <label
+                        key={option.type}
+                        className={`flex min-h-12 cursor-pointer items-center gap-2 rounded-lg border p-3 text-xs ${
+                          deliveryType === option.type
+                            ? "border-emerald-600 bg-emerald-50"
+                            : "border-gray-200 hover:border-emerald-300"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="deliveryType"
+                          value={option.type}
+                          checked={deliveryType === option.type}
+                          onChange={() => setDeliveryType(option.type)}
+                          className="accent-emerald-700"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-bold text-gray-900">{option.label}</span>
+                          <span className="block text-[10px] text-gray-600">
+                            {option.type === "Door2Branch"
+                              ? "Collect your parcel from the NCM destination branch."
+                              : "NCM delivers your parcel to the delivery address."}
+                          </span>
+                        </span>
+                        <span className="shrink-0 font-bold text-gray-900">
+                          {Number(option.fee) === 0 ? "FREE" : `Rs. ${Number(option.fee).toLocaleString()}`}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+
               {/* Dynamic Shipping Rate Badge (only shown when NOT a loyalty free delivery) */}
-              {shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
-                <div className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+              {shippingQuoteStatus === "ready" && shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
+                <div className={`mb-3 flex items-center gap-2 border px-3.5 py-3 text-xs font-semibold ${
                   dynamicDeliveryFee === 0
-                    ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
-                    : shippingTierLabel.includes("Inside")
-                    ? "bg-sky-50 border border-sky-200 text-sky-700"
-                    : "bg-amber-50 border border-amber-200 text-amber-700"
+                    ? "border-status-success-border bg-status-success-bg text-status-success-text"
+                    : "border-status-info-border bg-status-info-bg text-status-info-text"
                 }`}>
-                  <span>{shippingTierLabel}</span>
-                  <span className="ml-auto font-bold">
-                    {dynamicDeliveryFee === 0 ? "FREE" : `Rs. ${dynamicDeliveryFee}`}
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.12em] opacity-75">Delivery confirmed</p>
+                    <p>{shippingTierLabel}</p>
+                  </div>
+                  <span className="ml-auto shrink-0 font-bold tabular-nums">
+                    {dynamicDeliveryFee === 0 ? "FREE" : `Rs. ${Number(dynamicDeliveryFee).toLocaleString()}`}
                   </span>
                 </div>
               )}
               <CartTotal
                 subtotalOverride={orderSubtotal}
+                requireQuotedFee
                 deliveryFee={dynamicDeliveryFee}
                 shippingLabel={shippingTierLabel}
                 loyaltyDiscount={rewardChoice === "LOYALTY" ? loyaltyDiscountAmount : 0}
@@ -1256,8 +1502,8 @@ const PlaceOrder = () => {
               <div className="w-full text-end mt-8">
                 <button
                   type="submit"
-                  disabled={submitting}
-                  className="bg-black text-white px-12 py-3.5 text-sm font-semibold rounded-xl hover:bg-gray-800 active:scale-95 transition-all w-full sm:w-auto shadow-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                  disabled={submitting || shippingQuoteStatus !== "ready"}
+                  className="flex min-h-12 w-full items-center justify-center gap-2 bg-[var(--ink)] px-8 py-3.5 text-sm font-semibold uppercase tracking-[0.12em] text-white shadow-card transition-colors hover:bg-[var(--accent)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-12"
                 >
                   {submitting && (
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
@@ -1270,12 +1516,11 @@ const PlaceOrder = () => {
         </div>
       </form>
 
-      {/* Nepal Location Map Modal */}
       <NepalMapModal
         isOpen={isMapOpen}
         onClose={() => setIsMapOpen(false)}
         onLocationSelect={handleMapLocationSelect}
-        initialCity={formData.city}
+        initialCity={formData.city || formData.ncmBranch || formData.district}
       />
     </>
   );

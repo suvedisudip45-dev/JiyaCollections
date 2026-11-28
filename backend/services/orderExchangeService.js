@@ -1,10 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { createExchangeOrder, createOrderComment, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, getOrderStatus } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
+import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
+import { postOrderExchangeAccounting } from "./accountingPostingEngine.js";
+import { validatePaperBillChoice } from "./paperBillService.js";
+import {
+  createReturnExchangeSettlementPayable,
+  postReturnExchangeSettlementAccounting,
+  resolveReturnExchangeSettlementRate,
+} from "./returnExchangeSettlementService.js";
 
-const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
-const REASONS = new Set(["SIZE_OR_FIT", "DEFECTIVE", "WRONG_ITEM", "DAMAGED_IN_TRANSIT", "OTHER"]);
+const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "APPROVED_FOR_DISTRIBUTOR", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
+const REASONS = new Set(["SIZE_OR_FIT", "DEFECTIVE", "WRONG_ITEM", "DAMAGED_IN_TRANSIT", "STITCHING_DEFECT", "THREADING_ISSUE", "OTHER"]);
+const WARRANTY_REASONS = new Set(["STITCHING_DEFECT", "THREADING_ISSUE"]);
 
 const parseArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -117,6 +127,7 @@ const snapshotRequestedItems = (orderItems, requestedItems, priorExchanges) => {
       color: String(item.color || ""),
       quantity: Math.max(0, Number(item.quantity || 0)),
       unitPrice: Number(item.purchasedUnitPrice ?? item.price ?? 0),
+      unitCostPrice: item.unitCostPrice ?? item.agreedUnitCogsVatInclusiveAtAcceptance ?? item.costPrice ?? null,
     };
     const key = itemKey(snapshot);
     const current = purchased.get(key);
@@ -154,15 +165,11 @@ const snapshotRequestedItems = (orderItems, requestedItems, priorExchanges) => {
   });
 };
 
-export const snapshotReplacementItems = ({ orderItems, requestedItems, replacementItems }) => {
-  const requestedByProduct = new Map();
-  for (const item of requestedItems) {
-    requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + Number(item.quantity || 0));
-  }
+export const snapshotReplacementItems = ({ orderItems, requestedItems, replacementItems, catalogProducts }) => {
   const replacements = Array.isArray(replacementItems) && replacementItems.length
     ? replacementItems
     : requestedItems.map((item) => ({ productId: item.productId, size: item.size, color: item.color, quantity: item.quantity }));
-  const replacementByProduct = new Map();
+  const requestedQuantity = requestedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const snapshots = replacements.map((item) => {
     const productId = String(item.productId || "");
     const quantity = Number(item.quantity);
@@ -170,19 +177,24 @@ export const snapshotReplacementItems = ({ orderItems, requestedItems, replaceme
       throw fail("Choose a replacement product and a positive whole-number quantity.", "INVALID_EXCHANGE_REPLACEMENT");
     }
     const purchased = parseArray(orderItems).find((orderItem) => String(orderItem.productId || orderItem._id || orderItem.id || "") === productId);
-    if (!purchased) throw fail("Replacement items must use a product from the original order.", "INVALID_EXCHANGE_REPLACEMENT");
-    replacementByProduct.set(productId, (replacementByProduct.get(productId) || 0) + quantity);
+    const catalogProduct = catalogProducts?.get(productId);
+    if (!purchased && !catalogProduct) throw fail("Replacement items must use an active catalog product.", "INVALID_EXCHANGE_REPLACEMENT");
+    if (catalogProduct && (catalogProduct.costPrice === null || catalogProduct.costPrice === undefined)) {
+      throw fail(`The replacement catalog cost is unavailable for ${catalogProduct.name || productId}.`, "EXCHANGE_COST_SNAPSHOT_MISSING", 409);
+    }
     return {
       productId,
-      name: String(purchased.name || "Product"),
+      name: String(catalogProduct?.name || purchased?.name || "Product"),
       size: String(item.size || ""),
       color: String(item.color || ""),
       quantity,
-      unitPrice: Number(purchased.purchasedUnitPrice ?? purchased.price ?? 0),
+      unitPrice: Number(catalogProduct?.price ?? purchased?.purchasedUnitPrice ?? purchased?.price ?? 0),
+      unitCostPrice: catalogProduct?.costPrice ?? purchased?.unitCostPrice ?? purchased?.agreedUnitCogsVatInclusiveAtAcceptance ?? purchased?.costPrice ?? null,
     };
   });
-  if (requestedByProduct.size !== replacementByProduct.size || [...requestedByProduct].some(([productId, quantity]) => replacementByProduct.get(productId) !== quantity)) {
-    throw fail("Replacement quantities must match the returned quantities for each product.", "EXCHANGE_REPLACEMENT_QUANTITY_MISMATCH");
+  const replacementQuantity = snapshots.reduce((sum, item) => sum + item.quantity, 0);
+  if (requestedQuantity !== replacementQuantity) {
+    throw fail("Replacement quantities must match the total returned quantity.", "EXCHANGE_REPLACEMENT_QUANTITY_MISMATCH");
   }
   return snapshots;
 };
@@ -229,6 +241,59 @@ const adjustReplacementInventory = async ({ tx, manufacturerId, items, direction
   }
 };
 
+const reserveDistributorReplacementInventory = async ({ tx, distributorId, items }) => {
+  if (!distributorId) throw fail("The exchange has no distributor stock owner.", "EXCHANGE_DISTRIBUTOR_MISSING", 409);
+  const quantities = new Map();
+  for (const item of items) {
+    const sizeKey = normalized(item.size || "Standard").replace(/\s+/g, " ");
+    const colorKey = normalized(item.color || "Standard").replace(/\s+/g, " ");
+    const key = JSON.stringify([item.productId, sizeKey, colorKey]);
+    const existing = quantities.get(key);
+    if (existing) existing.quantity += Number(item.quantity || 0);
+    else quantities.set(key, { productId: item.productId, sizeKey, colorKey, quantity: Number(item.quantity || 0) });
+  }
+
+  const reservations = [];
+  for (const item of quantities.values()) {
+    const sku = await tx.inventorySku.findUnique({
+      where: { productId_sizeKey_colorKey: { productId: item.productId, sizeKey: item.sizeKey, colorKey: item.colorKey } },
+      select: { id: true, isActive: true },
+    });
+    if (!sku?.isActive) {
+      throw fail(`Replacement SKU is missing or inactive for product ${item.productId}.`, "EXCHANGE_REPLACEMENT_SKU_MISSING", 409);
+    }
+    const balances = await tx.inventoryBalance.findMany({
+      where: {
+        inventorySkuId: sku.id,
+        location: { distributorId, kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
+      },
+      orderBy: { locationId: "asc" },
+    });
+    let remaining = item.quantity;
+    for (const balance of balances) {
+      const available = balance.quantityOnHand - balance.reservedQuantity;
+      const reserveQuantity = Math.min(remaining, available);
+      if (reserveQuantity <= 0) continue;
+      const updated = await tx.inventoryBalance.updateMany({
+        where: {
+          id: balance.id,
+          quantityOnHand: balance.quantityOnHand,
+          reservedQuantity: balance.reservedQuantity,
+        },
+        data: { reservedQuantity: { increment: reserveQuantity } },
+      });
+      if (updated.count !== 1) throw fail("Distributor stock changed while approving the exchange. Retry the review.", "EXCHANGE_STOCK_CONFLICT", 409);
+      reservations.push({ productId: item.productId, inventorySkuId: sku.id, locationId: balance.locationId, quantity: reserveQuantity });
+      remaining -= reserveQuantity;
+      if (remaining === 0) break;
+    }
+    if (remaining > 0) {
+      throw fail(`Insufficient distributor replacement stock for product ${item.productId}.`, "EXCHANGE_REPLACEMENT_STOCK_UNAVAILABLE", 409);
+    }
+  }
+  return reservations;
+};
+
 export const createCustomerExchangeRequest = async ({ customerId, orderId, requestKey, reasonCode, reasonDetails, items, replacementItems, actorRole = "CUSTOMER", actorId }) => {
   const code = String(reasonCode || "").trim().toUpperCase();
   const details = String(reasonDetails || "").trim();
@@ -257,6 +322,27 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
     if (!order) throw fail("Order not found.", "ORDER_NOT_FOUND", 404);
     const delivered = normalized(order.status) === "delivered" || order.deliveryOrder?.state === "DELIVERED";
     if (!delivered) throw fail("Exchanges can only be requested for delivered orders.", "ORDER_NOT_DELIVERED", 409);
+    const warrantyClaim = WARRANTY_REASONS.has(code);
+    const deliveryDate = order.deliveryOrder?.deliveredAt || Number(order.date);
+    const deliveredAt = new Date(deliveryDate);
+    if (Number.isNaN(deliveredAt.getTime())) {
+      throw fail("The delivered order has no valid delivery date for exchange eligibility.", "EXCHANGE_DELIVERY_DATE_MISSING", 409);
+    }
+    const orderAgeDays = (Date.now() - deliveredAt.getTime()) / (1000 * 60 * 60 * 24);
+    const maxAllowedDays = warrantyClaim ? 90 : 7;
+    if (orderAgeDays < 0 || orderAgeDays > maxAllowedDays) {
+      throw fail(
+        `Exchange window expired (${Math.max(0, Math.floor(orderAgeDays))} days elapsed; policy allows ${maxAllowedDays} days).`,
+        "EXCHANGE_WINDOW_EXPIRED",
+        409,
+      );
+    }
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
+    const delivery = resolveReturnExchangeRoute({ assignment, deliveryOrder: order.deliveryOrder });
+    if (!delivery) throw fail("The delivered order has no supported exchange route.", "EXCHANGE_ROUTE_UNAVAILABLE", 409);
+    if (delivery.route === "NCM" && (!Number.isInteger(Number(order.deliveryOrder?.ncmOrderId)) || Number(order.deliveryOrder.ncmOrderId) <= 0)) {
+      throw fail("The original delivery has no NCM order ID, so a carrier exchange cannot be created.", "NCM_ORDER_ID_MISSING", 409);
+    }
 
     const cardId = order.marketingCardOrder?.cardId || null;
     if (cardId) {
@@ -277,14 +363,76 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       select: { items: true },
     });
     const requestedItems = snapshotRequestedItems(order.items, items || [], existingRequests);
-    const requestedReplacements = snapshotReplacementItems({ orderItems: order.items, requestedItems, replacementItems });
-    await adjustReplacementInventory({ tx, manufacturerId: order.manufacturerId, items: requestedReplacements, direction: "validate" });
-    let priceDifference = 0;
-    for (const item of requestedReplacements) {
-      const product = await tx.product.findUnique({ where: { id: item.productId }, select: { price: true } });
-      const currentUnitPrice = Number(product?.price ?? item.unitPrice);
-      priceDifference += (currentUnitPrice - Number(item.unitPrice || 0)) * Number(item.quantity || 0);
+    const requestedProductsMissingCost = [...new Set(
+      requestedItems.filter((item) => item.unitCostPrice === null || item.unitCostPrice === undefined)
+        .map((item) => item.productId),
+    )];
+    if (requestedProductsMissingCost.length) {
+      const costProducts = await tx.product.findMany({
+        where: { id: { in: requestedProductsMissingCost } },
+        select: { id: true, costPrice: true },
+      });
+      const catalogCosts = new Map(costProducts.map((product) => [product.id, product.costPrice]));
+      for (const item of requestedItems) {
+        if (item.unitCostPrice !== null && item.unitCostPrice !== undefined) continue;
+        const catalogCost = catalogCosts.get(item.productId);
+        if (catalogCost === null || catalogCost === undefined) {
+          throw fail(`The original cost snapshot is unavailable for ${item.name || item.productId}.`, "EXCHANGE_COST_SNAPSHOT_MISSING", 409);
+        }
+        item.unitCostPrice = catalogCost;
+      }
     }
+    const replacementInputs = Array.isArray(replacementItems) && replacementItems.length
+      ? replacementItems
+      : requestedItems.map((item) => ({ productId: item.productId, size: item.size, color: item.color, quantity: item.quantity }));
+    const replacementProductIds = [...new Set(replacementInputs.map((item) => String(item.productId || "")).filter(Boolean))];
+    const activeProducts = await tx.product.findMany({
+      where: {
+        id: { in: replacementProductIds },
+        published: true,
+        deletedAt: null,
+        collaborationLink: null,
+      },
+      select: { id: true, name: true, price: true, costPrice: true },
+    });
+    if (activeProducts.length !== replacementProductIds.length) {
+      throw fail("Choose active catalog products for all replacement items.", "INVALID_EXCHANGE_REPLACEMENT");
+    }
+    const requestedReplacements = snapshotReplacementItems({
+      orderItems: order.items,
+      requestedItems,
+      replacementItems,
+      catalogProducts: new Map(activeProducts.map((product) => [product.id, product])),
+    });
+    if (delivery.route === "NCM" && order.manufacturerId) {
+      await adjustReplacementInventory({ tx, manufacturerId: order.manufacturerId, items: requestedReplacements, direction: "validate" });
+    }
+    const originalTotalValue = requestedItems.reduce(
+      (total, item) => total.plus(new Prisma.Decimal(String(item.unitPrice)).mul(item.quantity)),
+      new Prisma.Decimal(0),
+    ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    const replacementTotalValue = requestedReplacements.reduce(
+      (total, item) => total.plus(new Prisma.Decimal(String(item.unitPrice)).mul(item.quantity)),
+      new Prisma.Decimal(0),
+    ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    const priceDifference = replacementTotalValue.minus(originalTotalValue)
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    const settlementDistributorId = delivery.route === "NCM"
+      ? assignment?.distributorId || null
+      : delivery.distributorId;
+    if (delivery.route === "NCM" && !priceDifference.isZero() && !settlementDistributorId) {
+      throw fail("An assigned distributor is required to settle an NCM exchange price difference.", "EXCHANGE_SETTLEMENT_DISTRIBUTOR_MISSING", 409);
+    }
+    const requestedQuantitiesByProduct = new Map();
+    const replacementQuantitiesByProduct = new Map();
+    for (const item of requestedItems) {
+      requestedQuantitiesByProduct.set(item.productId, (requestedQuantitiesByProduct.get(item.productId) || 0) + item.quantity);
+    }
+    for (const item of requestedReplacements) {
+      replacementQuantitiesByProduct.set(item.productId, (replacementQuantitiesByProduct.get(item.productId) || 0) + item.quantity);
+    }
+    const variantOnly = requestedQuantitiesByProduct.size === replacementQuantitiesByProduct.size
+      && [...requestedQuantitiesByProduct].every(([productId, quantity]) => replacementQuantitiesByProduct.get(productId) === quantity);
     const [customer, manufacturer] = await Promise.all([
       tx.user.findUnique({ where: { id: customerId }, select: { name: true, phone: true } }),
       order.manufacturerId ? tx.manufacturer.findUnique({ where: { id: order.manufacturerId }, select: { name: true } }) : null,
@@ -299,13 +447,31 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
         customerName: customer?.name || "Customer",
         customerPhone: customer?.phone || "",
         manufacturerId: order.manufacturerId || null,
+        distributorId: delivery.distributorId,
+        settlementDistributorId,
+        deliveryRoute: delivery.route,
         manufacturerName: manufacturer?.name || null,
         cardId,
         reasonCode: code,
         reasonDetails: details || null,
         items: requestedItems,
         replacementItems: requestedReplacements,
-        priceDifference: Number(priceDifference.toFixed(2)),
+        exchangeType: warrantyClaim
+          ? "WARRANTY_REPAIR_SWAP"
+          : variantOnly
+            ? "VARIANT_SWAP"
+            : "DIFFERENT_PRODUCT",
+        warrantyClaim,
+        warrantyReason: warrantyClaim ? code : null,
+        originalTotalValue,
+        replacementTotalValue,
+        priceDifference,
+        priceDifferenceSettlement: priceDifference.greaterThan(0)
+          ? delivery.route === "NCM" ? "DISTRIBUTOR_COLLECTION" : "DISTRIBUTOR_COD"
+          : priceDifference.lessThan(0)
+            ? "DISTRIBUTOR_PAYABLE"
+            : "NOT_APPLICABLE",
+        priceDifferenceCodAmount: priceDifference.greaterThan(0) ? priceDifference : new Prisma.Decimal(0),
         status: "REQUESTED",
       },
     });
@@ -327,7 +493,14 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       actorId: actorId || customerId,
       actorRole,
       reason: details || code,
-      metadata: { reasonCode: code, items: requestedItems, replacementItems: requestedReplacements, priceDifference: Number(priceDifference.toFixed(2)) },
+      metadata: {
+        reasonCode: code,
+        items: requestedItems,
+        replacementItems: requestedReplacements,
+        priceDifference: Number(priceDifference.toFixed(2)),
+        deliveryRoute: delivery.route,
+        distributorId: delivery.distributorId,
+      },
       idempotencyKey: `EXCHANGE:${created.id}:REQUESTED`,
     });
     return { request: created, duplicate: false };
@@ -368,8 +541,16 @@ export const listCustomerExchangeRequests = ({ customerId, orderId }) => prisma.
     items: true,
     replacementItems: true,
     priceDifference: true,
-    replacementItems: true,
-    priceDifference: true,
+    exchangeType: true,
+    warrantyClaim: true,
+    warrantyReason: true,
+    originalTotalValue: true,
+    replacementTotalValue: true,
+    priceDifferenceSettlement: true,
+    priceDifferenceCodAmount: true,
+    exchangeJournalEntryId: true,
+    scrapJournalEntryId: true,
+    taxCreditNoteNumber: true,
     status: true,
     decisionReason: true,
     decidedAt: true,
@@ -414,6 +595,10 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
         customer: { select: { id: true, name: true, phone: true, email: true } },
         events: { orderBy: { occurredAt: "asc" } },
         ncmAttempts: { orderBy: { attemptNumber: "asc" } },
+        distributorCashEvents: {
+          where: { eventType: { in: ["EXCHANGE_UPGRADE_COLLECTION", "EXCHANGE_DOWNGRADE_REFUND"] } },
+          orderBy: { occurredAt: "desc" },
+        },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -423,6 +608,16 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
   ]);
 
   const customerIds = [...new Set(requests.map((request) => request.customerId))];
+  const assignments = requests.length ? await prisma.orderAssignment.findMany({
+    where: { orderId: { in: requests.map(({ orderId }) => orderId) } },
+    select: {
+      orderId: true,
+      paperBillRequested: true,
+      paperBillNumber: true,
+      paperBillDocumentType: true,
+    },
+  }) : [];
+  const assignmentsByOrder = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
   const history = customerIds.length ? await prisma.orderExchangeRequest.findMany({
     where: { customerId: { in: customerIds }, status: { in: ["RETURN_RECEIVED", "INSPECTED", "COMPLETED"] } },
     select: { customerId: true, items: true },
@@ -442,17 +637,121 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
       returnedUnitsByCustomer.set(legacyReturn.userId, (returnedUnitsByCustomer.get(legacyReturn.userId) || 0) + returnedUnits);
     }
   }
+  const journalIds = [...new Set(requests.map((request) => request.exchangeJournalEntryId).filter(Boolean))];
+  const journals = journalIds.length ? await prisma.journalEntry.findMany({
+    where: { id: { in: journalIds } },
+    select: {
+      id: true,
+      journalNumber: true,
+      transactionDate: true,
+      accountingPeriodId: true,
+      fiscalYearId: true,
+    },
+  }) : [];
+  const accountingPeriodIds = [...new Set(journals.map((journal) => journal.accountingPeriodId).filter(Boolean))];
+  const fiscalYearIds = [...new Set(journals.map((journal) => journal.fiscalYearId).filter(Boolean))];
+  const [accountingPeriods, fiscalYears] = await Promise.all([
+    accountingPeriodIds.length
+      ? prisma.accountingPeriod.findMany({
+          where: { id: { in: accountingPeriodIds } },
+          select: { id: true, periodName: true },
+        })
+      : [],
+    fiscalYearIds.length
+      ? prisma.fiscalYear.findMany({
+          where: { id: { in: fiscalYearIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+  ]);
+  const accountingPeriodsById = new Map(accountingPeriods.map((period) => [period.id, period]));
+  const fiscalYearsById = new Map(fiscalYears.map((year) => [year.id, year]));
+  const journalsById = new Map(journals.map((journal) => [journal.id, {
+    ...journal,
+    accountingPeriod: accountingPeriodsById.get(journal.accountingPeriodId) || null,
+    fiscalYear: fiscalYearsById.get(journal.fiscalYearId) || null,
+  }]));
 
   return {
     total,
     requests: requests.map((request) => toAdminExchangeRequestDto(
-      request,
+      {
+        ...request,
+        originalPaperBillRequested: Boolean(assignmentsByOrder.get(request.orderId)?.paperBillRequested),
+        originalPaperBillNumber: assignmentsByOrder.get(request.orderId)?.paperBillNumber || null,
+        originalPaperBillDocumentType: assignmentsByOrder.get(request.orderId)?.paperBillDocumentType || null,
+        requiresReplacementPaperBill: Boolean(
+          assignmentsByOrder.get(request.orderId)?.paperBillRequested &&
+          !new Prisma.Decimal(String(request.priceDifference || 0)).isZero(),
+        ),
+        journalEntry: journalsById.get(request.exchangeJournalEntryId) || null,
+      },
       returnedUnitsByCustomer.get(request.customerId) || 0,
     )),
   };
 };
 
-export const decideCustomerExchangeRequest = async ({ requestId, adminId, decision, reason, chargePayer }) => {
+export const listDistributorExchangeRequests = async ({ distributorId }) => {
+  if (!distributorId) throw fail("An approved distributor profile is required.", "DISTRIBUTOR_REQUIRED", 403);
+  const requests = await prisma.orderExchangeRequest.findMany({
+    where: {
+      OR: [
+        { distributorId, deliveryRoute: "DISTRIBUTOR", status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS", "COMPLETED"] } },
+        {
+          settlementDistributorId: distributorId,
+          deliveryRoute: "NCM",
+          priceDifference: { not: 0 },
+          status: { in: ["APPROVED", "NCM_CREATED", "IN_PROGRESS", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED"] },
+        },
+      ],
+    },
+    include: {
+      order: { select: { id: true, address: true } },
+      events: { orderBy: { occurredAt: "asc" } },
+      distributorCashEvents: {
+        where: { eventType: { in: ["EXCHANGE_UPGRADE_COLLECTION", "EXCHANGE_DOWNGRADE_REFUND"] } },
+        orderBy: { occurredAt: "desc" },
+      },
+    },
+    orderBy: { decidedAt: "asc" },
+  });
+  if (!requests.length) return [];
+  const assignments = await prisma.orderAssignment.findMany({
+    where: {
+      orderId: { in: requests.map(({ orderId }) => orderId) },
+      distributorId: { not: null },
+    },
+    select: {
+      orderId: true,
+      distributorId: true,
+      paperBillRequested: true,
+      paperBillNumber: true,
+      paperBillDocumentType: true,
+    },
+  });
+  const assignmentsByOrder = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
+  return requests.map((request) => {
+    const assignment = assignmentsByOrder.get(request.orderId);
+    const hasPriceDifference = !new Prisma.Decimal(String(request.priceDifference || 0)).isZero();
+    return {
+      ...request,
+      originalPaperBillRequested: Boolean(assignment?.paperBillRequested),
+      originalPaperBillNumber: assignment?.paperBillNumber || null,
+      originalPaperBillDocumentType: assignment?.paperBillDocumentType || null,
+      requiresReplacementPaperBill: Boolean(assignment?.paperBillRequested && hasPriceDifference),
+    };
+  });
+};
+
+export const decideCustomerExchangeRequest = async ({
+  requestId,
+  adminId,
+  decision,
+  reason,
+  chargePayer,
+  replacementPaperBillNumber,
+  replacementPaperBillAttached,
+}) => {
   const normalizedDecision = String(decision || "").trim().toUpperCase();
   const decisionReason = String(reason || "").trim();
   if (!requestId || !["APPROVE", "REJECT"].includes(normalizedDecision) || decisionReason.length < 3) {
@@ -467,7 +766,7 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
     if (!current) throw fail("Exchange request not found.", "EXCHANGE_NOT_FOUND", 404);
     const canRejectNcmRejection = normalizedDecision === "REJECT" && current.status === "NCM_REJECTED";
     if (current.status !== "REQUESTED" && !canRejectNcmRejection) throw fail("This exchange request has already been reviewed.", "EXCHANGE_ALREADY_REVIEWED", 409);
-    if (normalizedDecision === "APPROVE" && current.status !== "REQUESTED") {
+    if (normalizedDecision === "APPROVE") {
       const delivered = normalized(current.order.status) === "delivered" || current.order.deliveryOrder?.state === "DELIVERED";
       if (!delivered) throw fail("The original order is no longer eligible for exchange.", "ORDER_NOT_DELIVERED", 409);
       if (current.cardId && await cardHasBeenScanned(tx, current.cardId)) {
@@ -475,9 +774,61 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       }
     }
 
-    const nextStatus = normalizedDecision === "APPROVE" ? "APPROVED" : "REJECTED";
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId: current.orderId } });
+    const route = normalizedDecision === "APPROVE"
+      ? resolveReturnExchangeRoute({ assignment, deliveryOrder: current.order.deliveryOrder })
+      : null;
+    const settlementDistributorId = route?.route === "NCM"
+      ? assignment?.distributorId || current.settlementDistributorId || null
+      : route?.distributorId || null;
+    if (normalizedDecision === "APPROVE" && (
+      !route ||
+      (current.deliveryRoute && current.deliveryRoute !== route.route) ||
+      (route.route === "DISTRIBUTOR" && current.distributorId !== route.distributorId) ||
+      (route.route === "NCM" && !new Prisma.Decimal(String(current.priceDifference || 0)).isZero() && !settlementDistributorId) ||
+      (route.route === "NCM" && current.settlementDistributorId && current.settlementDistributorId !== settlementDistributorId)
+    )) {
+      throw fail("The original delivery route has changed or is unavailable. Review the order before approving this exchange.", "EXCHANGE_ROUTE_CHANGED", 409);
+    }
+    const needsNcmReplacementBill = normalizedDecision === "APPROVE" &&
+      route.route === "NCM" &&
+      Boolean(assignment?.paperBillRequested) &&
+      !new Prisma.Decimal(String(current.priceDifference || 0)).isZero();
+    let replacementPaperBill = null;
+    if (needsNcmReplacementBill) {
+      if (!assignment.paperBillDocumentType || !settlementDistributorId) {
+        throw fail("The original bill type or allocated distributor is missing; Admin must review this exchange.", "EXCHANGE_PAPER_BILL_TYPE_MISSING", 409);
+      }
+      if (replacementPaperBillAttached !== true) {
+        throw fail("Confirm that the replacement physical bill is attached before submitting this NCM exchange.", "EXCHANGE_REPLACEMENT_BILL_NOT_ATTACHED", 409);
+      }
+      if (String(replacementPaperBillNumber || "").trim() === assignment.paperBillNumber) {
+        throw fail("An exchange with a different value must use a new bill number from the distributor allocation.", "EXCHANGE_REPLACEMENT_BILL_REQUIRED", 409);
+      }
+      replacementPaperBill = await validatePaperBillChoice({
+        client: tx,
+        distributorId: settlementDistributorId,
+        documentType: assignment.paperBillDocumentType,
+        billNumber: replacementPaperBillNumber,
+        exchangeRequestId: current.id,
+      });
+    } else if (replacementPaperBillNumber) {
+      throw fail("A replacement bill number is only accepted for an NCM exchange with a requested physical bill and a price difference.", "UNEXPECTED_EXCHANGE_PAPER_BILL", 400);
+    }
+    const nextStatus = normalizedDecision === "APPROVE"
+      ? route.route === "DISTRIBUTOR" ? "APPROVED_FOR_DISTRIBUTOR" : "APPROVED"
+      : "REJECTED";
+    const shippingConfig = normalizedDecision === "APPROVE" ? await tx.shippingConfig.findFirst() : null;
     const now = new Date();
-    if (normalizedDecision === "APPROVE" && !current.replacementStockReservedAt) {
+    let distributorReplacementReservations = [];
+    if (normalizedDecision === "APPROVE" && route.route === "DISTRIBUTOR" && !current.replacementStockReservedAt) {
+      distributorReplacementReservations = await reserveDistributorReplacementInventory({
+        tx,
+        distributorId: route.distributorId,
+        items: parseArray(current.replacementItems).length ? parseArray(current.replacementItems) : parseArray(current.items),
+      });
+    }
+    if (normalizedDecision === "APPROVE" && route.route === "NCM" && current.manufacturerId && !current.replacementStockReservedAt) {
       await adjustReplacementInventory({
         tx,
         manufacturerId: current.manufacturerId,
@@ -500,9 +851,23 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
         decisionActorId: adminId,
         decisionReason,
         decidedAt: now,
-        ...(normalizedDecision === "APPROVE" && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
+        ...(normalizedDecision === "APPROVE" && ((route.route === "NCM" && current.manufacturerId) || route.route === "DISTRIBUTOR") && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
         ...(normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt ? { replacementStockReleasedAt: now } : {}),
-        ...(normalizedDecision === "APPROVE" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(normalizedDecision === "APPROVE" && route.route === "NCM" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(replacementPaperBill ? {
+          replacementPaperBillNumber: replacementPaperBill.paperBillNumber,
+          replacementPaperBillAllocationId: replacementPaperBill.paperBillAllocationId,
+          replacementPaperBillIssuedAt: now,
+          replacementPaperBillIssuedBy: String(adminId).slice(0, 191),
+        } : {}),
+        ...(normalizedDecision === "APPROVE" ? {
+          logisticsSettlementAmount: resolveReturnExchangeSettlementRate(shippingConfig, route.route, "EXCHANGE"),
+        } : {}),
+        ...(normalizedDecision === "APPROVE" ? {
+          deliveryRoute: route.route,
+          distributorId: route.distributorId,
+          settlementDistributorId,
+        } : {}),
       },
     });
     if (claimed.count !== 1) throw fail("This exchange request was reviewed by another admin.", "EXCHANGE_ALREADY_REVIEWED", 409);
@@ -521,6 +886,16 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       actorId: adminId,
       actorRole: "ADMIN",
       reason: decisionReason,
+      metadata: normalizedDecision === "APPROVE" ? {
+        deliveryRoute: route.route,
+        distributorId: route.distributorId,
+        ...(replacementPaperBill ? {
+          replacementPaperBillNumber: replacementPaperBill.paperBillNumber,
+          replacementPaperBillAllocationId: replacementPaperBill.paperBillAllocationId,
+          replacementPaperBillAttached: true,
+        } : {}),
+        ...(distributorReplacementReservations.length ? { replacementReservations: distributorReplacementReservations } : {}),
+      } : undefined,
       idempotencyKey: `EXCHANGE:${current.id}:${nextStatus}`,
     });
     return updated;
@@ -587,7 +962,9 @@ export const submitApprovedExchange = async (requestId) => {
   }, { isolationLevel: "Serializable" });
 
   try {
-    const response = await createExchangeOrder({ pk: submission.ncmOrderId });
+    const response = await createExchangeOrder({
+      pk: submission.ncmOrderId,
+    });
     const rejection = getNcmResponseRejection(response.data);
     if (rejection) {
       throw Object.assign(new Error(rejection), {
@@ -770,6 +1147,7 @@ export const resolveUnknownExchangeSubmission = async ({ requestId, adminId, out
 export const mapExchangeNcmStatus = (status, event) => {
   const value = normalized(status || event).replace(/[_-]+/g, " ");
   if (["pickup complete", "pickup completed"].includes(value)) return "PICKUP_COMPLETE";
+  if (["returned to vendor", "sent to vendor"].includes(value)) return "DELIVERED_TO_VENDOR";
   if (["delivered", "delivery complete", "delivery completed"].includes(value)) return "DELIVERED";
   if (["sent for pickup", "pickup order created"].includes(value)) return "PICKUP_PENDING";
   if (["sent for delivery", "dispatched", "arrived", "out for delivery"].includes(value)) return "IN_TRANSIT";
@@ -780,10 +1158,16 @@ const ncmStatusRank = (status) => ({
   CREATED: 0,
   AWAITING_PICKUP: 0,
   PICKUP_PENDING: 1,
-  IN_TRANSIT: 2,
-  PICKUP_COMPLETE: 3,
+  PICKUP_COMPLETE: 2,
+  IN_TRANSIT: 3,
   DELIVERED: 4,
+  DELIVERED_TO_VENDOR: 5,
 }[String(status || "").toUpperCase()] ?? -1);
+
+export const isExchangeReturnReceiptConfirmed = ({ mappedStatus, currentStatus }) => (
+  mappedStatus === "DELIVERED_TO_VENDOR" ||
+  (mappedStatus === "DELIVERED" && ncmStatusRank(currentStatus) >= ncmStatusRank("PICKUP_COMPLETE"))
+);
 
 export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timestamp, source = "NCM_WEBHOOK" }) => {
   const numericId = Number(ncmOrderId);
@@ -794,20 +1178,32 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
   if (!request) return false;
 
   const isReturnLeg = request.ncmReturnOrderId === numericId;
-  const nextLegStatus = mapExchangeNcmStatus(status, event);
   const happenedAt = timestamp && !Number.isNaN(new Date(timestamp).getTime()) ? new Date(timestamp) : new Date();
+  if (request.ncmSubmissionAttemptedAt && happenedAt < request.ncmSubmissionAttemptedAt) return false;
   const updated = await prisma.$transaction(async (tx) => {
     const current = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
     if (!current) return null;
     const fromStatus = current.status;
     const currentLegStatus = isReturnLeg ? current.returnPickupStatus : current.replacementStatus;
-    const isStaleStatus = ncmStatusRank(nextLegStatus) >= 0 && ncmStatusRank(currentLegStatus) > ncmStatusRank(nextLegStatus);
-    const appliedLegStatus = isStaleStatus ? currentLegStatus : nextLegStatus;
+    const mappedLegStatus = mapExchangeNcmStatus(status, event);
+    const returnReceiptConfirmed = isReturnLeg && isExchangeReturnReceiptConfirmed({
+      mappedStatus: mappedLegStatus,
+      currentStatus: currentLegStatus,
+    });
+    const requestedLegStatus = isReturnLeg
+      ? mappedLegStatus === "DELIVERED"
+        ? (returnReceiptConfirmed ? "DELIVERED_TO_VENDOR" : currentLegStatus)
+        : mappedLegStatus
+      : mappedLegStatus === "DELIVERED_TO_VENDOR"
+        ? currentLegStatus
+        : mappedLegStatus;
+    const isStaleStatus = ncmStatusRank(requestedLegStatus) >= 0 && ncmStatusRank(currentLegStatus) > ncmStatusRank(requestedLegStatus);
+    const appliedLegStatus = isStaleStatus ? currentLegStatus : requestedLegStatus;
     const patch = isReturnLeg
       ? {
           returnPickupStatus: appliedLegStatus,
           ...(appliedLegStatus === "PICKUP_COMPLETE" ? { returnPickupCompletedAt: current.returnPickupCompletedAt || happenedAt } : {}),
-          ...(appliedLegStatus === "DELIVERED" ? { manufacturerReceivedAt: current.manufacturerReceivedAt || happenedAt } : {}),
+          ...(returnReceiptConfirmed ? { manufacturerReceivedAt: current.manufacturerReceivedAt || happenedAt } : {}),
         }
       : {
           replacementStatus: appliedLegStatus,
@@ -840,7 +1236,7 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       patch.replacementStockConsumedAt = happenedAt;
     }
 
-    const returnReceivedAt = isReturnLeg && appliedLegStatus === "DELIVERED"
+    const returnReceivedAt = returnReceiptConfirmed
       ? current.manufacturerReceivedAt || happenedAt
       : current.manufacturerReceivedAt;
     const replacementDeliveredAt = !isReturnLeg && appliedLegStatus === "DELIVERED"
@@ -857,10 +1253,22 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       where: { id: current.id },
       data: { ...patch, status: exchangeStatus, ...(exchangeStatus === "COMPLETED" ? { completedAt: current.completedAt || happenedAt } : {}) },
     });
-    const eventKey = `EXCHANGE_NCM:${numericId}:${nextLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
+    if (exchangeStatus === "COMPLETED" && current.status !== "COMPLETED") {
+      await postOrderExchangeAccounting({ exchangeRequest: result, client: tx });
+      const logisticsPayable = await createReturnExchangeSettlementPayable(tx, result, "EXCHANGE");
+      if (logisticsPayable) {
+        await postReturnExchangeSettlementAccounting({
+          operation: "EXCHANGE",
+          requestId: result.id,
+          payable: logisticsPayable,
+          client: tx,
+        });
+      }
+    }
+    const eventKey = `EXCHANGE_NCM:${numericId}:${mappedLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
     await addEvent(tx, {
       exchangeRequestId: current.id,
-      eventType: `NCM_${isReturnLeg ? "RETURN" : "REPLACEMENT"}_${nextLegStatus}`.slice(0, 64),
+      eventType: `NCM_${isReturnLeg ? "RETURN" : "REPLACEMENT"}_${mappedLegStatus}`.slice(0, 64),
       fromStatus,
       toStatus: exchangeStatus,
       actorRole: source,
@@ -903,7 +1311,7 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     throw fail("Add inspection notes for damaged, missing, or disputed items.", "EXCHANGE_INSPECTION_NOTES_REQUIRED");
   }
 
-  return prisma.$transaction(async (tx) => {
+  const record = await prisma.$transaction(async (tx) => {
     const request = await tx.orderExchangeRequest.findUnique({ where: { id: requestId } });
     if (!request) throw fail("Exchange request not found.", "EXCHANGE_NOT_FOUND", 404);
     if (!request.manufacturerReceivedAt) {
@@ -977,6 +1385,18 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     }
 
     const updated = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
+    if (nextStatus === "COMPLETED") {
+      await postOrderExchangeAccounting({ exchangeRequest: updated, client: tx });
+      const logisticsPayable = await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+      if (logisticsPayable) {
+        await postReturnExchangeSettlementAccounting({
+          operation: "EXCHANGE",
+          requestId: updated.id,
+          payable: logisticsPayable,
+          client: tx,
+        });
+      }
+    }
     await addEvent(tx, {
       exchangeRequestId: request.id,
       eventType: "MANUFACTURER_RETURN_INSPECTED",
@@ -990,6 +1410,7 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     });
     return updated;
   }, { isolationLevel: "Serializable" });
+  return record;
 };
 
 export const reconcileCustomerExchange = async (requestId) => {
@@ -1001,13 +1422,68 @@ export const reconcileCustomerExchange = async (requestId) => {
     getOrderStatus(request.ncmReturnOrderId),
     getOrderStatus(request.ncmReplacementOrderId),
   ]);
-  const latestReturn = Array.isArray(returnStatuses.data) ? returnStatuses.data[0] : null;
-  const latestReplacement = Array.isArray(replacementStatuses.data) ? replacementStatuses.data[0] : null;
-  if (latestReturn?.status) {
-    await applyExchangeNcmStatus({ ncmOrderId: request.ncmReturnOrderId, status: latestReturn.status, timestamp: latestReturn.added_time, source: "NCM_POLL" });
+  if (!Array.isArray(returnStatuses.data) || !Array.isArray(replacementStatuses.data)) {
+    throw fail("NCM returned an invalid status-history response for this exchange.", "EXCHANGE_NCM_STATUS_INVALID", 502);
   }
-  if (latestReplacement?.status) {
-    await applyExchangeNcmStatus({ ncmOrderId: request.ncmReplacementOrderId, status: latestReplacement.status, timestamp: latestReplacement.added_time, source: "NCM_POLL" });
+
+  const histories = [
+    { ncmOrderId: request.ncmReturnOrderId, entries: returnStatuses.data },
+    { ncmOrderId: request.ncmReplacementOrderId, entries: replacementStatuses.data },
+  ];
+  let processedStatusCount = 0;
+  let skippedStatusCount = 0;
+  let totalStatusCount = 0;
+
+  for (const history of histories) {
+    const entries = history.entries
+      .map((item, index) => ({
+        status: typeof item?.status === "string" ? item.status.trim() : "",
+        event: typeof item?.event === "string" ? item.event.trim() : "",
+        timestamp: item?.added_time,
+        index,
+        time: item?.added_time ? new Date(item.added_time).getTime() : Number.NaN,
+      }))
+      .sort((left, right) => {
+        if (!Number.isFinite(left.time)) return Number.isFinite(right.time) ? 1 : left.index - right.index;
+        if (!Number.isFinite(right.time)) return -1;
+        return left.time - right.time || left.index - right.index;
+      });
+    totalStatusCount += entries.length;
+
+    for (const item of entries) {
+      if (!(item.status || item.event) || !Number.isFinite(item.time)) {
+        skippedStatusCount += 1;
+        continue;
+      }
+      if (request.ncmSubmissionAttemptedAt && item.time < request.ncmSubmissionAttemptedAt.getTime()) {
+        skippedStatusCount += 1;
+        continue;
+      }
+      const applied = await applyExchangeNcmStatus({
+        ncmOrderId: history.ncmOrderId,
+        status: item.status,
+        event: item.event,
+        timestamp: item.timestamp,
+        source: "NCM_POLL",
+      });
+      if (applied) processedStatusCount += 1;
+      else skippedStatusCount += 1;
+    }
   }
-  return prisma.orderExchangeRequest.findUnique({ where: { id: requestId }, include: { events: { orderBy: { occurredAt: "asc" } } } });
+
+  const partial = skippedStatusCount > 0 || totalStatusCount === 0;
+  return {
+    request: await prisma.orderExchangeRequest.findUnique({
+      where: { id: requestId },
+      include: { events: { orderBy: { occurredAt: "asc" } } },
+    }),
+    processedStatusCount,
+    skippedStatusCount,
+    partial,
+    message: totalStatusCount === 0
+      ? "NCM returned no status-history entries; no exchange state was changed."
+      : partial
+        ? `Reconciled ${processedStatusCount} of ${totalStatusCount} NCM status entries; ${skippedStatusCount} were missing usable status/timestamp data or were older than the exchange submission.`
+        : `Reconciled ${processedStatusCount} NCM status entries.`,
+  };
 };

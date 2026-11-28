@@ -1,0 +1,464 @@
+import { Prisma } from "@prisma/client";
+import { prisma } from "../config/db.js";
+import { postDistributorCustomerRefundAccounting } from "./accountingPostingEngine.js";
+import { reverseDistributorCounterSaleEarning } from "./distributorServiceEarningService.js";
+import { recordSystemAudit } from "./auditService.js";
+
+const fail = (message, statusCode = 400, code = "DISTRIBUTOR_RETURN_REFUND_ERROR") => {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+};
+
+const parseAmount = (value) => {
+  if ((typeof value !== "number" && typeof value !== "string") || !/^\d{1,18}(?:\.\d{1,2})?$/.test(String(value).trim())) {
+    throw fail("Refund amount must be positive with no more than two decimal places.", 400, "INVALID_REFUND_AMOUNT");
+  }
+  const amount = new Prisma.Decimal(String(value).trim());
+  if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
+    throw fail("Refund amount must be greater than zero.", 400, "INVALID_REFUND_AMOUNT");
+  }
+  return amount.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+};
+
+const text = (value, label, maxLength, required = false) => {
+  if (typeof value !== "string" && value !== null && value !== undefined) {
+    throw fail(`${label} must be text.`, 400, "INVALID_REFUND_INPUT");
+  }
+  const result = String(value || "").trim();
+  if (required && !result) throw fail(`${label} is required.`, 400, "INVALID_REFUND_INPUT");
+  if (result.length > maxLength) throw fail(`${label} must be ${maxLength} characters or fewer.`, 400, "INVALID_REFUND_INPUT");
+  return result || null;
+};
+
+const validatePaymentMethod = (value) => {
+  const method = String(value || "").trim().toUpperCase();
+  if (!["CASH", "BANK_TRANSFER", "MOBILE_WALLET", "CARD"].includes(method)) {
+    throw fail("Select a valid customer refund payment method.", 400, "INVALID_REFUND_PAYMENT_METHOD");
+  }
+  return method;
+};
+
+const addReturnEvent = (tx, { returnId, eventType, fromStatus, toStatus, actorId, actorRole, reason, metadata, idempotencyKey }) =>
+  tx.customerReturnEvent.create({
+    data: {
+      customerReturnId: returnId,
+      eventType,
+      fromStatus,
+      toStatus,
+      actorId: actorId || null,
+      actorRole,
+      reason: reason || null,
+      metadata,
+      idempotencyKey,
+    },
+  });
+
+export const submitDistributorCustomerRefund = async ({
+  distributorId,
+  returnId,
+  amount,
+  adjustmentReason,
+  paymentMethod,
+  externalReference,
+  evidenceUrl,
+  idempotencyKey,
+  recordedByAccountId = null,
+  client = prisma,
+  now = new Date(),
+} = {}) => {
+  if (!distributorId || !returnId) throw fail("Distributor and return IDs are required.");
+  const decAmount = parseAmount(amount);
+  const reason = text(adjustmentReason, "Refund amount change reason", 2000);
+  const method = validatePaymentMethod(paymentMethod);
+  const reference = text(externalReference, "Payment reference", 191);
+  const evidence = text(evidenceUrl, "Payment evidence URL", 2000, true);
+  if (!/^https:\/\//i.test(evidence)) {
+    throw fail("Payment evidence must use a secure HTTPS URL.", 400, "INVALID_REFUND_EVIDENCE");
+  }
+  if (method !== "CASH" && !reference) {
+    throw fail("A transaction reference is required for non-cash refunds.", 400, "REFUND_REFERENCE_REQUIRED");
+  }
+  const key = text(idempotencyKey, "Idempotency key", 150, true);
+
+  try {
+    return await client.$transaction(async (tx) => {
+      const replay = await tx.distributorCashEvent.findUnique({ where: { idempotencyKey: key } });
+      if (replay) {
+        if (
+          replay.distributorId !== distributorId ||
+          replay.customerReturnId !== returnId ||
+          !new Prisma.Decimal(String(replay.amount)).equals(decAmount) ||
+          replay.notes !== reason ||
+          replay.paymentMethod !== method ||
+          replay.externalReference !== reference ||
+          replay.evidenceUrl !== evidence
+        ) {
+          throw fail("This idempotency key was already used for different refund details.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        return { success: true, cashEvent: replay, isReplay: true };
+      }
+
+      const pendingEvent = await tx.distributorCashEvent.findFirst({
+        where: {
+          customerReturnId: returnId,
+          eventType: "CUSTOMER_REFUND",
+          status: { in: ["PENDING_VERIFICATION", "POSTED"] },
+        },
+        select: { id: true },
+      });
+      if (pendingEvent) throw fail("A customer refund is already awaiting Admin review or has been completed.", 409, "REFUND_ALREADY_SUBMITTED");
+
+      const returnRecord = await tx.customerReturn.findFirst({
+        where: {
+          id: returnId,
+          distributorId,
+          deliveryRoute: "DISTRIBUTOR",
+          lifecycleStatus: "REFUND_PENDING",
+          refundStatus: "PENDING",
+        },
+      });
+      if (!returnRecord) {
+        throw fail("This distributor return is not approved and inspected for refund.", 409, "RETURN_REFUND_NOT_READY");
+      }
+      if (!returnRecord.inspectedAt || !returnRecord.approvedAt || !returnRecord.approvedRefundAmount || !returnRecord.refundPolicySnapshot) {
+        throw fail("Admin approval, inspection, and a refund-policy snapshot are required.", 409, "RETURN_REFUND_NOT_READY");
+      }
+      const approvedAmount = new Prisma.Decimal(String(returnRecord.approvedRefundAmount)).toDecimalPlaces(2);
+      const returnValue = new Prisma.Decimal(String(returnRecord.totalRefundAmount || 0)).toDecimalPlaces(2);
+      if (decAmount.greaterThan(returnValue)) {
+        throw fail(`Refund cannot exceed the returned product value of NPR ${returnValue.toFixed(2)}.`, 400, "REFUND_AMOUNT_EXCEEDS_RETURN_VALUE");
+      }
+      if (!decAmount.equals(approvedAmount) && !reason) {
+        throw fail("A reason is required when the refund amount differs from the Admin-approved amount.", 400, "REFUND_ADJUSTMENT_REASON_REQUIRED");
+      }
+
+      const claimed = await tx.customerReturn.updateMany({
+        where: { id: returnId, distributorId, lifecycleStatus: "REFUND_PENDING", refundStatus: "PENDING" },
+        data: { lifecycleStatus: "DISTRIBUTOR_REFUND_REVIEW", refundStatus: "PROCESSING" },
+      });
+      if (claimed.count !== 1) throw fail("Return refund status changed concurrently.", 409, "RETURN_REFUND_CONFLICT");
+
+      const cashEvent = await tx.distributorCashEvent.create({
+        data: {
+          distributorId,
+          customerReturnId: returnId,
+          eventType: "CUSTOMER_REFUND",
+          amount: decAmount,
+          status: "PENDING_VERIFICATION",
+          paymentMethod: method,
+          externalReference: reference,
+          evidenceUrl: evidence,
+          idempotencyKey: key,
+          occurredAt: now,
+          recordedByAccountId,
+          notes: reason,
+        },
+      });
+      await addReturnEvent(tx, {
+        returnId,
+        eventType: "DISTRIBUTOR_REFUND_SUBMITTED",
+        fromStatus: "REFUND_PENDING",
+        toStatus: "DISTRIBUTOR_REFUND_REVIEW",
+        actorId: recordedByAccountId,
+        actorRole: "DISTRIBUTOR",
+        reason: reason || reference,
+        metadata: {
+          cashEventId: cashEvent.id,
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: decAmount.toFixed(2),
+          amountChanged: !decAmount.equals(approvedAmount),
+          adjustmentReason: reason,
+          paymentMethod: method,
+        },
+        idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND:${key}`,
+      });
+      await recordSystemAudit({
+        actorId: recordedByAccountId,
+        actorRole: "DISTRIBUTOR",
+        portalSource: "DISTRIBUTOR",
+      }, {
+        action: "DISTRIBUTOR_CUSTOMER_REFUND_SUBMITTED",
+        entityType: "CustomerReturn",
+        entityId: returnId,
+        afterState: {
+          cashEventId: cashEvent.id,
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: decAmount.toFixed(2),
+          adjustmentReason: reason,
+          paymentMethod: method,
+        },
+      }, { client: tx });
+      return { success: true, cashEvent, isReplay: false };
+    }, { isolationLevel: "Serializable" });
+  } catch (error) {
+    if (error?.code === "P2002") {
+      const replay = await client.distributorCashEvent.findUnique({ where: { idempotencyKey: key } });
+      if (replay) {
+        if (
+          replay.distributorId !== distributorId ||
+          replay.customerReturnId !== returnId ||
+          !new Prisma.Decimal(String(replay.amount)).equals(decAmount) ||
+          replay.notes !== reason ||
+          replay.paymentMethod !== method ||
+          replay.externalReference !== reference ||
+          replay.evidenceUrl !== evidence
+        ) {
+          throw fail("This idempotency key was already used for different refund details.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        return { success: true, cashEvent: replay, isReplay: true };
+      }
+    }
+    if (error?.code === "P2034") {
+      throw fail("Another refund update changed this return. Refresh and retry.", 409, "RETURN_REFUND_CONFLICT");
+    }
+    throw error;
+  }
+};
+
+export const reviewDistributorCustomerRefund = async ({
+  distributorId,
+  returnId,
+  decision,
+  reviewNotes = null,
+  reviewerAccountId = null,
+  actorContext = {},
+  client = prisma,
+  postRefundAccounting = postDistributorCustomerRefundAccounting,
+  reverseCounterSaleEarning = reverseDistributorCounterSaleEarning,
+  now = new Date(),
+} = {}) => {
+  if (!distributorId || !returnId) throw fail("Distributor and return IDs are required.");
+  const normalizedDecision = String(decision || "").trim().toUpperCase();
+  if (!["VERIFY", "REJECT"].includes(normalizedDecision)) {
+    throw fail("Decision must be VERIFY or REJECT.", 400, "INVALID_REFUND_REVIEW_DECISION");
+  }
+  const notes = text(reviewNotes, "Review notes", 2000);
+
+  try {
+    return await client.$transaction(async (tx) => {
+      const returnRecord = await tx.customerReturn.findFirst({
+        where: {
+          id: returnId,
+          distributorId,
+          deliveryRoute: "DISTRIBUTOR",
+        },
+      });
+      if (!returnRecord) throw fail("This distributor return was not found.", 404, "RETURN_NOT_FOUND");
+      if (normalizedDecision === "VERIFY" && returnRecord.lifecycleStatus === "REFUNDED" && returnRecord.refundStatus === "COMPLETED") {
+        const verifiedEvent = await tx.distributorCashEvent.findFirst({
+          where: {
+            customerReturnId: returnId,
+            distributorId,
+            eventType: "CUSTOMER_REFUND",
+            status: "POSTED",
+          },
+        });
+        if (verifiedEvent) {
+          return {
+            success: true,
+            decision: "VERIFIED",
+            accountingDocumentId: verifiedEvent.accountingDocumentId,
+            journalEntryId: verifiedEvent.journalEntryId,
+            isReplay: true,
+          };
+        }
+      }
+      if (returnRecord.lifecycleStatus !== "DISTRIBUTOR_REFUND_REVIEW" || returnRecord.refundStatus !== "PROCESSING") {
+        throw fail("This return is not awaiting distributor refund review.", 409, "RETURN_REFUND_NOT_PENDING");
+      }
+      const event = await tx.distributorCashEvent.findFirst({
+        where: {
+          customerReturnId: returnId,
+          distributorId,
+          eventType: "CUSTOMER_REFUND",
+          status: "PENDING_VERIFICATION",
+        },
+      });
+      if (!event) throw fail("Refund payment evidence was not found.", 404, "REFUND_EVIDENCE_NOT_FOUND");
+      const eventNotes = [
+        event.notes ? `Distributor adjustment reason: ${event.notes}` : null,
+        notes ? `Admin review: ${notes}` : null,
+      ].filter(Boolean).join("\n") || null;
+      const approvedAmount = new Prisma.Decimal(String(returnRecord.approvedRefundAmount || 0)).toDecimalPlaces(2);
+      const refundAmount = new Prisma.Decimal(String(event.amount)).toDecimalPlaces(2);
+      const returnValue = new Prisma.Decimal(String(returnRecord.totalRefundAmount || 0)).toDecimalPlaces(2);
+      if (!refundAmount.greaterThan(0) || refundAmount.greaterThan(returnValue)) {
+        throw fail("Submitted refund amount is invalid or exceeds the returned product value.", 409, "REFUND_AMOUNT_INVALID");
+      }
+
+      if (normalizedDecision === "REJECT") {
+        const eventClaim = await tx.distributorCashEvent.updateMany({
+          where: { id: event.id, status: "PENDING_VERIFICATION" },
+          data: {
+            status: "REJECTED",
+            verifiedByAccountId: reviewerAccountId,
+            verifiedAt: now,
+            notes: eventNotes,
+          },
+        });
+        const returnClaim = await tx.customerReturn.updateMany({
+          where: { id: returnId, lifecycleStatus: "DISTRIBUTOR_REFUND_REVIEW", refundStatus: "PROCESSING" },
+          data: { lifecycleStatus: "REFUND_PENDING", refundStatus: "PENDING" },
+        });
+        if (eventClaim.count !== 1 || returnClaim.count !== 1) {
+          throw fail("Refund review changed concurrently.", 409, "RETURN_REFUND_CONFLICT");
+        }
+        await addReturnEvent(tx, {
+          returnId,
+          eventType: "DISTRIBUTOR_REFUND_REJECTED",
+          fromStatus: "DISTRIBUTOR_REFUND_REVIEW",
+          toStatus: "REFUND_PENDING",
+          actorId: reviewerAccountId,
+          actorRole: "ADMIN",
+          reason: notes,
+          metadata: { cashEventId: event.id, amount: refundAmount.toFixed(2), adjustmentReason: event.notes },
+          idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND_REJECTED:${event.id}`,
+        });
+        await recordSystemAudit({
+          ...actorContext,
+          actorId: reviewerAccountId,
+          actorRole: "ADMIN",
+          portalSource: "ADMIN",
+        }, {
+          action: "DISTRIBUTOR_CUSTOMER_REFUND_REJECTED",
+          entityType: "CustomerReturn",
+          entityId: returnId,
+          beforeState: { lifecycleStatus: returnRecord.lifecycleStatus, cashEventStatus: event.status },
+          afterState: {
+            lifecycleStatus: "REFUND_PENDING",
+            cashEventStatus: "REJECTED",
+            reviewNotes: notes,
+            distributorAdjustmentReason: event.notes,
+          },
+        }, { client: tx });
+        return { success: true, decision: "REJECTED", isReplay: false };
+      }
+
+      const recordedVatRate = returnRecord.refundPolicySnapshot?.vatRatePercent;
+      if (recordedVatRate === undefined || recordedVatRate === null || recordedVatRate === "") {
+        throw fail("The original return tax-rate snapshot is missing; VAT refund cannot be inferred.", 409, "RETURN_REFUND_TAX_SNAPSHOT_REQUIRED");
+      }
+      const vatRate = new Prisma.Decimal(String(recordedVatRate));
+      if (!vatRate.isFinite() || vatRate.isNegative() || vatRate.greaterThan(100)) {
+        throw fail("The approved return has an invalid VAT rate.", 409, "RETURN_REFUND_POLICY_INVALID");
+      }
+      const refundVat = refundAmount.minus(
+        refundAmount.div(new Prisma.Decimal(1).plus(vatRate.div(100)))
+          .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      const verifiedReturnRecord = {
+        ...returnRecord,
+        approvedRefundAmount: refundAmount,
+        vatRefunded: refundVat.toNumber(),
+        completedAt: now,
+      };
+      const journal = await postRefundAccounting({
+        returnRecord: verifiedReturnRecord,
+        client: tx,
+      });
+      const distributor = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found while posting return accounting.", 404, "DISTRIBUTOR_NOT_FOUND");
+      await reverseCounterSaleEarning({
+        returnRecord: verifiedReturnRecord,
+        distributorName: distributor.name,
+        effectiveAt: now,
+        client: tx,
+      });
+      const document = await tx.accountingDocument.findUnique({
+        where: { idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnId}` },
+        select: { id: true },
+      });
+      if (!journal || !document) throw fail("Distributor refund accounting did not create its payable record.", 500, "REFUND_ACCOUNTING_FAILED");
+
+      const eventClaim = await tx.distributorCashEvent.updateMany({
+        where: { id: event.id, status: "PENDING_VERIFICATION" },
+        data: {
+          status: "POSTED",
+          verifiedByAccountId: reviewerAccountId,
+          verifiedAt: now,
+          journalEntryId: journal.id,
+          accountingDocumentId: document.id,
+          notes: eventNotes,
+        },
+      });
+      const returnClaim = await tx.customerReturn.updateMany({
+        where: { id: returnId, lifecycleStatus: "DISTRIBUTOR_REFUND_REVIEW", refundStatus: "PROCESSING" },
+        data: {
+          lifecycleStatus: "REFUNDED",
+          refundStatus: "COMPLETED",
+          completedAt: now,
+          approvedRefundAmount: refundAmount,
+          vatRefunded: refundVat.toNumber(),
+          accountingJournalEntryId: journal.id,
+          taxCreditNoteNumber: `CN-${journal.journalNumber}`,
+        },
+      });
+      if (eventClaim.count !== 1 || returnClaim.count !== 1) {
+        throw fail("Refund review changed concurrently.", 409, "RETURN_REFUND_CONFLICT");
+      }
+      if (returnRecord.orderId) {
+        await tx.order.updateMany({
+          where: { id: returnRecord.orderId },
+          data: {
+            status: "Returned",
+            fulfillmentStatus: "returned",
+          },
+        });
+      }
+      await addReturnEvent(tx, {
+        returnId,
+        eventType: "DISTRIBUTOR_REFUND_VERIFIED",
+        fromStatus: "DISTRIBUTOR_REFUND_REVIEW",
+        toStatus: "REFUNDED",
+        actorId: reviewerAccountId,
+        actorRole: "ADMIN",
+        reason: notes,
+        metadata: {
+          cashEventId: event.id,
+          accountingDocumentId: document.id,
+          journalEntryId: journal.id,
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: refundAmount.toFixed(2),
+          adjustmentReason: event.notes,
+        },
+        idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND_VERIFIED`,
+      });
+      await recordSystemAudit({
+        ...actorContext,
+        actorId: reviewerAccountId,
+        actorRole: "ADMIN",
+        portalSource: "ADMIN",
+      }, {
+        action: "DISTRIBUTOR_CUSTOMER_REFUND_VERIFIED",
+        entityType: "CustomerReturn",
+        entityId: returnId,
+        beforeState: { lifecycleStatus: returnRecord.lifecycleStatus, cashEventStatus: event.status },
+        afterState: {
+          lifecycleStatus: "REFUNDED",
+          refundStatus: "COMPLETED",
+          approvedRefundAmount: refundAmount.toFixed(2),
+          vatRefunded: refundVat.toFixed(2),
+          accountingDocumentId: document.id,
+          journalEntryId: journal.id,
+        },
+      }, { client: tx });
+      return {
+        success: true,
+        decision: "VERIFIED",
+        accountingDocumentId: document.id,
+        journalEntryId: journal.id,
+        isReplay: false,
+      };
+    }, { isolationLevel: "Serializable" });
+  } catch (error) {
+    if (error?.code === "P2034") {
+      throw fail("Another refund review changed this return. Refresh and retry.", 409, "RETURN_REFUND_CONFLICT");
+    }
+    throw error;
+  }
+};

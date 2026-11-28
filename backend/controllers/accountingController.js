@@ -2,21 +2,85 @@ import { prisma } from "../config/db.js";
 import {
   ensureStandardChartOfAccounts,
   ensureFiscalYearAndPeriod,
-  postJournalEntry,
-  reverseJournalEntryById,
 } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
-import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
+import {
+  getConfiguredNepaliDateRange,
+  getConfiguredNepaliFiscalPeriod,
+  getConfiguredNepaliFiscalYear,
+  getNepaliCalendarYears,
+  resolveCalendarDateFilterInput,
+} from "../services/nepaliFiscalCalendar.js";
+import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
+import { buildPartySubledgerReconciliation } from "../services/partySubledgerReconciliationService.js";
+import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
+import { buildDirectCashFlowStatement } from "../services/accountingCashFlowService.js";
+import {
+  BALANCE_REPORT_JOURNAL_STATUSES,
+  buildGeneralLedgerBalanceReconciliation,
+} from "../services/accountingLedgerIntegrityService.js";
+import {
+  accountingDecimal,
+  addDecimals,
+  compareDecimals,
+  serializeAccountingValue,
+  subtractDecimals,
+} from "../services/accountingDecimal.js";
+import { buildAccountingControlCoverage } from "../services/accountingControlCoverageService.js";
+import {
+  buildManufacturerLogisticsReconciliation,
+  buildManufacturerProductionReconciliation,
+} from "../services/manufacturerLogisticsReconciliationService.js";
+import { buildCustomerRefundPayableReconciliation } from "../services/customerRefundPayableReconciliationService.js";
+import { buildCollaborationFeeReceivableReconciliation } from "../services/collaborationFeeReceivableReconciliationService.js";
+import {
+  getCollaborationFeeCreditApplications as listCollaborationFeeCreditApplications,
+} from "../services/collaborationFeeCreditApplicationService.js";
+import { buildNcmCarrierFeeReconciliation } from "../services/ncmCarrierFeeReconciliationService.js";
+import { buildMarketingCpaPayableReconciliation } from "../services/marketingCpaPayableReconciliationService.js";
+import { buildFixedAssetReconciliation } from "../services/fixedAssetReconciliationService.js";
+import { buildInventoryValuationReconciliation } from "../services/inventoryValuationReconciliationService.js";
+import { loadPlatformInventoryValuationSources } from "../services/inventoryValuationSourceService.js";
+import {
+  createAccountingPeriodClosePack,
+  getAccountingPeriodCloseChecklist,
+  submitAccountingPeriodClose,
+  reviewAccountingPeriodClose,
+  requestAccountingPeriodReopen,
+  reviewAccountingPeriodReopen,
+} from "../services/accountingPeriodCloseService.js";
+import {
+  listAccountingActionApprovals,
+  requestAccountingActionApproval,
+  reviewAccountingActionApproval,
+} from "../services/accountingActionApprovalService.js";
 
-const getNepalDateBoundary = (value, endOfDay = false) => {
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
-  if (!dateOnly) return value ? new Date(value) : null;
-  const [, year, month, day] = dateOnly;
-  const nepalOffsetMs = (5 * 60 + 45) * 60 * 1000;
-  const startOfDay = Date.UTC(Number(year), Number(month) - 1, Number(day)) - nepalOffsetMs;
-  return new Date(startOfDay + (endOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
-};
+const getAccountingAdminActor = (req) => ({
+  accountId: req.auth?.accountId || req.auth?.userId || null,
+  role: req.auth?.role,
+});
+const getAccountingRequestKey = (req) =>
+  req.headers?.["idempotency-key"] || req.body?.idempotencyKey || "";
+const getAccountingAuditContext = (req) => ({
+  ipAddress: req.ip || null,
+  userAgent: req.get?.("user-agent") || null,
+  correlationId: req.correlationId || null,
+});
+const buildPostedLedgerReportBasis = ({ start, end }) => ({
+  classification: "POSTED_JOURNAL_LEDGER",
+  source: "JournalEntry and JournalLine",
+  includedJournalStatuses: [...BALANCE_REPORT_JOURNAL_STATUSES],
+  dateField: "JournalEntry.transactionDate",
+  period: { start, end },
+  sourceCompleteness: "NOT_ESTABLISHED",
+  subledgerReconciliation: "NOT_ESTABLISHED",
+  limitations: [
+    "Only journal entries in the included posted/reversed statuses are reported; pending and unposted accounting events are excluded.",
+    "Balanced journal totals do not establish completeness of source events or operational subledgers.",
+    "Opening balances not represented by included journal lines are not reconstructed from operational records.",
+  ],
+});
 
 // ==========================================
 // 1. CHART OF ACCOUNTS (COA)
@@ -52,61 +116,41 @@ export const getChartOfAccounts = async (req, res) => {
 
 export const createAccount = async (req, res) => {
   try {
-    const { accountCode, accountName, accountType, normalBalance, parentAccountId, description } = req.body;
-
-    if (!accountCode || !accountName || !accountType) {
-      return res.json({ success: false, message: "Account Code, Name, and Type are required." });
-    }
-
-    const existing = await prisma.account.findUnique({ where: { accountCode: accountCode.trim() } });
-    if (existing) {
-      return res.json({ success: false, message: `Account code ${accountCode} already exists.` });
-    }
-
-    let resolvedNormalBalance = normalBalance;
-    if (!resolvedNormalBalance) {
-      resolvedNormalBalance = accountType === "ASSET" || accountType === "EXPENSE" ? "DEBIT" : "CREDIT";
-    }
-
-    const account = await prisma.account.create({
-      data: {
-        accountCode: accountCode.trim(),
-        accountName: accountName.trim(),
-        accountType,
-        normalBalance: resolvedNormalBalance,
-        parentAccountId: parentAccountId || null,
-        description: description || null,
-        isSystemAccount: false,
-        isActive: true,
-        currentBalance: 0,
-      },
+    const result = await requestAccountingActionApproval({
+      actionType: "COA_CREATE",
+      requestKey: getAccountingRequestKey(req),
+      payload: req.body,
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
     });
-
-    res.json({ success: true, message: "Account created successfully in Chart of Accounts.", account });
+    res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This chart-of-accounts request already exists." : "Chart-of-accounts change submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     console.error("Create Account Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 400).json({ success: false, code: error.code, message: error.message });
   }
 };
 
 export const updateAccount = async (req, res) => {
   try {
-    const { id, accountName, description, isActive } = req.body;
-    if (!id) return res.json({ success: false, message: "Account ID is required." });
-
-    const account = await prisma.account.update({
-      where: { id },
-      data: {
-        accountName: accountName ? accountName.trim() : undefined,
-        description: description !== undefined ? description : undefined,
-        isActive: isActive !== undefined ? isActive : undefined,
-      },
+    const result = await requestAccountingActionApproval({
+      actionType: "COA_UPDATE",
+      requestKey: getAccountingRequestKey(req),
+      payload: req.body,
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
     });
-
-    res.json({ success: true, message: "Account updated successfully.", account });
+    res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      message: result.isReplay ? "This chart-of-accounts request already exists." : "Chart-of-accounts change submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
   } catch (error) {
     console.error("Update Account Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 400).json({ success: false, code: error.code, message: error.message });
   }
 };
 
@@ -123,9 +167,12 @@ export const getJournalEntries = async (req, res) => {
     if (sourceType) where.sourceType = sourceType;
     if (status) where.status = status;
     if (startDate && endDate) {
+      const dateRange = req.query.calendar === "BS"
+        ? await getConfiguredNepaliDateRange(startDate, endDate)
+        : { startDate: new Date(startDate), endDate: getNepalDateBoundary(endDate, true) };
       where.transactionDate = {
-        gte: new Date(startDate),
-        lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)),
+        gte: dateRange.startDate,
+        lte: dateRange.endDate,
       };
     }
     if (search) {
@@ -153,7 +200,10 @@ export const getJournalEntries = async (req, res) => {
       prisma.journalEntry.count({ where }),
     ]);
 
-    res.json(paginatedResponse("journalEntries", journalEntries, pagination, total));
+    res.json({
+      ...paginatedResponse("journalEntries", journalEntries, pagination, total),
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
+    });
   } catch (error) {
     console.error("Get Journal Entries Error:", error);
     res.json({ success: false, message: error.message });
@@ -187,54 +237,92 @@ export const getJournalEntryById = async (req, res) => {
 
 export const createManualJournalEntry = async (req, res) => {
   try {
-    const { transactionDate, referenceNumber, description, lines } = req.body;
-
-    if (!lines || !Array.isArray(lines) || lines.length < 2) {
-      return res.json({ success: false, message: "Manual journal entry must have at least 2 lines." });
+    const { transactionDate } = req.body || {};
+    const resolvedDate = req.body?.calendar === "BS" && transactionDate
+        ? (await getConfiguredNepaliDateRange(transactionDate, transactionDate)).startDate
+        : transactionDate ? new Date(transactionDate) : new Date();
+    const actionType = String(req.body?.actionType || "MANUAL_JOURNAL").toUpperCase();
+    if (!["MANUAL_JOURNAL", "OPENING_BALANCE"].includes(actionType)) {
+      return res.status(400).json({ success: false, code: "INVALID_ACCOUNTING_ACTION", message: "Choose a supported manual journal type." });
     }
-
-    const result = await postJournalEntry({
-      transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
-      sourceType: "MANUAL_JOURNAL",
-      sourceId: `MANUAL-${Date.now()}`,
-      referenceNumber: referenceNumber || "",
-      description: description || "Manual Journal Entry",
-      lines,
-      createdBy: req.auth?.accountId || req.auth?.profileId || "admin",
+    const result = await requestAccountingActionApproval({
+      actionType,
+      requestKey: getAccountingRequestKey(req),
+      payload: { ...req.body, transactionDate: resolvedDate },
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
     });
-
-    res.json({
+    res.status(result.isReplay ? 200 : 202).json({
       success: true,
-      message: `Journal entry ${result.journalNumber} created and posted successfully.`,
-      journalEntry: result,
+      message: result.isReplay ? "This journal request already exists." : "Journal submitted for independent Admin approval; it has not been posted.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     console.error("Create Manual Journal Entry Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 400).json({ success: false, code: error.code, message: error.message });
   }
 };
 
 export const reverseJournalEntry = async (req, res) => {
   try {
     const { journalEntryId, reversalReason } = req.body;
-    if (!journalEntryId) {
-      return res.json({ success: false, message: "Journal Entry ID is required for reversal." });
+    if (!journalEntryId || String(reversalReason || "").trim().length < 3) {
+      return res.status(400).json({ success: false, message: "Journal entry ID and a reversal reason of at least three characters are required." });
     }
 
-    const reversedEntry = await reverseJournalEntryById({
-      journalEntryId,
-      reversalReason: reversalReason || "Reversed by admin",
-      reversedBy: "admin",
+    const result = await requestAccountingActionApproval({
+      actionType: "JOURNAL_REVERSAL",
+      requestKey: getAccountingRequestKey(req),
+      payload: { journalEntryId, reason: reversalReason },
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
     });
 
-    res.json({
+    res.status(result.isReplay ? 200 : 202).json({
       success: true,
-      message: `Journal entry successfully reversed with new entry ${reversedEntry.journalNumber}.`,
-      reversedEntry,
+      message: result.isReplay ? "This journal reversal request already exists." : "Journal reversal submitted for independent Admin approval; no reversal has been posted.",
+      approvalRequest: result.approvalRequest,
     });
   } catch (error) {
     console.error("Reverse Journal Entry Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 400).json({ success: false, code: error.code || "JOURNAL_REVERSAL_FAILED", message: error.message });
+  }
+};
+
+export const getAccountingActionApprovals = async (req, res) => {
+  try {
+    const approvalRequests = await listAccountingActionApprovals({
+      status: req.query.status,
+      limit: req.query.limit,
+    });
+    return res.status(200).json({ success: true, approvalRequests });
+  } catch (error) {
+    console.error("Get Accounting Action Approvals Error:", error);
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, message: error.message });
+  }
+};
+
+export const reviewAccountingActionApprovalController = async (req, res) => {
+  try {
+    const result = await reviewAccountingActionApproval({
+      approvalId: req.body?.approvalId,
+      decision: req.body?.decision,
+      reason: req.body?.reason,
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
+    });
+    return res.status(200).json({
+      success: true,
+      message: result.isReplay
+        ? "This accounting action was already reviewed."
+        : result.approvalRequest.status === "APPROVED"
+          ? "Accounting action approved and executed."
+          : "Accounting action rejected; no financial entry or balance change was executed.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    console.error("Review Accounting Action Approval Error:", error);
+    return res.status(error.statusCode || 500).json({ success: false, code: error.code, message: error.message });
   }
 };
 
@@ -256,38 +344,49 @@ export const getGeneralLedgerReport = async (req, res) => {
       return res.json({ success: false, message: "Selected account not found." });
     }
 
-    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = endDate ? getNepalDateBoundary(endDate, true) : new Date();
+    const calendar = String(req.query.calendar || "AD").trim().toUpperCase();
+    const reportRange = await resolveCalendarDateFilterInput(startDate, endDate, calendar);
+    const start = reportRange.startDate || (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart;
+    const end = reportRange.endDate || new Date();
+    const endIsDateOnly = typeof endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(endDate);
+    const endFilter = endIsDateOnly
+      ? { lt: new Date(end.getTime() + 1) }
+      : { lte: end };
 
     // 1. Calculate Opening Balance prior to startDate
     const priorLines = await prisma.journalLine.findMany({
       where: {
         accountId,
         journalEntry: {
-          status: "POSTED",
+          status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
           transactionDate: { lt: start },
         },
       },
       select: { debit: true, credit: true },
     });
 
-    let openingBalance = 0;
+    let openingBalance = accountingDecimal("0");
     for (const l of priorLines) {
       if (account.normalBalance === "DEBIT") {
-        openingBalance += Number(l.debit || 0) - Number(l.credit || 0);
+        openingBalance = addDecimals(
+          openingBalance,
+          subtractDecimals(l.debit ?? "0", l.credit ?? "0"),
+        );
       } else {
-        openingBalance += Number(l.credit || 0) - Number(l.debit || 0);
+        openingBalance = addDecimals(
+          openingBalance,
+          subtractDecimals(l.credit ?? "0", l.debit ?? "0"),
+        );
       }
     }
-    openingBalance = Number(openingBalance.toFixed(2));
 
     // 2. Fetch Period Journal Lines
     const periodLines = await prisma.journalLine.findMany({
       where: {
         accountId,
         journalEntry: {
-          status: "POSTED",
-          transactionDate: { gte: start, lte: end },
+          status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
+          transactionDate: { gte: start, ...endFilter },
         },
       },
       include: {
@@ -311,21 +410,20 @@ export const getGeneralLedgerReport = async (req, res) => {
 
     // 3. Calculate Running Balances
     let runningBalance = openingBalance;
-    let totalPeriodDebit = 0;
-    let totalPeriodCredit = 0;
+    let totalPeriodDebit = accountingDecimal("0");
+    let totalPeriodCredit = accountingDecimal("0");
 
     const statementLines = periodLines.map((l) => {
-      const debit = Number(l.debit || 0);
-      const credit = Number(l.credit || 0);
-      totalPeriodDebit += debit;
-      totalPeriodCredit += credit;
+      const debit = accountingDecimal(l.debit ?? "0");
+      const credit = accountingDecimal(l.credit ?? "0");
+      totalPeriodDebit = addDecimals(totalPeriodDebit, debit);
+      totalPeriodCredit = addDecimals(totalPeriodCredit, credit);
 
       if (account.normalBalance === "DEBIT") {
-        runningBalance += debit - credit;
+        runningBalance = addDecimals(runningBalance, subtractDecimals(debit, credit));
       } else {
-        runningBalance += credit - debit;
+        runningBalance = addDecimals(runningBalance, subtractDecimals(credit, debit));
       }
-      runningBalance = Number(runningBalance.toFixed(2));
 
       return {
         id: l.id,
@@ -337,28 +435,28 @@ export const getGeneralLedgerReport = async (req, res) => {
         description: l.description || l.journalEntry.description,
         customerName: l.customerName,
         supplierName: l.supplierName,
-        debit,
-        credit,
-        runningBalance,
+        debit: debit.toString(),
+        credit: credit.toString(),
+        runningBalance: runningBalance.toString(),
       };
     });
 
-    totalPeriodDebit = Number(totalPeriodDebit.toFixed(2));
-    totalPeriodCredit = Number(totalPeriodCredit.toFixed(2));
     const closingBalance = runningBalance;
 
     res.json({
       success: true,
       account,
       dateRange: { start, end },
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
       metrics: {
-        openingBalance,
-        totalPeriodDebit,
-        totalPeriodCredit,
-        closingBalance,
+        openingBalance: openingBalance.toString(),
+        totalPeriodDebit: totalPeriodDebit.toString(),
+        totalPeriodCredit: totalPeriodCredit.toString(),
+        closingBalance: closingBalance.toString(),
         linesCount: statementLines.length,
       },
       statementLines,
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get General Ledger Report Error:", error);
@@ -374,23 +472,26 @@ export const getTrialBalanceReport = async (req, res) => {
   try {
     const { startDate, endDate, asOfDate } = req.query;
 
-    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = asOfDate
-      ? getNepalDateBoundary(asOfDate, true)
-      : endDate
-      ? getNepalDateBoundary(endDate, true)
-      : new Date();
+    const reportEndDate = asOfDate || endDate;
+    const calendar = String(req.query.calendar || "AD").trim().toUpperCase();
+    const reportRange = await resolveCalendarDateFilterInput(startDate, reportEndDate, calendar);
+    const start = reportRange.startDate || (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart;
+    const end = reportRange.endDate || new Date();
+    const endIsDateOnly = typeof reportEndDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reportEndDate);
+    const endFilter = endIsDateOnly
+      ? { lt: new Date(end.getTime() + 1) }
+      : { lte: end };
 
     const accounts = await prisma.account.findMany({
       orderBy: { accountCode: "asc" },
     });
 
-    let totalOpeningDebit = 0;
-    let totalOpeningCredit = 0;
-    let totalPeriodDebit = 0;
-    let totalPeriodCredit = 0;
-    let totalClosingDebit = 0;
-    let totalClosingCredit = 0;
+    let totalOpeningDebit = accountingDecimal("0");
+    let totalOpeningCredit = accountingDecimal("0");
+    let totalPeriodDebit = accountingDecimal("0");
+    let totalPeriodCredit = accountingDecimal("0");
+    let totalClosingDebit = accountingDecimal("0");
+    let totalClosingCredit = accountingDecimal("0");
 
     const trialBalanceRows = [];
 
@@ -400,30 +501,30 @@ export const getTrialBalanceReport = async (req, res) => {
         where: {
           accountId: acc.id,
           journalEntry: {
-            status: "POSTED",
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
             transactionDate: { lt: start },
           },
         },
         select: { debit: true, credit: true },
       });
 
-      let priorDr = 0;
-      let priorCr = 0;
+      let priorDr = accountingDecimal("0");
+      let priorCr = accountingDecimal("0");
       for (const l of priorLines) {
-        priorDr += Number(l.debit || 0);
-        priorCr += Number(l.credit || 0);
+        priorDr = addDecimals(priorDr, l.debit ?? "0");
+        priorCr = addDecimals(priorCr, l.credit ?? "0");
       }
 
-      let openingDr = 0;
-      let openingCr = 0;
+      let openingDr = accountingDecimal("0");
+      let openingCr = accountingDecimal("0");
       if (acc.normalBalance === "DEBIT") {
-        const net = priorDr - priorCr;
-        if (net >= 0) openingDr = net;
-        else openingCr = Math.abs(net);
+        const net = subtractDecimals(priorDr, priorCr);
+        if (compareDecimals(net, "0") >= 0) openingDr = net;
+        else openingCr = net.abs();
       } else {
-        const net = priorCr - priorDr;
-        if (net >= 0) openingCr = net;
-        else openingDr = Math.abs(net);
+        const net = subtractDecimals(priorCr, priorDr);
+        if (compareDecimals(net, "0") >= 0) openingCr = net;
+        else openingDr = net.abs();
       }
 
       // Period transactions
@@ -431,41 +532,48 @@ export const getTrialBalanceReport = async (req, res) => {
         where: {
           accountId: acc.id,
           journalEntry: {
-            status: "POSTED",
-            transactionDate: { gte: start, lte: end },
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
+            transactionDate: { gte: start, ...endFilter },
           },
         },
         select: { debit: true, credit: true },
       });
 
-      let periodDr = 0;
-      let periodCr = 0;
+      let periodDr = accountingDecimal("0");
+      let periodCr = accountingDecimal("0");
       for (const l of periodLines) {
-        periodDr += Number(l.debit || 0);
-        periodCr += Number(l.credit || 0);
+        periodDr = addDecimals(periodDr, l.debit ?? "0");
+        periodCr = addDecimals(periodCr, l.credit ?? "0");
       }
 
       // Closing balance
-      const totalAccDr = priorDr + periodDr;
-      const totalAccCr = priorCr + periodCr;
-      let closingDr = 0;
-      let closingCr = 0;
+      const totalAccDr = addDecimals(priorDr, periodDr);
+      const totalAccCr = addDecimals(priorCr, periodCr);
+      let closingDr = accountingDecimal("0");
+      let closingCr = accountingDecimal("0");
 
-      if (totalAccDr >= totalAccCr) {
-        closingDr = Number((totalAccDr - totalAccCr).toFixed(2));
+      if (compareDecimals(totalAccDr, totalAccCr) >= 0) {
+        closingDr = subtractDecimals(totalAccDr, totalAccCr);
       } else {
-        closingCr = Number((totalAccCr - totalAccDr).toFixed(2));
+        closingCr = subtractDecimals(totalAccCr, totalAccDr);
       }
 
-      totalOpeningDebit += openingDr;
-      totalOpeningCredit += openingCr;
-      totalPeriodDebit += periodDr;
-      totalPeriodCredit += periodCr;
-      totalClosingDebit += closingDr;
-      totalClosingCredit += closingCr;
+      totalOpeningDebit = addDecimals(totalOpeningDebit, openingDr);
+      totalOpeningCredit = addDecimals(totalOpeningCredit, openingCr);
+      totalPeriodDebit = addDecimals(totalPeriodDebit, periodDr);
+      totalPeriodCredit = addDecimals(totalPeriodCredit, periodCr);
+      totalClosingDebit = addDecimals(totalClosingDebit, closingDr);
+      totalClosingCredit = addDecimals(totalClosingCredit, closingCr);
 
       // Only include if there is any activity or non-zero balance
-      if (openingDr > 0 || openingCr > 0 || periodDr > 0 || periodCr > 0 || closingDr > 0 || closingCr > 0) {
+      if (
+        !openingDr.isZero()
+        || !openingCr.isZero()
+        || !periodDr.isZero()
+        || !periodCr.isZero()
+        || !closingDr.isZero()
+        || !closingCr.isZero()
+      ) {
         trialBalanceRows.push({
           id: acc.id,
           accountCode: acc.accountCode,
@@ -473,40 +581,35 @@ export const getTrialBalanceReport = async (req, res) => {
           accountType: acc.accountType,
           category: acc.accountType,
           normalBalance: acc.normalBalance,
-          openingDebit: Number(openingDr.toFixed(2)),
-          openingCredit: Number(openingCr.toFixed(2)),
-          periodDebit: Number(periodDr.toFixed(2)),
-          periodCredit: Number(periodCr.toFixed(2)),
-          closingDebit: Number(closingDr.toFixed(2)),
-          closingCredit: Number(closingCr.toFixed(2)),
+          openingDebit: openingDr.toString(),
+          openingCredit: openingCr.toString(),
+          periodDebit: periodDr.toString(),
+          periodCredit: periodCr.toString(),
+          closingDebit: closingDr.toString(),
+          closingCredit: closingCr.toString(),
         });
       }
     }
 
-    totalOpeningDebit = Number(totalOpeningDebit.toFixed(2));
-    totalOpeningCredit = Number(totalOpeningCredit.toFixed(2));
-    totalPeriodDebit = Number(totalPeriodDebit.toFixed(2));
-    totalPeriodCredit = Number(totalPeriodCredit.toFixed(2));
-    totalClosingDebit = Number(totalClosingDebit.toFixed(2));
-    totalClosingCredit = Number(totalClosingCredit.toFixed(2));
-
-    const isBalanced = Math.abs(totalClosingDebit - totalClosingCredit) <= 0.05;
+    const isBalanced = compareDecimals(totalClosingDebit, totalClosingCredit) === 0;
 
     res.json({
       success: true,
       dateRange: { start, end },
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
       totals: {
-        totalOpeningDebit,
-        totalOpeningCredit,
-        totalPeriodDebit,
-        totalPeriodCredit,
-        totalClosingDebit,
-        totalClosingCredit,
+        totalOpeningDebit: totalOpeningDebit.toString(),
+        totalOpeningCredit: totalOpeningCredit.toString(),
+        totalPeriodDebit: totalPeriodDebit.toString(),
+        totalPeriodCredit: totalPeriodCredit.toString(),
+        totalClosingDebit: totalClosingDebit.toString(),
+        totalClosingCredit: totalClosingCredit.toString(),
         isBalanced,
       },
       isBalanced,
       rows: trialBalanceRows,
       trialBalance: trialBalanceRows,
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get Trial Balance Report Error:", error);
@@ -521,262 +624,367 @@ export const getTrialBalanceReport = async (req, res) => {
 export const getRealtimeFinancialStatements = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    const parseDateBoundary = (value, isEndOfDay) => {
-      const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
-      if (!dateOnly) {
-        const date = new Date(value);
-        if (isEndOfDay && value) date.setHours(23, 59, 59, 999);
-        return date;
-      }
-
-      // Date inputs are Nepal calendar dates; keep boundaries stable regardless of server timezone.
-      const [, year, month, day] = dateOnly;
-      const nepalOffsetMs = (5 * 60 + 45) * 60 * 1000;
-      const startOfDay = Date.UTC(Number(year), Number(month) - 1, Number(day)) - nepalOffsetMs;
-      return new Date(startOfDay + (isEndOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
-    };
-
-    const start = startDate
-      ? parseDateBoundary(startDate, false)
-      : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = endDate ? parseDateBoundary(endDate, true) : new Date();
+    const calendar = String(req.query.calendar || "AD").trim().toUpperCase();
+    const nepaliRange = calendar === "BS" && (startDate || endDate)
+      ? await getConfiguredNepaliDateRange(startDate, endDate)
+      : null;
+    const gregorianRange = calendar === "BS" || (!startDate && !endDate)
+      ? { startDate: null, endDate: null }
+      : await resolveCalendarDateFilterInput(startDate, endDate, calendar);
+    const start = nepaliRange?.startDate || gregorianRange.startDate
+      || (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart;
+    const end = nepaliRange?.endDate || gregorianRange.endDate || new Date();
+    const endIsDateOnly = typeof endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(endDate);
+    const endExclusive = endIsDateOnly ? new Date(end.getTime() + 1) : null;
+    const transactionDateFilter = endIsDateOnly
+      ? { lt: endExclusive }
+      : { lte: end };
 
     const [allAccounts, journalLines] = await Promise.all([
       prisma.account.findMany(),
       prisma.journalLine.findMany({
         where: {
           journalEntry: {
-            status: "POSTED",
-            transactionDate: { lte: end },
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
+            transactionDate: transactionDateFilter,
           },
         },
         include: {
-          journalEntry: { select: { transactionDate: true } },
+          journalEntry: { select: { id: true, transactionDate: true, sourceType: true } },
           account: true,
         },
       }),
     ]);
-    const balanceSheetFiscalYearStart = getNepaliFiscalPeriod(end).fiscalYearStart;
+    const balanceSheetFiscalYearStart = (await getConfiguredNepaliFiscalPeriod(end)).fiscalYearStart;
+    const cashFlowStatement = buildDirectCashFlowStatement({
+      journalLines,
+      startDate: start,
+      endDate: end,
+    });
 
     // Compute Net Activity per account for (1) Cumulative and (2) In-Period
     const accountPeriodMap = {};
     const accountCumulativeMap = {};
     const accountFiscalYearMap = {};
+    const zero = () => accountingDecimal("0");
 
     allAccounts.forEach((a) => {
-      accountPeriodMap[a.id] = 0;
-      accountCumulativeMap[a.id] = 0;
-      accountFiscalYearMap[a.id] = 0;
+      accountPeriodMap[a.id] = zero();
+      accountCumulativeMap[a.id] = zero();
+      accountFiscalYearMap[a.id] = zero();
     });
 
     journalLines.forEach((l) => {
+      if (isLegacyPerOrderDeliveryExpenseEntry({
+        accountCode: l.account.accountCode,
+        sourceType: l.journalEntry.sourceType,
+      })) return;
       const isPeriod = new Date(l.journalEntry.transactionDate) >= start;
-      const dr = Number(l.debit || 0);
-      const cr = Number(l.credit || 0);
+      const dr = accountingDecimal(l.debit ?? "0");
+      const cr = accountingDecimal(l.credit ?? "0");
       const normal = l.account.normalBalance;
-      const net = normal === "DEBIT" ? dr - cr : cr - dr;
+      const net = normal === "DEBIT"
+        ? subtractDecimals(dr, cr)
+        : subtractDecimals(cr, dr);
 
-      accountCumulativeMap[l.accountId] = (accountCumulativeMap[l.accountId] || 0) + net;
+      accountCumulativeMap[l.accountId] = addDecimals(
+        accountCumulativeMap[l.accountId] || zero(),
+        net,
+      );
       if (isPeriod) {
-        accountPeriodMap[l.accountId] = (accountPeriodMap[l.accountId] || 0) + net;
+        accountPeriodMap[l.accountId] = addDecimals(
+          accountPeriodMap[l.accountId] || zero(),
+          net,
+        );
       }
       if (new Date(l.journalEntry.transactionDate) >= balanceSheetFiscalYearStart) {
-        accountFiscalYearMap[l.accountId] = (accountFiscalYearMap[l.accountId] || 0) + net;
+        accountFiscalYearMap[l.accountId] = addDecimals(
+          accountFiscalYearMap[l.accountId] || zero(),
+          net,
+        );
       }
     });
 
     // 1. PROFIT & LOSS BREAKDOWN
-    let grossSales = 0;
-    let shippingRevenue = 0;
-    let salesReturns = 0;
-    let salesDiscounts = 0;
-    let directCOGS = 0;
-    let freightTransport = 0;
-    let packagingExpense = 0;
-    let purchaseReturns = 0;
-    let scrapLoss = 0;
+    let grossSales = zero();
+    let shippingRevenue = zero();
+    let salesReturns = zero();
+    let salesDiscounts = zero();
+    let directCOGS = zero();
+    let freightTransport = zero();
+    let packagingExpense = zero();
+    let purchaseReturns = zero();
+    let scrapLoss = zero();
 
-    let salaries = 0;
-    let rent = 0;
-    let utilities = 0;
-    let marketing = 0;
-    let manufacturerCommission = 0;
-    let marketingPartnerCpa = 0;
-    let deliveryExpense = 0;
-    let softwareTools = 0;
-    let depreciationExpense = 0;
-    let miscExpenses = 0;
-    let loanInterest = 0;
-    let bankCharges = 0;
-    let otherIncome = 0;
+    let salaries = zero();
+    let rent = zero();
+    let utilities = zero();
+    let marketing = zero();
+    let manufacturerCommission = zero();
+    let marketingPartnerCpa = zero();
+    let deliveryExpense = zero();
+    let ncmTransferExpense = zero();
+    let softwareTools = zero();
+    let depreciationExpense = zero();
+    let miscExpenses = zero();
+    let loanInterest = zero();
+    let bankCharges = zero();
+    let otherIncome = zero();
 
     allAccounts.forEach((a) => {
-      const periodBal = Number(accountPeriodMap[a.id] || 0);
+      const periodBal = accountPeriodMap[a.id] || zero();
       const code = a.accountCode;
 
-      if (code === "4100") grossSales += periodBal;
-      else if (code === "4200") shippingRevenue += periodBal;
-      else if (code === "4500") salesReturns += periodBal;
-      else if (code === "4600") salesDiscounts += periodBal;
-      else if (code === "5100") directCOGS += periodBal;
-      else if (code === "5200") freightTransport += periodBal;
-      else if (code === "5300") packagingExpense += periodBal;
-      else if (code === "5400") purchaseReturns += periodBal;
-      else if (code === "5500") scrapLoss += periodBal;
-      else if (code === "6100") salaries += periodBal;
-      else if (code === "6200") rent += periodBal;
-      else if (code === "6300") utilities += periodBal;
-      else if (code === "6400") marketing += periodBal;
-      else if (code === "6410") manufacturerCommission += periodBal;
-      else if (code === "6420") marketingPartnerCpa += periodBal;
-      else if (code === "6430") deliveryExpense += periodBal;
-      else if (code === "6500") softwareTools += periodBal;
-      else if (code === "6600") depreciationExpense += periodBal;
-      else if (code === "6700") miscExpenses += periodBal;
-      else if (code === "7100") loanInterest += periodBal;
-      else if (code === "7200") bankCharges += periodBal;
-      else if (code === "8100") otherIncome += periodBal;
+      if (code === "4100") grossSales = addDecimals(grossSales, periodBal);
+      else if (code === "4200") shippingRevenue = addDecimals(shippingRevenue, periodBal);
+      else if (code === "4500") salesReturns = addDecimals(salesReturns, periodBal);
+      else if (code === "4600") salesDiscounts = addDecimals(salesDiscounts, periodBal);
+      else if (code === "5100") directCOGS = addDecimals(directCOGS, periodBal);
+      else if (code === "5200") freightTransport = addDecimals(freightTransport, periodBal);
+      else if (code === "5300") packagingExpense = addDecimals(packagingExpense, periodBal);
+      else if (code === "5400") purchaseReturns = addDecimals(purchaseReturns, periodBal);
+      else if (code === "5500") scrapLoss = addDecimals(scrapLoss, periodBal);
+      else if (code === "6100") salaries = addDecimals(salaries, periodBal);
+      else if (code === "6200") rent = addDecimals(rent, periodBal);
+      else if (code === "6300") utilities = addDecimals(utilities, periodBal);
+      else if (code === "6400") marketing = addDecimals(marketing, periodBal);
+      else if (code === "6410") manufacturerCommission = addDecimals(manufacturerCommission, periodBal);
+      else if (code === "6420") marketingPartnerCpa = addDecimals(marketingPartnerCpa, periodBal);
+      else if (code === "6430") deliveryExpense = addDecimals(deliveryExpense, periodBal);
+      else if (code === "6440") ncmTransferExpense = addDecimals(ncmTransferExpense, periodBal);
+      else if (code === "6500") softwareTools = addDecimals(softwareTools, periodBal);
+      else if (code === "6600") depreciationExpense = addDecimals(depreciationExpense, periodBal);
+      else if (code === "6700") miscExpenses = addDecimals(miscExpenses, periodBal);
+      else if (code === "7100") loanInterest = addDecimals(loanInterest, periodBal);
+      else if (code === "7200") bankCharges = addDecimals(bankCharges, periodBal);
+      else if (code === "8100") otherIncome = addDecimals(otherIncome, periodBal);
     });
 
-    const netRevenue = Number((grossSales + shippingRevenue - salesReturns - salesDiscounts).toFixed(2));
-    const totalCOGS = Number((directCOGS + freightTransport + packagingExpense + scrapLoss - purchaseReturns).toFixed(2));
-    const grossProfit = Number((netRevenue - totalCOGS).toFixed(2));
-    const totalOperatingExpenses = Number((salaries + rent + utilities + marketing + manufacturerCommission + marketingPartnerCpa + deliveryExpense + softwareTools + miscExpenses).toFixed(2));
-    const ebitda = Number((grossProfit - totalOperatingExpenses).toFixed(2));
-    const netProfitBeforeTax = Number((ebitda - depreciationExpense - loanInterest - bankCharges + otherIncome).toFixed(2));
+    const netRevenue = subtractDecimals(
+      addDecimals(grossSales, shippingRevenue),
+      addDecimals(salesReturns, salesDiscounts),
+    );
+    const totalCOGS = subtractDecimals(
+      addDecimals(directCOGS, freightTransport, packagingExpense, scrapLoss),
+      purchaseReturns,
+    );
+    const grossProfit = subtractDecimals(netRevenue, totalCOGS);
+    const totalOperatingExpenses = addDecimals(
+      salaries,
+      rent,
+      utilities,
+      marketing,
+      manufacturerCommission,
+      marketingPartnerCpa,
+      deliveryExpense,
+      ncmTransferExpense,
+      softwareTools,
+      miscExpenses,
+    );
+    const ebitda = subtractDecimals(grossProfit, totalOperatingExpenses);
+    const netProfitBeforeTax = addDecimals(
+      subtractDecimals(subtractDecimals(subtractDecimals(ebitda, depreciationExpense), loanInterest), bankCharges),
+      otherIncome,
+    );
 
-    let fiscalYearGrossSales = 0;
-    let fiscalYearShippingRevenue = 0;
-    let fiscalYearSalesReturns = 0;
-    let fiscalYearSalesDiscounts = 0;
-    let fiscalYearDirectCOGS = 0;
-    let fiscalYearFreightTransport = 0;
-    let fiscalYearPackagingExpense = 0;
-    let fiscalYearPurchaseReturns = 0;
-    let fiscalYearScrapLoss = 0;
-    let fiscalYearSalaries = 0;
-    let fiscalYearRent = 0;
-    let fiscalYearUtilities = 0;
-    let fiscalYearMarketing = 0;
-    let fiscalYearManufacturerCommission = 0;
-    let fiscalYearMarketingPartnerCpa = 0;
-    let fiscalYearDeliveryExpense = 0;
-    let fiscalYearSoftwareTools = 0;
-    let fiscalYearMiscExpenses = 0;
-    let fiscalYearDepreciationExpense = 0;
-    let fiscalYearLoanInterest = 0;
-    let fiscalYearBankCharges = 0;
-    let fiscalYearOtherIncome = 0;
+    let fiscalYearGrossSales = zero();
+    let fiscalYearShippingRevenue = zero();
+    let fiscalYearSalesReturns = zero();
+    let fiscalYearSalesDiscounts = zero();
+    let fiscalYearDirectCOGS = zero();
+    let fiscalYearFreightTransport = zero();
+    let fiscalYearPackagingExpense = zero();
+    let fiscalYearPurchaseReturns = zero();
+    let fiscalYearScrapLoss = zero();
+    let fiscalYearSalaries = zero();
+    let fiscalYearRent = zero();
+    let fiscalYearUtilities = zero();
+    let fiscalYearMarketing = zero();
+    let fiscalYearManufacturerCommission = zero();
+    let fiscalYearMarketingPartnerCpa = zero();
+    let fiscalYearDeliveryExpense = zero();
+    let fiscalYearNcmTransferExpense = zero();
+    let fiscalYearSoftwareTools = zero();
+    let fiscalYearMiscExpenses = zero();
+    let fiscalYearDepreciationExpense = zero();
+    let fiscalYearLoanInterest = zero();
+    let fiscalYearBankCharges = zero();
+    let fiscalYearOtherIncome = zero();
 
     allAccounts.forEach((account) => {
-      const balance = Number(accountFiscalYearMap[account.id] || 0);
+      const balance = accountFiscalYearMap[account.id] || zero();
       switch (account.accountCode) {
-        case "4100": fiscalYearGrossSales += balance; break;
-        case "4200": fiscalYearShippingRevenue += balance; break;
-        case "4500": fiscalYearSalesReturns += balance; break;
-        case "4600": fiscalYearSalesDiscounts += balance; break;
-        case "5100": fiscalYearDirectCOGS += balance; break;
-        case "5200": fiscalYearFreightTransport += balance; break;
-        case "5300": fiscalYearPackagingExpense += balance; break;
-        case "5400": fiscalYearPurchaseReturns += balance; break;
-        case "5500": fiscalYearScrapLoss += balance; break;
-        case "6100": fiscalYearSalaries += balance; break;
-        case "6200": fiscalYearRent += balance; break;
-        case "6300": fiscalYearUtilities += balance; break;
-        case "6400": fiscalYearMarketing += balance; break;
-        case "6410": fiscalYearManufacturerCommission += balance; break;
-        case "6420": fiscalYearMarketingPartnerCpa += balance; break;
-        case "6430": fiscalYearDeliveryExpense += balance; break;
-        case "6500": fiscalYearSoftwareTools += balance; break;
-        case "6600": fiscalYearDepreciationExpense += balance; break;
-        case "6700": fiscalYearMiscExpenses += balance; break;
-        case "7100": fiscalYearLoanInterest += balance; break;
-        case "7200": fiscalYearBankCharges += balance; break;
-        case "8100": fiscalYearOtherIncome += balance; break;
+        case "4100": fiscalYearGrossSales = addDecimals(fiscalYearGrossSales, balance); break;
+        case "4200": fiscalYearShippingRevenue = addDecimals(fiscalYearShippingRevenue, balance); break;
+        case "4500": fiscalYearSalesReturns = addDecimals(fiscalYearSalesReturns, balance); break;
+        case "4600": fiscalYearSalesDiscounts = addDecimals(fiscalYearSalesDiscounts, balance); break;
+        case "5100": fiscalYearDirectCOGS = addDecimals(fiscalYearDirectCOGS, balance); break;
+        case "5200": fiscalYearFreightTransport = addDecimals(fiscalYearFreightTransport, balance); break;
+        case "5300": fiscalYearPackagingExpense = addDecimals(fiscalYearPackagingExpense, balance); break;
+        case "5400": fiscalYearPurchaseReturns = addDecimals(fiscalYearPurchaseReturns, balance); break;
+        case "5500": fiscalYearScrapLoss = addDecimals(fiscalYearScrapLoss, balance); break;
+        case "6100": fiscalYearSalaries = addDecimals(fiscalYearSalaries, balance); break;
+        case "6200": fiscalYearRent = addDecimals(fiscalYearRent, balance); break;
+        case "6300": fiscalYearUtilities = addDecimals(fiscalYearUtilities, balance); break;
+        case "6400": fiscalYearMarketing = addDecimals(fiscalYearMarketing, balance); break;
+        case "6410": fiscalYearManufacturerCommission = addDecimals(fiscalYearManufacturerCommission, balance); break;
+        case "6420": fiscalYearMarketingPartnerCpa = addDecimals(fiscalYearMarketingPartnerCpa, balance); break;
+        case "6430": fiscalYearDeliveryExpense = addDecimals(fiscalYearDeliveryExpense, balance); break;
+        case "6440": fiscalYearNcmTransferExpense = addDecimals(fiscalYearNcmTransferExpense, balance); break;
+        case "6500": fiscalYearSoftwareTools = addDecimals(fiscalYearSoftwareTools, balance); break;
+        case "6600": fiscalYearDepreciationExpense = addDecimals(fiscalYearDepreciationExpense, balance); break;
+        case "6700": fiscalYearMiscExpenses = addDecimals(fiscalYearMiscExpenses, balance); break;
+        case "7100": fiscalYearLoanInterest = addDecimals(fiscalYearLoanInterest, balance); break;
+        case "7200": fiscalYearBankCharges = addDecimals(fiscalYearBankCharges, balance); break;
+        case "8100": fiscalYearOtherIncome = addDecimals(fiscalYearOtherIncome, balance); break;
         default: break;
       }
     });
 
-    const fiscalYearNetRevenue = fiscalYearGrossSales + fiscalYearShippingRevenue - fiscalYearSalesReturns - fiscalYearSalesDiscounts;
-    const fiscalYearTotalCogs = fiscalYearDirectCOGS + fiscalYearFreightTransport + fiscalYearPackagingExpense + fiscalYearScrapLoss - fiscalYearPurchaseReturns;
-    const fiscalYearTotalOpex = fiscalYearSalaries + fiscalYearRent + fiscalYearUtilities + fiscalYearMarketing +
-      fiscalYearManufacturerCommission + fiscalYearMarketingPartnerCpa + fiscalYearDeliveryExpense + fiscalYearSoftwareTools + fiscalYearMiscExpenses;
-    const currentFiscalYearNetProfit = Number((fiscalYearNetRevenue - fiscalYearTotalCogs - fiscalYearTotalOpex -
-      fiscalYearDepreciationExpense - fiscalYearLoanInterest - fiscalYearBankCharges + fiscalYearOtherIncome).toFixed(2));
+    const fiscalYearNetRevenue = subtractDecimals(
+      addDecimals(fiscalYearGrossSales, fiscalYearShippingRevenue),
+      addDecimals(fiscalYearSalesReturns, fiscalYearSalesDiscounts),
+    );
+    const fiscalYearTotalCogs = subtractDecimals(
+      addDecimals(
+        fiscalYearDirectCOGS,
+        fiscalYearFreightTransport,
+        fiscalYearPackagingExpense,
+        fiscalYearScrapLoss,
+      ),
+      fiscalYearPurchaseReturns,
+    );
+    const fiscalYearTotalOpex = addDecimals(
+      fiscalYearSalaries,
+      fiscalYearRent,
+      fiscalYearUtilities,
+      fiscalYearMarketing,
+      fiscalYearManufacturerCommission,
+      fiscalYearMarketingPartnerCpa,
+      fiscalYearDeliveryExpense,
+      fiscalYearNcmTransferExpense,
+      fiscalYearSoftwareTools,
+      fiscalYearMiscExpenses,
+    );
+    const currentFiscalYearNetProfit = addDecimals(
+      subtractDecimals(
+        subtractDecimals(
+          subtractDecimals(
+            subtractDecimals(fiscalYearNetRevenue, fiscalYearTotalCogs),
+            fiscalYearTotalOpex,
+          ),
+          fiscalYearDepreciationExpense,
+        ),
+        fiscalYearLoanInterest,
+      ),
+      subtractDecimals(fiscalYearOtherIncome, fiscalYearBankCharges),
+    );
 
     // 2. BALANCE SHEET BREAKDOWN (Cumulative as of endDate)
-    let cash = 0;
-    let bank = 0;
-    let ar = 0;
-    let codReceivable = 0;
-    let gatewayClearing = 0;
-    let inventory = 0;
-    let inputVat = 0;
-    let supplierAdvances = 0;
-    let fixedAssetsGross = 0;
-    let accumulatedDepreciation = 0;
+    let cash = zero();
+    let bank = zero();
+    let ar = zero();
+    let codReceivable = zero();
+    let distributorCodReceivable = zero();
+    let gatewayClearing = zero();
+    let inventory = zero();
+    let inputVat = zero();
+    let supplierAdvances = zero();
+    let vatTaxPrepayments = zero();
+    let fixedAssetsGross = zero();
+    let accumulatedDepreciation = zero();
 
-    let ap = 0;
-    let manufacturerPayable = 0;
-    let marketingPartnerPayable = 0;
-    let carrierPayable = 0;
-    let outputVat = 0;
-    let taxPayable = 0;
-    let customerRefundsPayable = 0;
-    let dividendsPayable = 0;
-    let bankLoans = 0;
+    let ap = zero();
+    let manufacturerPayable = zero();
+    let distributorPayable = zero();
+    let marketingPartnerPayable = zero();
+    let carrierPayable = zero();
+    let outputVat = zero();
+    let taxPayable = zero();
+    let customerRefundsPayable = zero();
+    let dividendsPayable = zero();
+    let bankLoans = zero();
 
-    let shareCapital = 0;
-    let sharePremium = 0;
-    let retainedEarnings = 0;
+    let shareCapital = zero();
+    let sharePremium = zero();
+    let retainedEarnings = zero();
 
     allAccounts.forEach((a) => {
-      const cumBal = Number(accountCumulativeMap[a.id] || 0);
+      const cumBal = accountCumulativeMap[a.id] || zero();
       const code = a.accountCode;
 
-      if (code === "1110") cash += cumBal;
-      else if (code === "1120") bank += cumBal;
-      else if (code === "1130") ar += cumBal;
-      else if (code === "1170") codReceivable += cumBal;
-      else if (code === "1180") gatewayClearing += cumBal;
-      else if (code === "1140") inventory += cumBal;
-      else if (code === "1150") inputVat += cumBal;
-      else if (code === "1160") supplierAdvances += cumBal;
-      else if (["1510", "1520", "1530"].includes(code)) fixedAssetsGross += cumBal;
-      else if (code === "1590") accumulatedDepreciation += cumBal;
-      else if (code === "2110") ap += cumBal;
-      else if (code === "2160") manufacturerPayable += cumBal;
-      else if (code === "2170") marketingPartnerPayable += cumBal;
-      else if (code === "2180") carrierPayable += cumBal;
-      else if (code === "2120") outputVat += cumBal;
-      else if (code === "2130") taxPayable += cumBal;
-      else if (code === "2140") customerRefundsPayable += cumBal;
-      else if (code === "2150") dividendsPayable += cumBal;
-      else if (code === "2510") bankLoans += cumBal;
-      else if (code === "3100") shareCapital += cumBal;
-      else if (code === "3200") sharePremium += cumBal;
-      else if (code === "3300") retainedEarnings += cumBal;
+      if (code === "1110") cash = addDecimals(cash, cumBal);
+      else if (code === "1120") bank = addDecimals(bank, cumBal);
+      else if (code === "1130") ar = addDecimals(ar, cumBal);
+      else if (code === "1170") codReceivable = addDecimals(codReceivable, cumBal);
+      else if (code === "1190") distributorCodReceivable = addDecimals(distributorCodReceivable, cumBal);
+      else if (code === "1180") gatewayClearing = addDecimals(gatewayClearing, cumBal);
+      else if (code === "1140") inventory = addDecimals(inventory, cumBal);
+      else if (code === "1150") inputVat = addDecimals(inputVat, cumBal);
+      else if (code === "1160") supplierAdvances = addDecimals(supplierAdvances, cumBal);
+      else if (code === "1165") vatTaxPrepayments = addDecimals(vatTaxPrepayments, cumBal);
+      else if (["1510", "1520", "1530"].includes(code)) fixedAssetsGross = addDecimals(fixedAssetsGross, cumBal);
+      else if (code === "1590") accumulatedDepreciation = addDecimals(accumulatedDepreciation, cumBal);
+      else if (code === "2110") ap = addDecimals(ap, cumBal);
+      else if (code === "2160") manufacturerPayable = addDecimals(manufacturerPayable, cumBal);
+      else if (code === "2190") distributorPayable = addDecimals(distributorPayable, cumBal);
+      else if (code === "2170") marketingPartnerPayable = addDecimals(marketingPartnerPayable, cumBal);
+      else if (code === "2180") carrierPayable = addDecimals(carrierPayable, cumBal);
+      else if (code === "2120") outputVat = addDecimals(outputVat, cumBal);
+      else if (code === "2130") taxPayable = addDecimals(taxPayable, cumBal);
+      else if (code === "2140") customerRefundsPayable = addDecimals(customerRefundsPayable, cumBal);
+      else if (code === "2150") dividendsPayable = addDecimals(dividendsPayable, cumBal);
+      else if (code === "2510") bankLoans = addDecimals(bankLoans, cumBal);
+      else if (code === "3100") shareCapital = addDecimals(shareCapital, cumBal);
+      else if (code === "3200") sharePremium = addDecimals(sharePremium, cumBal);
+      else if (code === "3300") retainedEarnings = addDecimals(retainedEarnings, cumBal);
     });
 
-    const netFixedAssets = Number((fixedAssetsGross - accumulatedDepreciation).toFixed(2));
-    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + gatewayClearing + inventory + inputVat + supplierAdvances).toFixed(2));
-    const totalAssets = Number((totalCurrentAssets + netFixedAssets).toFixed(2));
+    const netFixedAssets = subtractDecimals(fixedAssetsGross, accumulatedDepreciation);
+    const totalCurrentAssets = addDecimals(
+      cash,
+      bank,
+      ar,
+      codReceivable,
+      distributorCodReceivable,
+      gatewayClearing,
+      inventory,
+      inputVat,
+      supplierAdvances,
+      vatTaxPrepayments,
+    );
+    const totalAssets = addDecimals(totalCurrentAssets, netFixedAssets);
 
-    const totalCurrentLiabilities = Number((ap + manufacturerPayable + marketingPartnerPayable + carrierPayable + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
-    const totalLongTermLiabilities = Number(bankLoans.toFixed(2));
-    const totalLiabilities = Number((totalCurrentLiabilities + totalLongTermLiabilities).toFixed(2));
+    const totalCurrentLiabilities = addDecimals(
+      ap,
+      manufacturerPayable,
+      distributorPayable,
+      marketingPartnerPayable,
+      carrierPayable,
+      outputVat,
+      taxPayable,
+      customerRefundsPayable,
+      dividendsPayable,
+    );
+    const totalLongTermLiabilities = bankLoans;
+    const totalLiabilities = addDecimals(totalCurrentLiabilities, totalLongTermLiabilities);
 
     // Retained Earnings + Current Year Net Profit from P&L
-    const totalEquity = Number((shareCapital + sharePremium + retainedEarnings + currentFiscalYearNetProfit).toFixed(2));
-    const totalLiabilitiesAndEquity = Number((totalLiabilities + totalEquity).toFixed(2));
+    const totalEquity = addDecimals(
+      shareCapital,
+      sharePremium,
+      retainedEarnings,
+      currentFiscalYearNetProfit,
+    );
+    const totalLiabilitiesAndEquity = addDecimals(totalLiabilities, totalEquity);
 
-    const isBalanceSheetBalanced = Math.abs(totalAssets - totalLiabilitiesAndEquity) <= 0.05;
+    const isBalanceSheetBalanced = compareDecimals(totalAssets, totalLiabilitiesAndEquity) === 0;
 
     res.json({
       success: true,
       period: { start, end },
-      incomeStatement: {
+      reportBasis: buildPostedLedgerReportBasis({ start, end }),
+      incomeStatement: serializeAccountingValue({
         revenue: {
           grossSales,
           shippingRevenue,
@@ -801,6 +1009,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           manufacturerCommission,
           marketingPartnerCpa,
           deliveryExpense,
+          ncmTransferExpense,
           softwareTools,
           miscExpenses,
           totalOperatingExpenses,
@@ -813,18 +1022,20 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           otherIncome,
         },
         netProfitBeforeTax,
-      },
-      balanceSheet: {
+      }),
+      balanceSheet: serializeAccountingValue({
         assets: {
           currentAssets: {
             cash,
             bank,
             accountsReceivable: ar,
             codReceivable,
+            distributorCodReceivable,
             gatewayClearing,
             inventory,
             inputVat,
             supplierAdvances,
+            vatTaxPrepayments,
             totalCurrentAssets,
           },
           fixedAssets: {
@@ -838,6 +1049,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           currentLiabilities: {
             accountsPayable: ap,
             manufacturerPayable,
+            distributorPayable,
             marketingPartnerPayable,
             carrierPayable,
             outputVat,
@@ -861,11 +1073,13 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         },
         totalLiabilitiesAndEquity,
         isBalanceSheetBalanced,
-      },
+      }),
+      cashFlowStatement,
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get Realtime Financial Statements Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 
@@ -875,7 +1089,35 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 
 export const getSubledgerReconciliation = async (req, res) => {
   try {
-    const [arAccount, apAccount, payables, receivables, accounts] = await Promise.all([
+    const partyControlCodes = ["1170", "1190", "2180", "2190"];
+    const [
+      arAccount,
+      apAccount,
+      payables,
+      receivables,
+      accounts,
+      accountingPostingStatus,
+      partyDocumentGroups,
+      partyControlAccounts,
+      ledgerAccounts,
+      fixedAssets,
+      journalLineGroups,
+      manufacturerLogisticsJournalLines,
+      manufacturerLogisticsDocuments,
+      manufacturerProductionJournalLines,
+      manufacturerProductionDocuments,
+      customerRefundPayableJournalLines,
+      customerRefundPayables,
+      collaborationFeeInvoices,
+      collaborationFeeDocuments,
+      collaborationFeeJournalLines,
+      ncmCarrierFeeAccrualJournalLines,
+      ncmCarrierFeeDocuments,
+      ncmCarrierFeeSettlementJournalLines,
+      marketingCpaJournalEntries,
+      marketingCpaDocuments,
+      marketingCpaRedemptionEvents,
+    ] = await Promise.all([
       prisma.account.findUnique({ where: { accountCode: "1130" } }),
       prisma.account.findUnique({ where: { accountCode: "2110" } }),
       prisma.accountPayable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_PAID"] } } }),
@@ -884,56 +1126,484 @@ export const getSubledgerReconciliation = async (req, res) => {
         where: { status: "ACTIVE" },
         include: { accountingAccount: true },
       }),
+      getDeliveryAccountingOutboxStatus(),
+      prisma.accountingDocument.groupBy({
+        by: ["side", "sourceType"],
+        where: {
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          sourceType: { in: ["NCM_COD_SALE", "DISTRIBUTOR_COD_SALE", "NCM_CARRIER_FEE", "DISTRIBUTOR_DELIVERY_EARNING"] },
+        },
+        _sum: { remainingAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.account.findMany({
+        where: { accountCode: { in: partyControlCodes } },
+        select: { accountCode: true, currentBalance: true },
+      }),
+      prisma.account.findMany({
+        select: {
+          id: true,
+          accountCode: true,
+          accountName: true,
+          normalBalance: true,
+          currentBalance: true,
+        },
+        orderBy: { accountCode: "asc" },
+      }),
+      prisma.fixedAsset.findMany({
+        select: {
+          id: true,
+          assetTag: true,
+          assetName: true,
+          category: true,
+          purchaseCost: true,
+          accumulatedDepreciation: true,
+          currentBookValue: true,
+          status: true,
+        },
+      }),
+      prisma.journalLine.groupBy({
+        by: ["accountId"],
+        where: {
+          journalEntry: { status: { in: BALANCE_REPORT_JOURNAL_STATUSES } },
+        },
+        _sum: { debit: true, credit: true },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2160" } },
+          journalEntry: { is: { sourceType: "MANUFACTURER_LOGISTICS", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          supplierId: true,
+          accountingParty: { select: { partyType: true, sourceEntityId: true } },
+          journalEntry: { select: { sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "MANUFACTURER_LOGISTICS" },
+        select: {
+          side: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          party: { select: { partyType: true, sourceEntityId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2160" } },
+          journalEntry: { is: { sourceType: "MANUFACTURER_PRODUCTION", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          supplierId: true,
+          accountingParty: { select: { partyType: true, sourceEntityId: true } },
+          journalEntry: { select: { sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "MANUFACTURER_PRODUCTION" },
+        select: {
+          side: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          party: { select: { partyType: true, sourceEntityId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2110" } },
+          journalEntry: {
+            is: {
+              sourceType: { in: ["SALES_RETURN", "ORDER_EXCHANGE"] },
+              status: "POSTED",
+            },
+          },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.accountPayable.findMany({
+        where: { referenceType: { in: ["CUSTOMER_REFUND", "CUSTOMER_EXCHANGE_REFUND"] } },
+        select: {
+          referenceType: true,
+          referenceId: true,
+          totalAmount: true,
+          paidAmount: true,
+          remainingBalance: true,
+          status: true,
+        },
+      }),
+      prisma.collaborationFeeInvoice.findMany({
+        select: {
+          id: true,
+          invoiceNumber: true,
+          status: true,
+          totalAmount: true,
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "RECEIVABLE", sourceType: "COLLABORATION_FEE" },
+        select: {
+          id: true,
+          documentType: true,
+          side: true,
+          sourceType: true,
+          sourceId: true,
+          partyId: true,
+          currency: true,
+          issueDate: true,
+          status: true,
+          originalAmount: true,
+          allocatedAmount: true,
+          remainingAmount: true,
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "1130" } },
+          journalEntry: { is: { sourceType: "COLLABORATION_FEE_INVOICE", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2180" } },
+          journalEntry: { is: { sourceType: "NCM_CARRIER_FEE_ACCRUAL", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "NCM_CARRIER_FEE" },
+        select: {
+          side: true,
+          sourceType: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          allocations: { select: { amount: true, journalEntryId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2180" } },
+          journalEntry: {
+            is: {
+              sourceType: "PAYMENT",
+              sourceId: { startsWith: "NCM-REMIT-" },
+              status: "POSTED",
+            },
+          },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { id: true, sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.journalEntry.findMany({
+        where: { sourceType: "MARKETING_CPA" },
+        select: {
+          id: true,
+          sourceType: true,
+          sourceId: true,
+          status: true,
+          reversedEntryId: true,
+          lines: {
+            where: { account: { is: { accountCode: { in: ["6420", "2170"] } } } },
+            select: {
+              debit: true,
+              credit: true,
+              account: { select: { accountCode: true } },
+              accountingParty: {
+                select: { partyType: true, sourceEntityId: true, displayName: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { sourceType: "MARKETING_CPA" },
+        select: {
+          id: true,
+          documentType: true,
+          side: true,
+          sourceType: true,
+          sourceId: true,
+          partyId: true,
+          currency: true,
+          status: true,
+          originalAmount: true,
+          allocatedAmount: true,
+          remainingAmount: true,
+          party: { select: { partyType: true, sourceEntityId: true, displayName: true } },
+        },
+      }),
+      prisma.marketingCardEvent.findMany({
+        where: { eventType: "BENEFIT_REDEEMED" },
+        select: { id: true, eventType: true, referenceId: true, metadata: true },
+      }),
     ]);
 
-    const arControlBalance = Number(arAccount?.currentBalance || 0);
-    const sumReceivables = receivables.reduce((acc, r) => acc + Number(r.remainingBalance || 0), 0);
+    const {
+      locations: platformInventoryLocations,
+      balances: platformInventoryBalances,
+      layerBalances: platformInventoryLayerBalances,
+    } = await loadPlatformInventoryValuationSources(prisma, {
+      includeLostLocations: true,
+      includeLedgerOnlyLocations: true,
+    });
 
-    const apControlBalance = Number(apAccount?.currentBalance || 0);
-    const sumPayables = payables.reduce((acc, p) => acc + Number(p.remainingBalance || 0), 0);
+    const collaborationDocumentIds = collaborationFeeDocuments.map((document) => document.id);
+    const collaborationFeeAllocations = collaborationDocumentIds.length
+      ? await prisma.accountingAllocation.findMany({
+        where: { documentId: { in: collaborationDocumentIds } },
+        select: {
+          documentId: true,
+          journalEntryId: true,
+          allocationType: true,
+          idempotencyKey: true,
+          amount: true,
+        },
+      })
+      : [];
+    const collaborationFeeCreditApplications = collaborationDocumentIds.length
+      ? await prisma.collaborationFeeCreditApplication.findMany({
+        where: {
+          OR: [
+            { creditDocumentId: { in: collaborationDocumentIds } },
+            { invoiceDocumentId: { in: collaborationDocumentIds } },
+          ],
+        },
+        select: {
+          idempotencyKey: true,
+          creditDocumentId: true,
+          invoiceDocumentId: true,
+          journalEntryId: true,
+          amount: true,
+        },
+      })
+      : [];
+    const collaborationReceiptJournalIds = [
+      ...new Set(collaborationFeeAllocations.map((allocation) => allocation.journalEntryId).filter(Boolean)),
+    ];
+    const [collaborationReceiptAllocations, collaborationReceiptJournals] = collaborationReceiptJournalIds.length
+      ? await Promise.all([
+        prisma.accountingAllocation.findMany({
+          where: { journalEntryId: { in: collaborationReceiptJournalIds } },
+          select: {
+            documentId: true,
+            journalEntryId: true,
+            allocationType: true,
+            idempotencyKey: true,
+            amount: true,
+          },
+        }),
+        prisma.journalEntry.findMany({
+          where: { id: { in: collaborationReceiptJournalIds } },
+          select: {
+            id: true,
+            status: true,
+            sourceType: true,
+            sourceId: true,
+            lines: {
+              where: { account: { is: { accountCode: "1130" } } },
+              select: { debit: true, credit: true },
+            },
+          },
+        }),
+      ])
+      : [[], []];
+
+    const arControlBalance = accountingDecimal(arAccount?.currentBalance ?? "0");
+    const sumReceivables = receivables.reduce(
+      (total, receivable) => addDecimals(total, receivable.remainingBalance ?? "0"),
+      accountingDecimal("0"),
+    );
+    const arVariance = subtractDecimals(arControlBalance, sumReceivables);
+
+    const apControlBalance = accountingDecimal(apAccount?.currentBalance ?? "0");
+    const sumPayables = payables.reduce(
+      (total, payable) => addDecimals(total, payable.remainingBalance ?? "0"),
+      accountingDecimal("0"),
+    );
+    const apVariance = subtractDecimals(apControlBalance, sumPayables);
 
     const cashAndBankReconciliation = buildTreasuryGlReconciliation(accounts);
+    const partySubledgers = buildPartySubledgerReconciliation({
+      documentGroups: partyDocumentGroups,
+      accounts: partyControlAccounts,
+    });
+    const generalLedgerBalances = buildGeneralLedgerBalanceReconciliation({
+      accounts: ledgerAccounts,
+      journalLineGroups,
+    });
+    const accountingControlCoverage = buildAccountingControlCoverage({ accounts: ledgerAccounts });
+    const fixedAssetReconciliation = buildFixedAssetReconciliation({
+      assets: fixedAssets,
+      accounts: ledgerAccounts,
+    });
+    const inventoryValuationReconciliation = buildInventoryValuationReconciliation({
+      balances: platformInventoryBalances,
+      layerBalances: platformInventoryLayerBalances,
+      locations: platformInventoryLocations,
+      accounts: ledgerAccounts,
+    });
+    const manufacturerLogisticsReconciliation = buildManufacturerLogisticsReconciliation({
+      journalLines: manufacturerLogisticsJournalLines,
+      documents: manufacturerLogisticsDocuments,
+    });
+    const manufacturerProductionReconciliation = buildManufacturerProductionReconciliation({
+      journalLines: manufacturerProductionJournalLines,
+      documents: manufacturerProductionDocuments,
+    });
+    const customerRefundPayableReconciliation = buildCustomerRefundPayableReconciliation({
+      journalLines: customerRefundPayableJournalLines,
+      payables: customerRefundPayables,
+    });
+    const collaborationFeeReceivableReconciliation = buildCollaborationFeeReceivableReconciliation({
+      invoices: collaborationFeeInvoices,
+      documents: collaborationFeeDocuments,
+      journalLines: collaborationFeeJournalLines,
+      documentAllocations: collaborationFeeAllocations,
+      allocations: collaborationReceiptAllocations,
+      collectionJournals: collaborationReceiptJournals,
+      creditApplications: collaborationFeeCreditApplications,
+    });
+    const ncmCarrierFeeReconciliation = buildNcmCarrierFeeReconciliation({
+      accrualJournalLines: ncmCarrierFeeAccrualJournalLines,
+      documents: ncmCarrierFeeDocuments,
+      settlementJournalLines: ncmCarrierFeeSettlementJournalLines,
+    });
+    const marketingCpaPayableReconciliation = buildMarketingCpaPayableReconciliation({
+      redemptionEvents: marketingCpaRedemptionEvents,
+      journalEntries: marketingCpaJournalEntries,
+      documents: marketingCpaDocuments,
+    });
 
     res.json({
       success: true,
       coverageStatus: "PARTIAL",
       coverageGaps: [
-        "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
-        "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-        "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+        "Legacy AR checks only account 1130; collaboration fee invoices are checked separately below, while COD, gateway, and other receivables remain incomplete.",
+        "Legacy AP checks account 2110; accepted-production, local-freight, and platform-funded customer refund sources are checked separately below, while settlement clearing, legacy delivery accruals, and other manufacturer, marketing-partner, and carrier balances remain incomplete.",
+        "Marketing CPA redemption-event, journal, and bill matching is source-scoped below; historical rates, legacy settlements, payouts, and the full 2170 control remain unresolved.",
+        "Party-level checks below cover only the listed NCM and distributor sources; carrier-fee accrual, bill, allocation, and remittance clearing is checked separately below, while historical and other-party documents remain incomplete.",
+        "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
+        "GL balances are compared with journal-derived balances; any opening balance not represented by a posted journal remains unresolved.",
+        `${accountingControlCoverage.unreconciledCount} configured balance-sheet control accounts do not yet have complete operational subledger reconciliation.`,
       ],
       reconciliation: {
         coverageStatus: "PARTIAL",
         coverageGaps: [
-          "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
-          "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-          "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+          "Legacy AR checks only account 1130; collaboration fee invoices are checked separately below, while COD, gateway, and other receivables remain incomplete.",
+          "Legacy AP checks account 2110; accepted-production, local-freight, and platform-funded customer refund sources are checked separately below, while settlement clearing, legacy delivery accruals, and other manufacturer, marketing-partner, and carrier balances remain incomplete.",
+          "Marketing CPA journal-to-bill matching is source-scoped below; missing accruals, legacy settlements, payouts, and the full 2170 control remain unresolved.",
+          "Party-level checks below cover only the listed NCM and distributor sources; carrier-fee accrual, bill, allocation, and remittance clearing is checked separately below, while historical and other-party documents remain incomplete.",
+          "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
+          "GL balances are compared with journal-derived balances; any opening balance not represented by a posted journal remains unresolved.",
+          `${accountingControlCoverage.unreconciledCount} configured balance-sheet control accounts do not yet have complete operational subledger reconciliation.`,
         ],
         accountsReceivable: {
           glControlAccount: "1130 Accounts Receivable",
           coverageStatus: "LEGACY_PARTIAL",
-          glControlBalance: arControlBalance,
-          subledgerTotal: Number(sumReceivables.toFixed(2)),
-          variance: Number((arControlBalance - sumReceivables).toFixed(2)),
-          isReconciled: Math.abs(arControlBalance - sumReceivables) <= 0.05,
+          glControlBalance: arControlBalance.toString(),
+          subledgerTotal: sumReceivables.toString(),
+          variance: arVariance.toString(),
+          isReconciled: arVariance.isZero(),
         },
         accountsPayable: {
           glControlAccount: "2110 Accounts Payable",
           coverageStatus: "LEGACY_PARTIAL",
-          glControlBalance: apControlBalance,
-          subledgerTotal: Number(sumPayables.toFixed(2)),
-          variance: Number((apControlBalance - sumPayables).toFixed(2)),
-          isReconciled: Math.abs(apControlBalance - sumPayables) <= 0.05,
+          glControlBalance: apControlBalance.toString(),
+          subledgerTotal: sumPayables.toString(),
+          variance: apVariance.toString(),
+          isReconciled: apVariance.isZero(),
         },
+        partySubledgers,
+        generalLedgerBalances,
+        accountingControlCoverage,
+        fixedAssetReconciliation,
+        inventoryValuationReconciliation,
+        customerRefundPayableReconciliation,
+        collaborationFeeReceivableReconciliation,
+        ncmCarrierFeeReconciliation,
+        marketingCpaPayableReconciliation,
+        manufacturerProductionReconciliation,
+        manufacturerLogisticsReconciliation,
         cashAndBank: {
           glControlAccounts: "Explicitly mapped Treasury asset accounts",
           ...cashAndBankReconciliation,
         },
+        accountingPostingStatus,
       },
+      accountingPostingStatus,
     });
   } catch (error) {
     console.error("Get Subledger Reconciliation Error:", error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+export const getCollaborationFeeCreditApplications = async (req, res) => {
+  try {
+    const result = await listCollaborationFeeCreditApplications();
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    console.error("Get Collaboration Fee Credit Applications Error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to load collaboration-fee credit applications.",
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
+export const postCollaborationFeeCreditApplication = async (req, res) => {
+  try {
+    const result = await requestAccountingActionApproval({
+      actionType: "COLLABORATION_CREDIT_APPLICATION",
+      requestKey: getAccountingRequestKey(req),
+      payload: {
+        creditDocumentId: req.body?.creditDocumentId,
+        invoiceDocumentId: req.body?.invoiceDocumentId,
+        amount: req.body?.amount,
+        reason: req.body?.notes,
+      },
+      actor: getAccountingAdminActor(req),
+      auditContext: getAccountingAuditContext(req),
+    });
+    return res.status(result.isReplay ? 200 : 202).json({
+      success: true,
+      alreadyPending: true,
+      message: result.isReplay
+        ? "This collaboration-fee credit application request already exists."
+        : "Partner credit application submitted for independent Admin approval.",
+      approvalRequest: result.approvalRequest,
+    });
+  } catch (error) {
+    console.error("Apply Collaboration Fee Credit Error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to apply collaboration-fee credit.",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
@@ -947,6 +1617,24 @@ export const getFiscalYearsAndPeriods = async (req, res) => {
       include: {
         periods: {
           orderBy: { periodName: "asc" },
+          include: {
+            closeEvents: {
+              orderBy: { sequence: "desc" },
+              take: 20,
+              select: {
+                id: true,
+                sequence: true,
+                cycle: true,
+                eventType: true,
+                actorAccountId: true,
+                actorRole: true,
+                subjectSequence: true,
+                checklistSnapshot: true,
+                reason: true,
+                createdAt: true,
+              },
+            },
+          },
         },
       },
       orderBy: { startDate: "desc" },
@@ -960,42 +1648,226 @@ export const getFiscalYearsAndPeriods = async (req, res) => {
 
 export const createFiscalYear = async (req, res) => {
   try {
-    const { name, startDate, endDate } = req.body;
+    const { name, startDate, endDate, calendar } = req.body;
     if (!name || !startDate || !endDate) {
-      return res.json({ success: false, message: "Fiscal Year Name, Start Date, and End Date are required." });
+      return res.status(400).json({ success: false, message: "Fiscal Year Name, BS start date, and BS end date are required." });
     }
-
-    const fy = await prisma.fiscalYear.create({
-      data: {
-        name: name.trim(),
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        status: "OPEN",
-      },
+    if (calendar && String(calendar).trim().toUpperCase() !== "BS") {
+      return res.status(400).json({
+        success: false,
+        message: "Fiscal year dates must use the BS calendar.",
+        code: "INVALID_CALENDAR",
+      });
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      const calendars = await getNepaliCalendarYears(tx);
+      const fiscalYear = await getConfiguredNepaliFiscalYear(startDate, endDate, calendars);
+      const record = await tx.fiscalYear.create({
+        data: {
+          name: name.trim(),
+          startDate: fiscalYear.fiscalYearStart,
+          endDate: fiscalYear.fiscalYearEnd,
+          status: "OPEN",
+        },
+      });
+      await tx.accountingPeriod.createMany({
+        data: fiscalYear.periods.map((period) => ({
+          ...period,
+          fiscalYearId: record.id,
+        })),
+      });
+      return { fiscalYear: record, periodCount: fiscalYear.periods.length };
     });
 
-    res.json({ success: true, message: "Fiscal Year created successfully.", fiscalYear: fy });
+    res.json({
+      success: true,
+      message: `Fiscal Year created successfully with ${result.periodCount} BS accounting periods.`,
+      fiscalYear: result.fiscalYear,
+      periodCount: result.periodCount,
+    });
   } catch (error) {
     console.error("Create Fiscal Year Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 
 export const togglePeriodStatus = async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    message: "Direct accounting-period status changes are disabled. Use the independent close or reopen approval workflow.",
+    code: "PERIOD_CLOSE_WORKFLOW_REQUIRED",
+  });
+};
+
+const periodCloseActor = (req) => ({
+  accountId: req.auth?.accountId,
+  role: req.auth?.role,
+  ipAddress: req.ip,
+  userAgent: req.get?.("user-agent") || req.headers?.["user-agent"],
+  correlationId: req.correlationId || null,
+});
+
+const periodCloseErrorResponse = (res, error, defaultMessage) => {
+  console.error(defaultMessage, error);
+  return res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.message || defaultMessage,
+    ...(error.code ? { code: error.code } : {}),
+  });
+};
+
+const requestIdempotencyKey = (req) => req.headers["idempotency-key"] || req.body?.idempotencyKey;
+
+export const getPeriodCloseChecklist = async (_req, res) => {
+  return res.json({ success: true, checklist: getAccountingPeriodCloseChecklist() });
+};
+
+export const getPeriodClosePackController = async (req, res) => {
   try {
-    const { periodId, status } = req.body;
-    if (!periodId || !["OPEN", "CLOSED"].includes(status)) {
-      return res.json({ success: false, message: "Valid Period ID and Status (OPEN/CLOSED) are required." });
-    }
-
-    const updated = await prisma.accountingPeriod.update({
-      where: { id: periodId },
-      data: { status },
+    const result = await createAccountingPeriodClosePack({
+      periodId: req.params?.periodId,
+      actor: periodCloseActor(req),
     });
-
-    res.json({ success: true, message: `Accounting period ${updated.periodName} is now ${status}.`, period: updated });
+    return res.json(result);
   } catch (error) {
-    console.error("Toggle Period Status Error:", error);
-    res.json({ success: false, message: error.message });
+    return periodCloseErrorResponse(res, error, "Unable to generate accounting period close pack.");
+  }
+};
+
+export const submitPeriodCloseController = async (req, res) => {
+  try {
+    const result = await submitAccountingPeriodClose({
+      periodId: req.body?.periodId,
+      checklist: req.body?.checklist,
+      idempotencyKey: requestIdempotencyKey(req),
+      actor: periodCloseActor(req),
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    return periodCloseErrorResponse(res, error, "Unable to submit accounting period close.");
+  }
+};
+
+export const reviewPeriodCloseController = async (req, res) => {
+  try {
+    const result = await reviewAccountingPeriodClose({
+      periodId: req.body?.periodId,
+      decision: req.body?.decision,
+      reason: req.body?.reason,
+      idempotencyKey: requestIdempotencyKey(req),
+      actor: periodCloseActor(req),
+    });
+    return res.json(result);
+  } catch (error) {
+    return periodCloseErrorResponse(res, error, "Unable to review accounting period close.");
+  }
+};
+
+export const requestPeriodReopenController = async (req, res) => {
+  try {
+    const result = await requestAccountingPeriodReopen({
+      periodId: req.body?.periodId,
+      reason: req.body?.reason,
+      idempotencyKey: requestIdempotencyKey(req),
+      actor: periodCloseActor(req),
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    return periodCloseErrorResponse(res, error, "Unable to request accounting period reopening.");
+  }
+};
+
+export const reviewPeriodReopenController = async (req, res) => {
+  try {
+    const result = await reviewAccountingPeriodReopen({
+      periodId: req.body?.periodId,
+      decision: req.body?.decision,
+      reason: req.body?.reason,
+      idempotencyKey: requestIdempotencyKey(req),
+      actor: periodCloseActor(req),
+    });
+    return res.json(result);
+  } catch (error) {
+    return periodCloseErrorResponse(res, error, "Unable to review accounting period reopening.");
+  }
+};
+
+export const closeFiscalYearController = async (req, res) => {
+  try {
+    const { fiscalYearId } = req.body;
+    if (!fiscalYearId) {
+      return res.status(400).json({ success: false, message: "fiscalYearId is required." });
+    }
+    const periods = await prisma.accountingPeriod.findMany({
+      where: { fiscalYearId },
+      select: {
+        status: true,
+        closeEvents: {
+          orderBy: { sequence: "desc" },
+          take: 1,
+          select: { eventType: true },
+        },
+      },
+    });
+    if (!periods.length || periods.some((period) => period.status !== "CLOSED" || period.closeEvents[0]?.eventType !== "CLOSE_APPROVED")) {
+      return res.status(409).json({
+        success: false,
+        message: "Every accounting period must be closed through its independent close approval before the fiscal year can be closed.",
+        code: "PERIODS_NOT_APPROVED_FOR_FISCAL_CLOSE",
+      });
+    }
+    const { closeFiscalYear } = await import("../services/fiscalClosingService.js");
+    const result = await closeFiscalYear({
+      fiscalYearId,
+      closedBy: req.auth?.accountId || "ADMIN",
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Close Fiscal Year Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const reopenFiscalYearController = async (req, res) => {
+  try {
+    const { fiscalYearId, reason } = req.body;
+    if (!fiscalYearId) {
+      return res.status(400).json({ success: false, message: "fiscalYearId is required." });
+    }
+    if (!String(reason || "").trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "A reason is required to reopen a fiscal year.",
+        code: "REOPEN_REASON_REQUIRED",
+      });
+    }
+    const periods = await prisma.accountingPeriod.findMany({
+      where: { fiscalYearId },
+      select: {
+        status: true,
+        closeEvents: {
+          orderBy: { sequence: "desc" },
+          take: 1,
+          select: { eventType: true },
+        },
+      },
+    });
+    if (!periods.length || periods.some((period) => period.status !== "OPEN" || period.closeEvents[0]?.eventType !== "REOPEN_APPROVED")) {
+      return res.status(409).json({
+        success: false,
+        message: "Each closed accounting period must first be reopened through its independent approval workflow.",
+        code: "PERIOD_REOPEN_APPROVAL_REQUIRED",
+      });
+    }
+    const { reopenFiscalYear } = await import("../services/fiscalClosingService.js");
+    const result = await reopenFiscalYear({
+      fiscalYearId,
+      reopenedBy: req.auth?.accountId || "ADMIN",
+      reason: String(reason).trim(),
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Reopen Fiscal Year Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

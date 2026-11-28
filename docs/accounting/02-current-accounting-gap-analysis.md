@@ -3,6 +3,8 @@
 **Snapshot:** 2026-09-28  
 **Status:** Findings for requirements/design review; implementation has not started.
 
+> **Historical snapshot:** This document records the 2026-09-28 discovery state and contains findings superseded by later code. For current Phase 5 source/report coverage and report-basis behavior, use [P5-R1](./19-p5-r1-accounting-domain-and-report-basis-inventory.md) together with the current source; do not treat the dated findings below as current implementation evidence.
+
 ## Priority Findings
 
 ### P0: Multiple financial sources of truth
@@ -57,7 +59,7 @@ Customer return processing updates the return, inventory and cash/AP, then posts
 
 ### P1: Reports are not ledger-derived and use mixed recognition rules
 
-`/api/finance/statements` derives P&L, balance sheet and cash flow from orders, current product costs, current assets, treasury balances and generic AP/AR. It is not a GL report. `/api/finance/tax-report` derives VAT from non-cancelled orders, current `Product.costPrice`, JSON shipment/returns and expenses. Some rates are hardcoded (13% VAT, 25% corporate tax) despite `TaxConfiguration`/`TaxFilingRecord` models. Accounting-side real-time statements separately query journals.
+`/api/finance/statements` derives P&L, balance sheet and cash flow from orders, current product costs, current assets, treasury balances and generic AP/AR. It is not a GL report. The Admin Statements page now uses `/api/accounting/financial-statements` for its GL-based P&L and balance sheet and a direct cash-flow statement from posted cash, bank, and wallet/gateway-clearing journal movements (1110, 1120, 1180); because wallets and gateway clearing share 1180, the statement includes the entire account balance and activity. The legacy endpoint remains available and should not be used as an authoritative statement source. `/api/finance/tax-report` derives tax bases from posted accounting snapshots, expenses, and depreciation; corporate income tax now uses effective-dated `CorporateTaxPolicyVersion` records, while the policy is still an estimate and the operational P&L basis is not a full posted-ledger tax filing calculation. Some VAT assumptions in legacy statement/report code remain separate from versioned VAT transaction treatment.
 
 **Risk:** reports can change after master-data edits, include orders at the wrong status/period, and disagree with posted journals. Tax outputs must not be represented as legal filing figures until policies and source controls are verified.
 
@@ -82,6 +84,10 @@ Both global `Product.stockQuantity`/`costPrice` and per-manufacturer `Manufactur
 - Manual journal and reversal APIs need immutable audit attribution, approvals and closed-period controls.
 - App-level debit/credit checks do not protect against direct DB writes or malformed transactions; no database-enforced journal balancing constraint exists.
 - Cached account balances are incrementally updated; no robust repair/rebuild command was identified in this pass.
+
+## Current Report-Basis Revalidation (2026-11-17)
+
+The earlier report findings are historical. The current Admin Statements page reads `/api/accounting/financial-statements`, and the Trial Balance and General Ledger pages use posted-journal report routes. The Finance Dashboard separates its posted-ledger snapshot from operational estimates; the legacy `/api/finance/statements` endpoint remains operational-estimate-only, and `/api/finance/tax-report` is explicitly mixed posted-VAT/operational-tax-estimate. These distinctions do not establish completeness or reconciliation. See [P5-R1](./19-p5-r1-accounting-domain-and-report-basis-inventory.md) for endpoint inventory, controls and remaining gaps.
 
 ## Accounting Feature Coverage Matrix
 
@@ -114,27 +120,27 @@ The owner says there is currently no database data, but that has not been indepe
 
 Before retiring old tables/endpoints, verify all current UI/API callers. The existing `accountingEngine.test.js` writes to the configured DB and is not a safe default smoke test; future accounting tests should use isolated test databases/transactional fixtures or mocked clients.
 
-## Owner-Confirmed Policy Decisions (2026-09-28)
+## Historical Owner-Confirmed Policy Decisions (2026-09-28)
 
 - **Inventory ownership:** manufacturer owns supplied stock on consignment until sale/delivery.
 - **Manufacturer COGS trigger:** recognize admin-approved agreed COGS at NCM `DELIVERED`; reverse/adjust with a linked event if the item is subsequently returned to the manufacturer.
 - **Cost tax flag:** agreed COGS is VAT-inclusive at the current 13% rate; rates are configurable/effective-dated.
 - **Revenue/VAT event:** recognize on delivery; rates are configurable/effective-dated.
-- **Manufacturer commission:** additional to COGS only for manufacturer-originated phone/shop sales, and calculated as commission rate times gross profit. Exclude customer storefront sales and admin-entered social orders. Current source tags are `DIRECT_MANUFACTURER` + `PHONE_ORDER|HUB_VISIT`; excluded tags include `ONLINE_STORE` and `ADMIN_DIRECT`.
+- **Manufacturer commission:** this policy was superseded on 2026-10-28, when manufacturer commission configuration, new calculations, and schema fields were removed. Historical journals and return reversals are retained.
 - **NCM accounting:** include COD receivable and carrier-fee payable gross; keep them outstanding until bank settlement is confirmed.
 - **Marketing/NCM scope:** include Marketing Partner CPA and NCM accounting.
 - **Currency/calendar:** NPR; Nepali fiscal year from Shrawan 1 to Ashadh end, Asia/Kathmandu.
 - **Readiness:** gate accounting/finance actions only; never gate product/catalog or customer order operations on accounting readiness.
 
-These decisions are recorded as requirements, not claims about existing code. The current code does not yet implement these triggers or exclusions.
+These decisions describe the 2026-09-28 discovery and are not all current requirements. The commission decision was superseded as noted above; see `00-current-architecture.md` for current policy.
 
 ## Owner-Confirmed Policies (2026-09-28)
 
 Commission formula, approved-cost snapshot timing, input-VAT invoice evidence, VAT-inclusive customer prices, post-delivery reversal scope, CPA recognition per verified redemption, NPR/Nepali FY, finance-only readiness gate, and the estimate-only corporate-tax treatment are recorded in `00-current-architecture.md` and `03-implementation-plan-and-iteration-tracker.md`.
 
-## Owner-Confirmed Acceptance Gate
+## Historical Owner-Confirmed Acceptance Gate
 
-The owner confirmed that manufacturer acceptance must be blocked unless every assigned line has an admin-approved agreed COGS. Direct manufacturer phone/shop orders also require an admin-approved commission rate. Proposed/global/default values must never be substituted. This is not true in the current business flow; the minimal acceptance/create-order hook is defined in `04-target-accounting-domain-model.md`.
+The owner confirmed that manufacturer acceptance must be blocked unless every assigned line has an admin-approved agreed COGS. Direct manufacturer sales no longer require commission approval following the 2026-10-28 removal decision. Proposed/global/default values must never be substituted.
 
 ## Design/Professional Review Items (Not Owner-Policy Blockers)
 
@@ -142,6 +148,6 @@ The owner confirmed that manufacturer acceptance must be blocked unless every as
 - Define minor-unit/decimal precision and deterministic rounding for NPR; use exact decimal arithmetic and confirm line-vs-document rounding with the accountant.
 - Confirm whether zero opening balances are appropriate for a truly empty DB and use an auditable opening voucher for any balance entered later.
 - Preserve/rebuild current assets, loans, equity/cap-table, operating expense, tax, delivery and Marketing CPA capabilities behind the single ledger unless the owner explicitly retires them.
-- Keep the current 25% corporate-tax value as an estimate only; do not claim statutory filing correctness without accountant/tax-adviser sign-off.
+- Keep corporate tax as a configurable effective-dated estimate; do not claim statutory filing correctness without accountant/tax-adviser sign-off.
 
 Tax and commercial treatment should be approved by a qualified accountant/tax adviser; this report is technical discovery, not professional tax advice.

@@ -3,49 +3,60 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import PostedLedgerBasisNotice from "../components/PostedLedgerBasisNotice";
+import { formatNepaliDate, getCurrentNepaliDateRange } from "../utils/nepaliDate";
+import { compareDecimalStrings, formatNprAmount } from "../utils/decimalDisplay";
 
 const GeneralLedger = ({ token }) => {
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState("");
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-01-01`;
-  });
-  const [endDate, setEndDate] = useState(() => {
-    const d = new Date();
-    return d.toISOString().split("T")[0];
-  });
+  const [dateRange, setDateRange] = useState(() => getCurrentNepaliDateRange({ fiscalYear: true }));
+  const { startDate, endDate } = dateRange;
+  const [calendarYears, setCalendarYears] = useState([]);
   const [statementData, setStatementData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [accountSearch, setAccountSearch] = useState("");
 
   // Load Accounts list on mount
   useEffect(() => {
+    let active = true;
     const fetchAccounts = async () => {
       try {
-        const res = await axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, {
-          headers: { token },
-        });
-        if (res.data.success) {
+        const [res, calendarResponse] = await Promise.all([
+          axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, { headers: { token } }),
+          axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } }),
+        ]);
+        if (res.data.success && active) {
           const accs = res.data.accounts || [];
           setAccounts(accs);
           if (accs.length > 0 && !selectedAccountId) {
             setSelectedAccountId(accs[0].id);
           }
         }
+        if (!calendarResponse.data?.success) throw new Error(calendarResponse.data?.message || "Could not load the configured Nepali calendar.");
+        if (active && Array.isArray(calendarResponse.data.years)) setCalendarYears(calendarResponse.data.years);
+        if (active && calendarResponse.data.currentDate) {
+          const [year, month] = calendarResponse.data.currentDate.split("-").map(Number);
+          const startYear = month >= 4 ? year : year - 1;
+          setDateRange({
+            startDate: `${startYear}-04-01`,
+            endDate: calendarResponse.data.currentDate,
+          });
+        }
       } catch (err) {
         console.error(err);
-        toast.error("Failed to load accounts for General Ledger");
+        toast.error(err.response?.data?.message || err.message || "Failed to load General Ledger data.");
       }
     };
     fetchAccounts();
+    return () => { active = false; };
   }, [token]);
 
   const fetchStatement = async (accId = selectedAccountId) => {
     if (!accId) return;
     try {
       setLoading(true);
-      const params = {};
+      const params = { calendar: "BS" };
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
 
@@ -74,18 +85,11 @@ const GeneralLedger = ({ token }) => {
     if (selectedAccountId) {
       fetchStatement(selectedAccountId);
     }
-  }, [selectedAccountId, token]);
+  }, [selectedAccountId, startDate, endDate, token]);
 
   const selectedAccount = statementData?.account || accounts.find((a) => a.id === selectedAccountId);
   const metrics = statementData?.metrics || {};
   const statementLines = statementData?.statementLines || [];
-
-  const filteredAccounts = accounts.filter(
-    (a) =>
-      a.accountCode.toLowerCase().includes(accountSearch.toLowerCase()) ||
-      a.accountName.toLowerCase().includes(accountSearch.toLowerCase()) ||
-      a.accountType?.toLowerCase().includes(accountSearch.toLowerCase())
-  );
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
@@ -115,6 +119,9 @@ const GeneralLedger = ({ token }) => {
         </div>
       </div>
 
+      <AccountingPostingStatusBanner status={statementData?.accountingPostingStatus} />
+      {statementData && <PostedLedgerBasisNotice reportBasis={statementData.reportBasis} />}
+
       {/* Control Bar: Account Selector & Date Range */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <div className="md:col-span-2">
@@ -138,25 +145,29 @@ const GeneralLedger = ({ token }) => {
 
         <div>
           <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-            From Date
+            From Date (BS)
           </label>
           <input
-            type="date"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
             value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
+            onChange={(e) => setDateRange((range) => ({ ...range, startDate: e.target.value }))}
             className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
           />
         </div>
 
         <div>
           <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-            To Date
+            To Date (BS)
           </label>
           <div className="flex items-center gap-2">
             <input
-              type="date"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
+              onChange={(e) => setDateRange((range) => ({ ...range, endDate: e.target.value }))}
               className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
             />
             <button
@@ -175,7 +186,7 @@ const GeneralLedger = ({ token }) => {
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Opening Balance</div>
             <div className="text-2xl font-mono font-bold text-slate-900 mt-1">
-              Rs {Number(metrics.openingBalance || 0).toLocaleString()}
+              Rs {formatNprAmount(metrics.openingBalance ?? "0")}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">Prior to {startDate}</div>
           </div>
@@ -183,7 +194,7 @@ const GeneralLedger = ({ token }) => {
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
             <div className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Period Debits (Dr)</div>
             <div className="text-2xl font-mono font-bold text-blue-700 mt-1">
-              Rs {Number(metrics.totalPeriodDebit || 0).toLocaleString()}
+              Rs {formatNprAmount(metrics.totalPeriodDebit ?? "0")}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">Debit activity in period</div>
           </div>
@@ -191,7 +202,7 @@ const GeneralLedger = ({ token }) => {
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
             <div className="text-[10px] font-bold text-purple-500 uppercase tracking-wider">Period Credits (Cr)</div>
             <div className="text-2xl font-mono font-bold text-purple-700 mt-1">
-              Rs {Number(metrics.totalPeriodCredit || 0).toLocaleString()}
+              Rs {formatNprAmount(metrics.totalPeriodCredit ?? "0")}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">Credit activity in period</div>
           </div>
@@ -199,7 +210,7 @@ const GeneralLedger = ({ token }) => {
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
             <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Closing Balance</div>
             <div className="text-2xl font-mono font-bold text-emerald-700 mt-1">
-              Rs {Number(metrics.closingBalance || 0).toLocaleString()}
+              Rs {formatNprAmount(metrics.closingBalance ?? "0")}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               Normal: <strong className="text-slate-700 font-mono">{selectedAccount.normalBalance}</strong>
@@ -255,7 +266,7 @@ const GeneralLedger = ({ token }) => {
                 statementLines.map((line, idx) => (
                   <tr key={line.id || idx} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3 px-4 text-slate-500 whitespace-nowrap">
-                      {line.date ? new Date(line.date).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }) : "—"}
+                      {line.date ? formatNepaliDate(line.date, calendarYears) : "—"}
                     </td>
                     <td className="py-3 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
                       {line.journalNumber}
@@ -276,13 +287,17 @@ const GeneralLedger = ({ token }) => {
                       )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900">
-                      {Number(line.debit) > 0 ? `Rs ${Number(line.debit).toLocaleString()}` : "—"}
+                      {compareDecimalStrings(line.debit ?? "0", "0") > 0
+                        ? `Rs ${formatNprAmount(line.debit)}`
+                        : "—"}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-semibold text-slate-900">
-                      {Number(line.credit) > 0 ? `Rs ${Number(line.credit).toLocaleString()}` : "—"}
+                      {compareDecimalStrings(line.credit ?? "0", "0") > 0
+                        ? `Rs ${formatNprAmount(line.credit)}`
+                        : "—"}
                     </td>
                     <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 bg-slate-50/60">
-                      Rs {Number(line.runningBalance).toLocaleString()}
+                      Rs {formatNprAmount(line.runningBalance ?? "0")}
                     </td>
                   </tr>
                 ))
@@ -295,13 +310,13 @@ const GeneralLedger = ({ token }) => {
                     Period Totals &amp; Closing:
                   </td>
                   <td className="py-3 px-4 text-right text-blue-700">
-                    Rs {Number(metrics.totalPeriodDebit || 0).toLocaleString()}
+                    Rs {formatNprAmount(metrics.totalPeriodDebit ?? "0")}
                   </td>
                   <td className="py-3 px-4 text-right text-purple-700">
-                    Rs {Number(metrics.totalPeriodCredit || 0).toLocaleString()}
+                    Rs {formatNprAmount(metrics.totalPeriodCredit ?? "0")}
                   </td>
                   <td className="py-3 px-4 text-right text-emerald-700 bg-emerald-50/40">
-                    Rs {Number(metrics.closingBalance || 0).toLocaleString()}
+                    Rs {formatNprAmount(metrics.closingBalance ?? "0")}
                   </td>
                 </tr>
               </tfoot>

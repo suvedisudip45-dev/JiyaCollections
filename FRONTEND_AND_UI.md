@@ -1,5 +1,15 @@
 # Frontend and UI Reference
 
+## Request signing and portal security
+
+The storefront, admin, manufacturer, and marketing portals sign `/api` requests, including login, refresh, and registration requests. The backend verifies each signature before route handling, and returns an explicit error for missing/mismatched signatures. NCM webhook receivers are excluded.
+
+The request-signing value is configured through `.env.example` values such as `VITE_HMAC_SECRET`, with a matching backend `HMAC_SECRET`. Vite exposes `VITE_` variables in the browser bundle, so this client-side compatibility signature is not a way to keep a secret from users; JWT authentication and backend authorization remain mandatory.
+
+Portal auth interceptors do not treat backend `HMAC_*` errors as expired-token responses, so a signature failure is surfaced directly rather than causing refresh-and-retry loops.
+
+Admins can create multiple festival/special-offer campaigns; every campaign whose schedule is active appears as its own storefront banner with only its selected, published products. Each campaign uses two admin-selected six-digit hex colors with a fade between them and contrasting text for readability. Campaign banners remain visible even if no selected products are currently published. The storefront refreshes active campaigns every 60 seconds and when it regains focus, so campaign edits appear without requiring a full page reload.
+
 ## 1. UI Architecture
 
 The project uses a multi-app frontend architecture:
@@ -21,18 +31,39 @@ The project uses a multi-app frontend architecture:
 - `axios` for API access
 - localStorage for token persistence and some client state persistence
 
+### List pagination and response caching
+
+Bulk APIs accept `page` and `limit` and return pagination metadata alongside records once under the endpoint-specific key (for example, `products` or `orders`). Do not add a generic `data` alias that repeats the same records. The public product list/detail responses use a storefront-specific projection and must not expose internal fields such as product cost or low-stock thresholds. Product descriptions preserve paragraph whitespace and support paragraphs, bullet lists, and tables for About and Fabric & Care. An optional product-specific size chart is managed by admins and shown only in the storefront size-guide modal; its measurement columns and rows can vary by garment, including tops and bottoms. Legacy Size & Fit tables are read as charts for compatibility, but are no longer rendered in the description tab. Operational list screens request bounded pages and place recently updated records first where supported. Direct detail pages request the record by ID, so links remain valid regardless of which list page contains the record. The admin manufacturer directory and marketing campaign list now also use bounded server-side pagination and search, alongside the admin Orders and Delivery Monitor, admin Stock Transfers, manufacturer Factory Transfers, and distributor inbound-transfer lists.
+
+Order history, admin order views, and shipping labels display the persisted
+order reference rather than a truncated database UUID. The same reference is
+used by NCM as the vendor reference for newly submitted deliveries.
+
+Admin monitor order details show the initial distributor from the order-allocation audit history and the current distributor from the active assignment record. If the assignment has changed, both are shown; if the initial audit history is unavailable, the UI says so rather than treating the current distributor as the original. A rejected latest assignment is identified as most recently assigned, not as an active assignment.
+
+The Admin Customers screen shows aggregate customer analytics without loading customer identities: total, active, and disabled accounts; customer counts by province and district; weekly, monthly, yearly, and selected-period new-account counts; and the repeat-purchase rate. Purchase transactions group split shipment-order rows by `checkoutGroupId`; the retention metric is customers with more than one non-cancelled transaction divided by customers with at least one. It also reports all-time non-cancelled sales by the province/district in each order's delivery address, distinct purchasers, transaction counts, sales, estimated COGS, recorded NCM delivery charges, and approximate profit. Production overhead for this sales estimate is derived only from overhead amounts attached to sold order-item cost snapshots, summed and divided by that product's all-time non-cancelled units sold, then allocated to locations by units sold. Unsold production/inventory quantities and cost-layer production quantities are not used in this overhead allocation. Profit uses available per-order/accepted product-cost data and excludes unrecorded NCM charges, local distributor delivery costs, refunds/returns, and other operating expenses; treat it as an estimate rather than accounting profit. Customer rows remain search-first: an administrator must search or explicitly apply status, province/district, or account-creation date filters before records load. Search/filter results are server-paginated and ordered by most recent non-cancelled order; rows show location, account creation date, lifetime order value, order count, exchange count, latest order date, and account status. “View details” navigates to `/customers/:customerId`, where the profile, addresses, summary metrics, account disable/re-enable action, and letter archive are presented. Order history opens in its own modal and uses the separately paginated customer-orders endpoint.
+
+All four portals use a bounded in-memory cache for JSON GET responses only (10-second TTL, 100 entries maximum). Keys are scoped by request URL, query parameters, access token and, in the manufacturer portal, active workspace. Successful mutations and auth token changes clear cached responses. Binary downloads bypass this cache. It is browser-memory only, is not shared across tabs/devices, and is intentionally short-lived.
+
+The Manufacturer/Distributor portal uses a desktop side navigation and a horizontally scrollable navigation strip on mobile and tablet widths. Operational tables remain horizontally scrollable where their columns cannot safely collapse, with touch scrolling enabled. Sign-in MFA, password-recovery, and distributor COD-delivery codes use individual digit boxes while retaining a single accessible numeric input for typing, paste, and operating-system one-time-code autofill. Manufacturer and distributor route screens load on demand to keep the initial mobile download smaller; their JSON GET cache remains short-lived and browser-memory-only.
+
+Location-entry forms across the storefront, Admin, and Manufacturer/Distributor portals load province and district choices from `GET /api/lookups/nepal`; active NCM branches and covered areas are also database-backed for workflows that need carrier coverage selection. The API and each portal reuse successful lookup responses for ten minutes. Customer checkout and Admin direct/social order creation use a required free-text street/neighborhood field with a separate NCM branch selector; manufacturer/distributor workflows retain covered-area selectors where operationally required. Lookup failures are shown in affected location selectors rather than silently allowing stale or empty options to appear valid.
+
+Admin direct/social order creation does not show or require a customer code. A phone number matching an existing customer account links the order to that account and keeps the customer eligible for loyalty and gift benefits; unmatched historical anonymous orders do not grant existing-account benefits.
+
 ### Styling setup
 
 The frontend CSS is defined in `frontend/src/index.css` and uses the following design tokens:
 
 - base colors:
   - `--paper`: `#f8f7f4`
-  - `--ink`: `#171717`
+  - `--ink`: `#161714`
   - `--white`: `#ffffff`
-  - `--stone`: `#eceae5`
+  - `--stone`: `#eae8e2`
   - `--line`: `#dedbd3`
   - `--muted`: `#6f6d68`
   - `--accent`: `#d85b3f`
+- Tailwind also exposes canvas, ink, terracotta, and semantic status text/background/border tokens.
 - fonts:
   - `DM Sans` for body text
   - `Space Grotesk` for headings / title styling
@@ -40,7 +71,7 @@ The frontend CSS is defined in `frontend/src/index.css` and uses the following d
   - neutral paper background
   - compact storefront shell
   - minimal, editorial e-commerce presentation
-  - utility-first Tailwind composition with some custom CSS classes like `fashion-shell`, `.eyebrow`, `.announcement-bar`, and `.cart-count`
+  - utility-first Tailwind composition, visible terracotta focus states, reduced-motion support, and reusable classes like `fashion-shell`, `.eyebrow`, `.announcement-bar`, and `.cart-count`
 
 ## 2. Customer Storefront (`frontend/`)
 
@@ -54,7 +85,6 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 | `/shop` | Product collection |
 | `/combo-bundles` | Bundle directory |
 | `/combo-bundles/:slug` | Single bundle view |
-| `/collaborations` | Collaboration directory |
 | `/product/:productId` | Product detail |
 | `/cart` | Cart overview |
 | `/login` | Auth entry |
@@ -64,6 +94,10 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 | `/marketing-cards` | Customer marketing cards |
 | `/wishlist` | Wishlist |
 | `/verify` | Verification flow |
+
+Product-detail breadcrumbs follow actual storefront routes (`Home > Shop > product name`). Product category and subcategory are classification/filter fields, not separate breadcrumb pages.
+
+Customer, manufacturer, distributor, and driver login screens expose a **Forgot password?** flow. Recovery collects the account email and phone number, which must both match the active account for the selected portal; driver recovery also requires an active linked driver and distributor. It shows the masked SMS destination returned by the API, verifies the SMS code, requires matching new-password and confirmation fields, and returns the user to normal sign-in. It does not offer email recovery or automatically log the user in. Driver recovery and provisioning remain restricted outside development and test until production SMS delivery, shared rate limiting, staging verification, and the operational recovery procedure are complete.
 
 ### Key client state
 
@@ -75,14 +109,17 @@ The store is driven by `frontend/src/context/ShopContext.jsx` and manages:
 - `token`
 - `search` and `showSearch`
 - `shippingConfig`
+- `platformFeatures` (public feature flags fetched from `/api/features`)
+- `storefrontContent` (public announcement, shared header/footer logo, three policy/benefit cards, footer details, About page, and ordered Terms & Conditions fetched from `/api/storefront-content`)
 
-The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present.
+The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present. Cart product IDs are revalidated against the public catalog; valid products are loaded even when outside the initial catalog page, while deleted or unavailable products are removed from guest and authenticated carts.
 
 ### Major customer components
 
 The component tree includes:
 
 - `Navbar`
+- `OurPolicy`
 - `SearchBar`
 - `Footer`
 - `Hero`
@@ -100,11 +137,100 @@ The component tree includes:
 
 ### Checkout pricing and NCM status handling
 
-The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order.
+The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order. Customer order totals round to the nearest 0 or 5 rupees: final digits 0–3 round down, 4–7 round to 5, and 8–9 round up to the next ten. The backend applies this rule to the saved total, including split-shipment orders.
+
+The first production customer-order payment method is COD only. Storefront
+checkout submits COD; Admin social-media order entry displays COD as a fixed
+tender and the API rejects other methods. Marketing cards are promotional
+benefits, not payment cards, and no payment gateway or payment-provider callback
+is part of this release.
+
+The nearest-NPR-5 behavior is the existing commercial checkout convention, not the internal accounting NPR two-decimal HALF_EVEN policy. The backend keeps exact Decimal calculation values in a version-2 pricing snapshot under the order's existing `locationPricingSnapshot` JSON field and keeps legacy numeric order fields for portal/API compatibility. The snapshot preserves accepted pricing for downstream delivery accounting; it does not reprice historical orders. Approval/effective date for the commercial rounding convention is not documented.
+
+Existing product percentage discounts also round the discounted unit price to a whole rupee before multiplying by quantity (`Math.round` for positive prices); the backend preserves that established per-unit behavior with Decimal HALF_UP. This is separate from the final-order nearest-5 rule and the accounting HALF_EVEN policy.
+
+The storefront shell uses shared responsive page and section gutters with a 1440px content cap. Major home sections, category product data, and footer content align to those gutters; category grids, policy highlights, the newsletter form, and footer columns reflow for narrow screens.
+
+Checkout refreshes its shipping quote when the customer changes the delivery province, district, NCM branch, cart, or delivery method. The quote API uses the prioritized active distributors with available distributor-ledger stock. For a same-district/service-zone distributor (including the Kathmandu Valley cluster), checkout offers door-to-door only. For remote routes, checkout offers door-to-door or NCM door-to-hub (customer pickup at the destination branch), each showing its configured fee. If the cart splits across hubs, the quote uses the separately configured split-shipment fee for the selected delivery method once for the checkout group. The price summary confirms distributor stock and whether a matching place-wise price rule is applied without exposing distributor names or internal allocation details. Order creation recalculates availability, delivery method, and fee server-side, creates one independently assigned order per supplying hub, and stores a shared `checkoutGroupId` on those orders; each hub receives only its own item lines and creates its own delivery record. Existing free-shipping and loyalty rules continue to apply. Admin social-order creation previews the likely distributor allocation and offers the same delivery choices; manual delivery-fee override remains available. Shipping Settings exposes independent same-province, cross-province, and split-shipment fees for both delivery methods.
+
+Place-wise pricing rules are managed in Admin Location Pricing by customer province/district, product, expected distributor, and discount percentage. The customer-facing quote resolves the distributor from current distributor-ledger stock and applies that distributor's matching rule (falling back to a legacy district-wide rule, then the regular product discount). Manufacturer coverage and manufacturer inventory do not influence this rule. Product detail, cart, and checkout price quotes use the resolved fulfillment plan; checkout refreshes it when the selected NCM branch changes.
+
+Customer checkout and admin-created direct/social orders collect the customer's street/neighborhood as required free text instead of choosing an NCM covered area. Checkout provides an interactive Nepal map modal using OpenStreetMap/Nominatim; confirming a selected location prefills the street/area and applicable province/district/branch fields while leaving them editable. The Admin direct-order form offers a separate Google Maps search link. The backend strips HTML from the street field, enforces non-empty text and a 255-character limit, and rejects recognizable SQL injection syntax; database writes use Prisma parameterization. The NCM branch remains a separate delivery-routing selection.
+
+The Place Order submit action is disabled and shows a progress indicator during order submission. A synchronous handler guard also prevents repeat submissions before the disabled state renders.
 
 `PlaceOrder.jsx` loads the customer's claimed Own Store discount rewards and eligible VIP loyalty reward in the Offers Available section. The customer may select one reward or none; the total reflects only that selection, and the order request sends the choice and selected card ID for authoritative backend validation. The UI does not stack card and loyalty discounts.
 
 Carrier state labels are also intentionally strict. A failed NCM booking is presented as "Failed to Book Courier" or equivalent failure text instead of the optimistic "Courier Booked" state, and the manufacturer UI uses the same failed-state labels to prevent false-positive booking confirmations.
+
+In the manufacturer portal's distributor workspace, the final order-assignment step offers Self Delivery only when the customer district matches the distributor's own or actively covered district. Selecting Self Delivery or NCM places the packed order on hold instead of dispatching it immediately. Self-Delivery Management presents a paginated table with order/product, customer/destination, payment and COD amount, delivery status, created date, and the expected per-order delivery charge from the distributor's active rate card. Dispatchable orders can be selected and dispatched together; individual results show any orders that need attention. Orders can also be dispatched or progressed individually. After admin approval, self-delivery returns and exchanges are assigned to the original distributor: the distributor receives and inspects returned units, then handles the return accounting or dispatches the replacement from stock reserved at approval and marks it delivered. NCM-delivered returns and exchanges instead use NCM's reverse-pickup/return and replacement-delivery workflow. Held NCM orders appear under NCM Deliveries, where distributors can review order details and submit selected orders together; each order is still booked individually and retains its own NCM result. The NCM page includes on-hold, failed NCM, active booked (excluding delivered orders), delivered, and all-NCM views, with carrier-status filtering for Pickup Order Created, Sent for Pickup, Drop off Order Created, Pickup Complete, Sent for Delivery, Dispatched, In Transit, Arrived, Out for Delivery, Delivered, and Returned in the applicable booked, delivered, and all-order views. Where webhook normalization groups carrier labels, selecting either label matches the same persisted state; the table shows the latest original carrier status when present. A failed NCM submission can be reapplied directly by the distributor without admin review. Likely delivery time is displayed only when an NCM event includes a recognized expected-date field; otherwise the UI states that NCM did not provide one.
+
+The distributor packing checklist shows the resolved PAN/VAT document type and
+locks the bill-request choice and number once recorded. In the Admin exchange
+panel, an unequal-value NCM exchange that needs a replacement physical bill
+requires the Admin to enter a fresh number from the settlement distributor's
+allocated range and confirm physical attachment before approval; approval
+submits to NCM immediately. NCM exchange cards in the distributor portal
+expose settlement/payment-evidence actions; self-delivery exchange cards also
+provide return inspection, replacement dispatch, and delivery actions. A
+self-delivery exchange with a price difference cannot be marked delivered
+until Admin verifies the distributor's exact-amount payment evidence.
+
+For distributor-assigned customer orders, the admin Order Assignments detail
+opens the same package-details workflow used by the fulfillment portal
+(product/package type, description, delivery instructions, weight, dimensions,
+fragile handling, and quality/packaging notes). Admins can request NCM delivery
+after package details are complete. Customer-order booking and tracking state
+is stored in the backend; NCM webhook updates are applied before acknowledging
+the webhook, and admin/distributor/manufacturer views read the persisted status
+instead of repeatedly querying NCM. The NCM create request sends the combined
+contents and handling summary as `package`, the selected parcel choice as
+`package_type`, and fragile status as `handling` (`Fragile` or `Non-Fragile`),
+so these values appear in their matching NCM portal fields. NCM delivery
+charges are settled by the platform/admin and are not partner payables.
+The Admin NCM deliveries table has an all-ages “Needs reconciliation” filter.
+Ambiguous or out-of-order provider updates retain the last trusted delivery
+status and appear with the carrier status/reason in the details view. Admins can
+fetch the current carrier status or explicitly confirm delivered/not delivered;
+both decisions require an investigation note. Confirming delivery uses the
+normal delivery, inventory, and accounting transaction, while confirming not
+delivered preserves the current state and records the decision.
+
+The Delivery Monitor webhook simulator sends events to an authenticated Admin
+API endpoint; it does not expose the NCM webhook secret in frontend settings.
+It is disabled unless `NCM_WEBHOOK_SIMULATOR_ENABLED=true` is set in an
+isolated development/staging backend. Its sample events are labeled as Admin
+simulations, and the backend rejects IDs already linked to a delivery, transfer,
+return, or exchange; use an unmatched synthetic order ID. They are not evidence
+of an NCM-originated callback.
+
+For bulk distributor stock transfers, the manufacturer view shows the end-to-end
+transfer stages (demand, admin approval, factory preparation, carrier custody,
+and distributor receipt QA) separately from each shipment's NCM carrier
+milestones. Every NCM shipment has its own booking outcome, carrier order ID,
+carrier-versus-receipt progress, unit QA totals, and expandable event and package
+details; failed and uncertain booking attempts are distinguished, and return
+requests are offered only for confirmed bookings. Manufacturer and distributor
+views show the persisted NCM event timeline in chronological order, while only
+admins can explicitly reconcile against the NCM order detail/status APIs.
+Manufacturer, admin, and distributor shipment details surface the recent
+provider events and last-update time; a stale event remains visible in event
+history but cannot rewind the current carrier state or trigger custody movement.
+Booking acceptance is shown as booked, not dispatched; manufacturer stock stays
+reserved until pickup/custody is confirmed. The manufacturer NCM booking form requires package type, product
+type/contents, measured weight, dimensions, and offers delivery instructions,
+fragile handling, and packaging notes. The backend stores these details with
+the shipment and maps them onto NCM's documented `package`, `instruction`, and
+`weight` fields; dimensions and package type are not sent as unsupported fields.
+Admins, manufacturers, and distributors can see the saved package details.
+The portals also display the NCM route and branch verification state; a
+destination matching the active NCM catalog is verified by the backend at
+booking, while rejected or unavailable branches remain ineligible.
+Carrier delivery is separate from distributor receipt and inspection.
+The manufacturer can request a carrier return with a reason. The UI distinguishes
+NCM's return request from physical receipt: returned stock remains subject to
+the distributor receipt checklist and inspection. NCM charges are identified as
+platform/admin settlement, never payable to the manufacturer or distributor.
 
 ## 3. Admin Portal (`admin/`)
 
@@ -118,48 +244,204 @@ The application exposes modules such as:
 
 - `/finance`, `/treasury`, `/assets`, `/partners`, `/expenses`, `/tax`
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
+- Finance dashboard and financial statements accept inclusive Bikram Sambat date ranges (`YYYY-MM-DD`); the backend converts them to Asia/Kathmandu day boundaries before filtering reports. Fiscal periods, journal-entry filters/manual journal dates, general ledger, and trial balance use the same configured BS calendar.
+- Fiscal-year creation uses the shared BS year/month/day selectors for its start and end dates; selectable day values follow the configured month lengths.
+- `/nepali-calendar` lets finance-configure admins add a BS year, Gregorian Baisakh 1 date, and all 12 BS month lengths; saved years are immutable to protect historical date labels, and date ranges validate against saved mappings while weekdays derive from Gregorian dates.
+- Tax Compliance uses configured BS selectors for filing periods, paper-bill reporting/issue dates, registration and VAT-rate effective dates, VAT payments/amendments, and corporate-tax policies. It sends date-only BS values with `calendar: "BS"`; the backend performs the authoritative conversion to Kathmandu-day boundaries.
+- Operating expense, payable due-date, and direct-income dates and filters use the configured BS calendar; API requests pass date-only BS values with `calendar: "BS"` and transaction dates are stored at Kathmandu boundaries.
+- Admin expense and payable amount inputs preserve decimal strings rather than converting monetary values to JavaScript Number. The expense workflow records the total together with the upfront-paid and payable remainder; backend reports and some legacy settlement-history displays still require Decimal/serialization completion.
+- Admin Payables/Receivables lists invoice-backed customer receipt history and exposes a full-reversal request per receipt (one action for a receipt allocated across multiple invoices). Requests require a correction mode, reason, and evidence and enter the existing independent Admin approval queue; approved reversal history is shown with the original receipt. No partial-reversal action is offered.
+- Admin Treasury includes a paginated, read-only customer-receipt reconciliation panel for internal receipt, invoice-allocation, Treasury, journal, duplicate-reference, and reversal links. It labels caller-supplied references as unverified and states that bank-statement matching is unavailable; this view does not confirm external settlement or mutate accounting records.
+- Admin Manufacturer Details displays finance-summary money returned by the settlement-summary API with the Decimal-safe formatter. No Manufacturer portal form currently submits `POST /api/manufacturer/finance/settlement-request`; any API caller must provide a stable idempotency key and decimal-string amount. This API increment has unit tests but no persisted-database or reconciliation evidence.
+- Partnership profit-distribution periods and loan start dates use the configured BS date pickers and send date-only values with `calendar: "BS"`; the backend resolves the persisted Gregorian instants using the configured mapping.
+- Fiscal-year setup requires an exact Shrawan 1-to-Ashadh-end BS range. The backend creates its 12 continuous month periods in the same transaction as the fiscal-year record, using configured month lengths and Kathmandu boundaries.
+- `/fiscal-periods` uses a monthly checklist with source/evidence references, a distinct Admin reviewer for close approval, and reasoned maker-checker reopen requests. An approved, still-closed period can be exported as a SHA-256-hashed JSON close pack; export attempts are audited. Evidence references remain unverified, and the pack is an internal workpaper, not a digitally signed, audited, or statutory report.
+- `/returns` includes Admin review of distributor-paid customer refund evidence and the separate treasury payout action for the resulting distributor payable.
+- The Admin supplier-return form submits a reasoned request for independent maker-checker approval; no inventory or accounting posting occurs until approval. The supplier-returns tab exposes read-only historical accounting-evidence status and permits users with `finance:payable_settle` to request applying a posted supplier credit note to an eligible later-issued bill for the same vendor. The application preserves the original return journal and uses the existing idempotency/audit path.
+- The Admin Returns table shows each returned item's inspection condition and cost split, plus the inventory/cost journal reference. Distributor inspection cost posts are distinct from the later refund/credit-note journal; manufacturer/NCM returns continue showing their combined return journal.
+- Financial Statements' Export / Print action prints only the selected P&L, Balance Sheet, or Cash Flow statement; portal navigation, date controls, banners, and other page content are excluded. The cash-flow estimate warning remains on its printed statement.
+- General Ledger, Trial Balance, and Financial Statements display the API's posted-ledger basis limitations. A balanced Trial Balance is a debit/credit check of included journal entries, not evidence that all source events or subledgers are complete.
+- `/distributors/:distributorId` Finance shows gross company receivables/payables, the signed net position, open source documents, pending COD remittances, issued settlement requests, and settlement history. Admins issue partial/full requests for the net amount; collection proof is submitted by the distributor for Admin verification, while Admin records payout proof and the distributor acknowledges receipt.
+- Legacy return/exchange logistics payables that remain only in Accounts Payable are itemized, included in the gross payable/net balance, and block unified settlement until paid through that existing workflow.
+- `/payables` now includes a distributor-wise settlement summary with gross receivable, payable, per-distributor net due, and pending COD remittances. Its aggregate net receivable/payable totals are computed per distributor and never cross-offset one distributor against another; the original legacy liability tabs remain separate.
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
+- `/payables` displays distributor-wise gross/net positions and legacy settlement requests. New unified settlement requests are issued from Admin distributor Finance detail and can only be completed through the request's evidence/verification or payout/acknowledgment lifecycle.
+- Admin distributor Finance offers a paginated Settlement activity view that combines legacy earnings requests, Admin-issued net-balance requests, and direct balance settlements. It labels the source workflow and exposes available cash/journal references, payout evidence, and requested, paid, and remaining amounts without conflating the underlying request types.
+- `/distributor-applications` shows a COD receivable/pending-remittance warning beside legacy Admin service-settlement requests. Requests lacking earning documents are labeled reconciliation-required and do not expose the normal pay action.
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
-- `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`
-- `/manufacturers`, `/manufacturer-inventory`, `/marketing-cards`
-- `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
+- `/create-order`, `/orders`, `/product-analytics`, `/discount-analytics`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
+- In `/order-assignments`, Admins with `order:control` can manually assign failed, unassigned online orders and reroute an existing distributor assignment before acceptance or delivery handoff. The assignment table exposes **Reassign hub** for both `assigned`/pending-acceptance and rejected distributor assignments when no delivery record exists; it is hidden after acceptance or delivery handoff. Both dialogs require an active distributor and a reason; rerouting atomically transfers the exact stock reservation, and backend validation does not silently substitute another hub.
+- `/orders/:orderId` displays the permission-protected control timeline to authorized Admins: checkout split shipments, current assignment and delivery state, bounded carrier attempts/events, distributor cash/accounting entries, and order audit history. Admins can advance fulfillment to its next validated stage with a reason; acceptance reuses the normal acceptance workflow, and the control is blocked after a delivery record exists.
+- Authorized Admins may cancel an unpaid order before carrier handoff from the order detail. The action requires a reason, releases eligible reservations transactionally, and is blocked for paid orders or any confirmed/ambiguous NCM handoff.
+- `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
+- The Admin Multi-Hub Stock Monitor reads SKU/location `InventoryBalance` records from active manufacturer factories and active distributors. Product totals aggregate tracked SKU balances across both hub types; expanding a product shows per-hub totals and each size/color SKU's on-hand, reserved, and available counts. It does not use legacy `ManufacturerInventory` totals.
+- `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`
 - `/reviews`, `/story-letter-library`, `/shipping`
+
+In Manufacturer Management, admins can update manufacturer profile, pickup,
+contract, quality, and availability details. The manufacturer finance view
+shows approved COGS, direct-sale balances, and settlement history; it has no
+commission proposal or rate editor.
+- Manufacturer `/finance` includes a paginated settlement-request history with requested, paid, and remaining amounts plus expandable per-attempt payout, treasury, evidence, cash-transaction, and journal references; Admin manufacturer settlement details can filter pending, partially paid, paid, and rejected requests and inspect the same payout trail.
+- `/platform-features` (requires `platform:features_manage`)
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
+
+The `/finance` dashboard adds a period cost breakdown for Product COGS, manufacturer-to-distributor logistics, fixed overhead, marketing, and total operating expenses. Its live-assets snapshot values on-hand stock in platform-owned inventory locations at production-layer cost where available, with product cost as the fallback for uncosted or legacy stock; stock recorded as lost is excluded. The logistics total uses dispatched local MANUAL stock-transfer shipments in the selected month and counts each recorded batch freight charge once, independent of how many units or orders are later sold. Admins can open the logistics details to see dispatch date, transfer, local delivery company, tracking reference, manufacturer/distributor, freight amount, and paid/outstanding amounts. Paid manufacturer LOGISTICS settlements are allocated FIFO by dispatch date, with partial shipment settlements visible. NCM carrier charges and item-level delivery/other snapshots are not included in this category. The financial statement's Account 6430 excludes legacy per-order overhead postings from delivery-sale journals while retaining actual NCM carrier settlements and one-time local stock-transfer freight. Fixed and marketing overhead details show the recorded expense, date, vendor, invoice, payment status, and notes. Product COGS details retain order/product-level quantity, rate, calculation source, and linked cost-layer reference where available. The dashboard API includes itemized `costsAndExpenses.details` alongside the category totals.
+
+Journal entries, general ledger, trial balance, financial statements, and accounting health display a shared delivered-sale posting warning when the backend reports unresolved outbox events. The warning shows pending/processing/failed/blocked counts and a bounded list of order amounts, and explicitly states that those amounts are excluded from posted ledger balances until posting succeeds.
+Accounting Health also compares stored GL balances against journal-derived balances for every account, including original journals marked reversed and their posted reversal entries. Any unexplained stored balance (including an opening balance without journal support) is shown as a variance; this check does not replace the page's explicitly partial operational-subledger coverage. The balance-sheet coverage table lists all 23 configured control accounts with their source scope and exact remaining gap; source-scoped and treasury-register-only rows are not presented as fully reconciled. Collaboration fee receivables are checked across invoice totals, receivable documents, posted 1130 invoice debits, recorded allocations, and linked posted 1130 journal entries. Users with `finance:receivable_collect` can apply a verified partner credit note to an eligible later open invoice; the operation records paired offsets and does not post a second journal. This does not cover cash refunds, unlinked or legacy collections, or prove the full 1130 balance. The NCM carrier-fee panel matches 2180 accruals to fee bills, allocation records, and 2180 debits in linked remittance journals; historical and broader carrier obligations remain outside this check. Manufacturer payable panels separately match posted 2160 accepted-production journals to production-request bills and local-freight journals to shipment bills, including outstanding bill balances. Customer refund reconciliation compares platform-funded return and exchange downgrade AP originals to source-linked 2110 journal credits and displays paid/open amounts; it does not claim settlement clearing or full AP reconciliation. These source-scoped checks do not claim full 2160 reconciliation; legacy delivery accruals, other payable sources, and historical balances remain unresolved.
+The fixed-asset panel compares active register gross cost and accumulated depreciation to mapped GL controls 1510–1530 and 1590 using the existing posting-engine category map. It flags asset book-value/category anomalies and non-active assets retaining book value; it is not a physical count, historical opening reconciliation, tax-basis check, or depreciation roll-forward.
+The Marketing CPA panel compares partner `BENEFIT_REDEEMED` events and their captured CPA-rate snapshots with 6420/2170 journals and partner payable bills. It shows expected CPA, recorded amounts, bill balances, historical events whose rate is unknown, and source-level review flags. Customer-claimed checkout rewards are not CPA accrual evidence. `/payables` lists source-linked Marketing CPA bills and supports mapped-Treasury payouts with initiation, reservation, payment-evidence confirmation, failure release, and returned-funds correction. The UI states that this is cash-only: it does not calculate or clear withholding tax, and any unpaid amount remains open. Legacy events without snapshots, old settlements, and the full 2170 control remain unresolved.
+The inventory panel compares the layer-traced value of current platform-owned quantities to Account 1140 only when ledger layers exactly match on-hand balances. It surfaces uncosted/mismatched or negative units, invalid/orphaned layers, lost stock, and sensitive damaged/in-transit/quarantine/return quantities for review. It does not use the dashboard's product-cost fallback and is not a complete historical, supplier-stock, ownership, or policy-approved valuation reconciliation.
+Legacy balances are intentionally not auto-converted; Finance review and an approved cutover are required before historical records can be treated as reconciled.
 
 ### Admin UX behavior
 
 - requires a valid admin token and permission set before route access
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
+- `/platform-features` lets authorized admins enable or disable loyalty, marketing cards, and letters. The customer storefront, marketing-partner portal, and distributor portal hide disabled features; backend APIs enforce the same flags.
+- `/customers` starts empty and searches only after an admin submits a query. The detail view aggregates orders and delivery/COD, loyalty, cards, letters, returns/exchanges, reviews, and recorded notification history. Account disable/re-enable is separately guarded by `customer:account_manage`.
 - `/audit-history` requires `access:audit_read` and displays paginated actor/action/entity/date/result-filtered system audit records, including authentication and security signals, with before/after diffs and CSV export. Failed/blocked entries are visually distinguished and explicitly described as signals rather than confirmed breaches. Its in-memory query cache is bounded to 20 entries with a 15-second TTL; Refresh clears the cache and reloads the current query.
+- Category/subcategory/color, special-offer, and review controls are shown only when the current Admin has the matching action permission. Special-offer and review data fetching also checks read/list permission. These UI checks improve usability but do not replace backend authorization.
+- The Journal Entries page offers generic reversal only for `MANUAL_JOURNAL` entries and requires a reason. Source-backed journal entries must be corrected through their originating business workflow.
+- `/accounting-approvals` lists pending accounting actions for users with `accounting:approval_read`; a reviewer with `accounting:approval_review` can approve or reject with a reason. The backend blocks self-review, and the UI presents the request as pending until a distinct active Admin decides it. Internal approval does not represent CA or statutory approval.
+- `/product-analytics` is a separate permission-guarded Sales & Orders page (`product:sales_analytics_read`). It follows the admin portal's compact light analytics layout with a shared period/date control, Overview first, and underlined tabs; only the active Overview, Charts & comparisons, Products & returns, Sales by location, or Product timeline panel mounts. The Overview combines four summary cards with the five leading products from a separate product-list request. Admins can choose vertical bar diagrams or pie charts for product, location, and distributor comparisons; one shared measure selector switches between quantity, revenue, and estimated gross profit, and the same records are not rendered in both chart types at once. The Sales by location panel has its own product selector, defaults to all products unless reached with a selected product, and reports distinct customers and orders for each province/district. Product Timeline has an in-panel product selector and loads the selected product's daily or monthly sales and completed-return history. Chart results are bounded to leading records; detailed product lists are separately paginated, and timeline details load only after selecting a product. Revenue uses order-item price snapshots and excludes delivery; estimated gross profit subtracts recorded historical item COGS and completed refunds but excludes delivery and operating expenses. Reports flag missing cost data. Completed refunds are shown by refund-completion date, while sale location comes from the order's province/district snapshot.
+- `/discount-analytics` is a separate `product:sales_analytics_read` Admin page for total and classified discount reporting. It supports all time, today, week, month, year, and custom dates (up to 366 days), with shared filters for discount category, province, district, distributor, and customer. Overview tables break totals down by category, location, distributor, and product; customer rows drill into paginated order history with item- and order-level discounts. Discount categories include product-setting, place-wise, loyalty, marketing card/voucher, combo bundle, admin order, and legacy/unclassified reductions. Reports use historical order price/reward snapshots, exclude canceled orders, and disclose that unrecorded free-shipping savings and missing historical original prices cannot be reconstructed.
+- `/ncm-deliveries` and `/self-deliveries` are distinct compact paginated tables with Kathmandu-local today/week/month/year/all/custom filters. They show only summary fields until a row is opened; NCM detail lazily loads event, return/exchange, financial-settlement, and customer data, while self-delivery detail loads the explicit assignment, distributor location/quality rating, customer order, and return/exchange history. Self-delivery excludes direct distributor phone/walk-in orders and NCM-linked assignments.
+- In Admin Returns Management, active NCM customer returns provide **Refresh return status from NCM**. The action polls carrier history and refreshes the existing return timeline/status; it does not automatically complete inspection, refund, inventory, or accounting actions.
+- NCM order, branch/rate, staff/customer, label/comment, and support-ticket tools are split into focused tabs on `/ncm-tools`; `/ncm-deliveries` includes a bulk COD settlement manager where Admin filters delivered records by date range, manually selects the batch, creates an NCM ticket, and confirms one actual deposit. Bank and account-holder fields accept text only, and the account number accepts digits only; the backend applies the same checks before sending the request to NCM. When NCM rejects a COD ticket with HTTP 4xx, its safe field-level error detail is shown without echoing the submitted bank values. The UI requires a variance category and explanation when NCM's amount differs; shortfalls remain open as COD receivables and overpayments as payable suspense until explicitly resolved. Admin can record partial/full shortfall collections, refund overpayments, or apply overpayments to open COD receivables, with a required reference and explanation; the activity retains its amount, journal, treasury movement when applicable, and remaining variance. No variance is silently written off. NCM support lists active and closed tickets from the local database without a carrier request; support and COD tickets are indexed using the scalar `ticket` ID in NCM's create response. Fetching a ticket by ID loads its latest details and records a local summary. Older tickets can be added to the local index by fetching them once by ID. Webhook callbacks are handled by the backend rather than an admin URL control. The supplied carrier docs provide no full date-range NCM order listing or payable/receivable ledger, so the UI does not claim to reconcile carrier-only orders or a complete external financial ledger.
+- In the NCM batch history, an Admin with `finance:payable_settle` can open **Correct** on a batch and must distinguish an unexecuted remittance from returned funds, provide the external evidence reference and reason, then confirm. The backend reverses all linked journals, cash movements, subledger allocations, and batch-only fee/suspense documents; restores delivery settlement states; and leaves a `REVERSED` batch and audit trail. Legacy batches missing the original delivery state are not automatically corrected.
+- NCM COD remittance confirmation and variance collection/refund/offset are submitted as maker-checker approval requests; neither the Treasury balance nor the settlement/subledger state changes until an independent Admin approves.
 - an authenticated visit to `/` redirects to `/orders`; unmatched admin paths render a 404 page with a return-to-orders link
-- `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; manufacturer assignment, batch generation, QR export, and print flows remain available
+- `/marketing-cards` guides admins through a three-step setup: configure a campaign and offers, generate and print a card batch, then distribute cards. Campaign dates and optional promo media are grouped under collapsed advanced settings. Own Store public, partner, and custom-organization assignments use the configured per-account scan cap (default one), plus the existing weekly and organization caps; these cards do not require a delivered order. Distributor stock is separate: an attached Own Store card is bound to the corresponding order, and only that order's customer can scan and claim it after delivery. Distributor-issued cards bypass scan caps, so separate cards attached to multiple delivered orders can each yield one customer claim. Customer-order card attachment and delivery handoff validate distributor ownership against the order's `OrderAssignment`, including automatically allocated orders that do not store a direct `Order.distributorId`. If an attached order card's campaign ends or the card expires before fulfillment, the distributor portal releases it, attempts to attach an available card from an active, unexpired campaign, and blocks fulfillment until a valid replacement is attached. The marketing-partner card list also provides an `Expired` category that automatically includes cards whose campaign status is expired, campaign end date has passed, or card expiry date has passed, without changing their physical inventory status.
+- Marketing partner overview/approval UI is isolated in a reusable component. Partner rows link to `/marketing-partners/:partnerId`, a separate detail page with current/expired campaign filters and campaign, distributor, scan-location, and distribution-location tables. The page requests its partner-scoped aggregate payload from a dedicated API module; analytics access is guarded by `marketing_card:analytics_read`. Admin-created partner credentials are removed; public partner signup and admin approval remain.
 - integrates `react-toastify` for action feedback
-- `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and manufacturer stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.
-- `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
-- the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
+- `/gift-promotions` provides responsive sections for gift catalog CRUD, exact-value order-value rules, distributor stock distribution and receipt counts, and assigned un-packed order gifts. Physical gifts can be issued from scanned-and-claimed Own Store card entitlements or a selected loyalty reward. Loyalty gifts first attempt attachment to that checkout using accepted distributor inventory with the exact configured value; catalog category does not constrain matching. If no assigned distributor can fulfill the gift, order fulfillment continues and the entitlement returns to the pending queue after every shipment is packed, for a later checkout attempt. One checkout group can receive at most one physical gift. Admin replacement options are limited to accepted same-value stock at the assigned distributor; route access uses `loyalty:level_manage`. Scanned Own Store percentage discounts and fixed-value rupee vouchers can both be claimed and selected at checkout; percentage discounts may have an optional maximum rupee amount, and fixed vouchers reduce the product subtotal only and are capped at that subtotal.
+- `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, supplier-return tools, and Admin review of distributor-submitted NCM exchange price-difference payment screenshots. Supplier debit-note entry captures a stable vendor reference, original invoice reference, explicit invoice-supported VAT reversal, settlement type and, for cash refunds, the receiving mapped Treasury account; the reasoned request requires independent Admin approval before inventory or accounting changes occur, and posted journal/document/cash references appear only after approval.
+- `/tax` manages seller PAN identity, effective PAN/VAT registration, VAT rates, corporate income tax policy versions, physical bill books and distributor allocations, and a paginated order-date report filtered by VAT bill, PAN bill, no bill, or voided bill. Corporate tax policy setup supports effective-dated base rates, progressive brackets, context selectors, and discount/penalty adjustments; the projection can preview matching user/taxpayer/location context and reports unconfigured tax instead of assuming a rate. Monthly tax estimates annualize the monthly run rate for brackets. Period shortcuts cover today, the last seven days, current month, and the last three, six, or twelve months; custom inclusive dates use Nepal time. Report entries link to order details when the Admin has order-view permission. Order details show the recorded bill type, number, issue time, and void/adjustment information. Posted-ledger VAT filing drafts, IRD filing metadata, partial/full tax payments, and source/GL reconciliation totals are available; the purchase-register indicator explicitly remains partial. Expense Management captures supplier VAT identity/evidence and lets Finance approve or reject the claim with a reason. Return/exchange accounting links immutable adjustment records to the original sale and flags credit/debit-note follow-up; this does not print or submit statutory invoices/notes or integrate an IRD e-billing provider. Filing drafts require independent review because other purchase sources, opening balances, and statutory credit/debit-note issuance remain outside complete system coverage.
+- VAT filing, payment, and amendment actions from `/tax` enter the accounting approval queue; the Admin page reports submission as pending, not as an IRD filing or completed cash movement. The statutory submission and appropriate Finance/CA validation remain external.
+- `/tax` distinguishes `UNREGISTERED`, `PAN_ONLY`, and `VAT_REGISTERED`, and does not preselect a new VAT rate. Missing registration history displays as `UNREGISTERED`; this is a fail-closed operational default, not a legal determination. Unregistered sales are internal-only records, and statutory paper-bill issuance is blocked. VAT calculation requires explicit effective registration and rate records. Manufacturer production quotes also leave VAT rate blank and require an explicit positive rate and invoice reference when VAT applies. Distributor service-fee rate cards default to zero and warn that the screen does not verify invoice evidence or approve input VAT.
+- Distributor `/distributor/paper-bills` lists physical PAN/VAT ranges assigned by Admin. New allocations remain pending until the distributor confirms physical receipt; only accepted active ranges can validate bill numbers during packing. The acceptance action is scoped to the authenticated distributor and audit-recorded.
+- `/accounting-health` compares the source-scoped NCM/distributor party-document balances against GL controls 1170, 1190, 2180, and 2190, alongside the existing legacy AR/AP and treasury checks. A match for these source types does not imply full historical coverage.
+- the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, NCM attempt history, and Admin verification/rejection of screenshot-backed distributor payments for NCM exchange price differences
+- Distributor Self-Delivery Management lists NCM exchanges assigned to that distributor for a nonzero price difference; distributors submit the exact amount, payment method/reference, and JPG/PNG screenshot. NCM remains responsible only for transport, while the customer-facing order page explains that the assigned distributor handles the price difference.
+- `/distributor-applications` separates regular distributor sign-up applications from manufacturer requests for distributor access; manufacturer requests are listed from `/api/admin/distributor-applications` and approved or rejected through its review endpoint
+- Manufacturer request rows expose the existing pickup contact, pickup address, NCM branch, and active manufacturer province/district locations for review. Approval provisions those business and pickup details in the distributor profile; distributors can later edit their copied business/contact/location and pickup details from the Distributor workspace's Pickup Profile page.
+- Distributor sign-up uses the manufacturer registration fields for business/contact credentials, province/district, NCM branch and covered area, address, pickup/return details, and contract dates. Admins can edit those stored registration details from each application row; service-district coverage remains editable separately.
+- `/distributors` is a searchable, server-paginated directory; searches require at least two characters and results are fetched only after submit. Rows include contact/location, account status, assignment count, and latest assignment. “View details” opens `/distributors/:distributorId`, a dedicated page with independent Profile, Finance, Inventory, Stock transfers, Orders & delivery, Returns, Exchanges, and Login history sections. Each section loads only when selected and uses paginated history APIs.
+- Distributor Inventory allows users with `distributor:admin_stock_return` to submit and review stock-return requests, record partial/full carrier handovers, enter warehouse receipt counts, and record a separate quantity-reconciled inspection with condition evidence and proposed disposition routes. Collections are tracked in transit; received good and damaged units remain quarantined, while damaged/missing counts open inventory discrepancies and missing quantities remain in transit pending investigation. Admins can append investigation notes and HTTP(S) evidence to open return discrepancies; the UI explicitly keeps the case unresolved and makes no responsibility, stock, or accounting changes. Inspection recommendations do not release/move stock or authorize sale, donation, repair, or disposal. Layer COGS is traceability only; impairment and final accounting disposition are not implemented.
+- The distributor detail page (`/distributors/:distributorId`) is the single Admin UI for distributor rate configuration. Its Profile section edits contact/address/pickup fields through the existing audited profile endpoint and provides the approved general rate-card editor for delivery/return charges, the separate per-successful-NCM-delivery transfer fee, commission deduction, and VAT. The duplicate rate-card editor was removed from Distributor Management. The NCM transfer fee is shown separately in the distributor finance summary and itemized ledger. A separate admin editor configures additive monthly completed-delivery bonus tiers; per-delivery incentives are disabled for new earnings. Linked manufacturer accounts are shown separately with a link to `/manufacturers/:manufacturerId`; their operational records are not merged.
+- Inventory shows on-hand/reserved/available quantities plus total retail/cost estimates based on current product prices, labelled as estimates rather than historical cost-layer valuation. Finance separates balances from paginated transaction and settlement-request histories, exposes monthly target progress and itemized settlement snapshots, and shows delivery units with their locked per-unit rates. Delivery history displays assignment status, self-delivery/NCM type, COD, and recent delivery events.
+- `/manufacturers` retains the existing searchable directory and opens `/manufacturers/:manufacturerId` for dedicated manufacturer details. Profile, factory ledger inventory, production, distributor transfers, finance, accounting transactions, and payable requests are separate permission-filtered sections; history is paginated and loaded per section. Registration and profile editing capture the manufacturer's PAN/VAT type and 9-digit tax ID alongside business/contact/pickup and contract-date fields, synchronize linked login email changes, and leave contract/account status controls to their existing workflow.
+- Distributor Management includes a Service-area coverage tab for assigning active distributors province/district coverage. Allocation prefers stocked exact-district hubs, then stocked same-province hubs, then review-ranked nationwide hubs. The customer Orders page lets customers rate the assigned hub after delivery; order allocation still requires every ordered variant and quantity to be available in distributor-ledger stock.
+- Distributor Hub Orders retains delivery-queued, courier-booked, and delivered assignments so the distributor can open their details, including saved packaging specifications. After queue handoff or carrier booking, the assignment detail is view-only and backend status updates reject fulfillment edits.
 
-## 4. Manufacturer Portal (`manufacturer/`)
+## 4. Manufacturer and Distributor Portal (`manufacturer/`)
 
-The manufacturer app is a separate React app with a protected main layout. Its route list includes:
+The `manufacturer/` app serves separate manufacturer and distributor workspaces,
+selected through `activeWorkspace` and protected by backend role permissions.
+Factory production and replenishment stay in the manufacturer workspace; hub
+inventory, direct hub sales, customer-order fulfillment, gift stock, and
+marketing-card stock are distributor-only. Customer loyalty, marketing-card,
+and letter links/actions follow the public platform feature configuration.
+New database seeds leave these optional features disabled until an admin enables
+them; core production, transfer, ordering, and delivery actions remain available.
+Turning a flag off does not delete loyalty or personalized-letter history. Its route list includes:
 
 | Route | Purpose |
 | --- | --- |
 | `/` | Dashboard |
-| `/orders` | Order queue |
-| `/orders/:id` | Detailed order workflow |
-| `/direct-orders` | Direct manufacturer orders |
-| `/inventory` | Stock and fulfillment inventory, reasoned variant adjustments, and manufacturer-scoped stock movement history |
-| `/collaborations` | Collaboration items |
+| `/orders` | Assigned customer-order queue (distributor workspace only) |
+| `/orders/:id` | Distributor customer-order fulfillment workflow |
+| `/distributor/deliveries` | Self-delivery tracking and parcel slip printing |
+| `/distributor/logistics` | Delivery manifest management, reviewable deterministic route-order proposals, route dispatch, POD capture, COD verification, and authenticated private evidence retrieval |
+| `/distributor/peer-transfers` | Peer-distributor stock requests, approvals, dispatch, receipt, discrepancy evidence, disputes, cancellation, and custody history |
+| `/distributor/operations` | Distributor-scoped reconciliation history with category, severity, lifecycle, and date filters; bounded pagination; finding age and safe workflow links; manual runs with source-coverage status; acknowledgement without source-record mutation |
+| `/driver` | Mobile-first assigned manifest and stop workflow, canonical POD/COD completion, saved-address navigation, and authenticated private evidence retrieval; available only in the restricted DRIVER workspace |
+| `/ncm` | NCM booking/tracking and parcel slip printing |
+| `/direct-orders` | Distributor direct hub orders at admin catalog prices; manual distributor discounts are disabled (distributor workspace only) |
+| `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
+| `/distributor/demand` | Factory stock requests, inbound carrier/local transfer tracking, and receipt QA |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |
-| `/finance` | Manufacturer finance data |
-| `/customer-loyalty` | Customer loyalty and promotion view |
-| `/gift-inventory` | Incoming gift stock acceptance/rejection and available/reserved quantities |
-| `/marketing-cards` | Card assignment and processing |
+| `/finance` | Manufacturer finance data; distributor delivery earnings plus COD receivable, remittance evidence/status, and separate refund payable |
+| `/customer-loyalty` | Distributor customer loyalty and promotion view |
+| `/gift-inventory` | Distributor gift-stock acceptance/rejection with counted received quantity and available/reserved counts |
+| `/marketing-cards` | Distributor card receipt and processing |
 
-Manufacturer order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action.
+The operations page obtains the distributor identity from authenticated backend
+context. It displays bounded stock-transfer, inventory-discrepancy,
+missing-POD, and stale/conflicted-offline findings with source coverage and run
+status. Acknowledgement changes only the audit trail; it does not resolve a
+discrepancy or mutate inventory, delivery, or accounting records. The page
+explicitly excludes unsupported wholesale, COD-settlement, general-ledger, and
+inventory-wide ledger/balance comparisons.
+
+Logistics users can preview a route-order proposal for an undispatched manifest,
+review its ordered stops and any stops without routable coordinates, then apply
+or decline it. Until a documented routing provider is selected and configured,
+the proposal is marked `DETERMINISTIC_FALLBACK` and uses the existing
+priority/time-window/district/city ordering; it omits distance, duration,
+traffic, and ETA fields. The displayed current order is unchanged until the user
+applies the proposal.
+
+The driver screen stores assigned-manifest snapshots and unsent POD drafts in
+account-scoped IndexedDB, including photo/signature evidence as blobs. It stores
+neither access tokens, OTP values, private evidence URLs, nor COD amounts.
+Cached data is local to the browser and is not encrypted by the application;
+use a device/browser profile controlled by the driver and clear local data on
+shared devices. Confirmed local drafts are removed after 30 days; unresolved
+drafts remain until explicitly removed. Local records are not server delivery
+records. A connection is required to verify COD or finalize COD collection;
+queued COD outcomes are not synchronized as completed deliveries. Other queued
+outcomes sync only through the assigned-driver route and canonical POD service.
+Uncertain requests require an authoritative manifest refresh and explicit
+reconciliation before retry. The service worker caches only the app shell and
+static assets, never API responses; this is not full offline synchronization.
+POD photo and signature evidence may accompany delivered, partial, or failed
+outcomes; delivered outcomes still require evidence.
+
+Admin users with `access:driver_users_manage` can open `/access-control/drivers`
+to link an existing active unlinked driver to restricted DRIVER login access.
+The screen does not generate or expose a password; drivers use the existing
+Forgot password flow to set one. Password recovery uses random per-challenge
+codes, but account provisioning remains disabled outside development and test
+until HTTPS SMS delivery, shared rate limiting, staging verification, and an
+operational recovery procedure have been verified.
+
+These hub pages are gated to `activeWorkspace === "DISTRIBUTOR"`; they are not manufacturer features. Distributor order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. It also records whether the customer requested a physical bill and, when requested, the number attached to the parcel; the backend resolves PAN/VAT document type from the company's tax registration and blocks delivery handoff without the bill choice. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action. Historical manufacturer gift/card/order records remain available in storage but new hub activity uses distributor ownership and backend authorization.
+The exchange panel retains the original physical bill for equal-value exchanges; if the customer requested a bill and an exchange changes the value, it requires the distributor to enter a new number from the active allocation before dispatching the replacement.
+
+Hub Inventory lists each stocked SKU with on-hand, reserved, available, and
+damaged quantities grouped under one product row; product-level quantities are
+the sum of its variants. Expanding a product shows its size/color SKUs, and each
+SKU's details show current counts and the authenticated hub's paginated
+inventory movement history. Existing SKU-oriented inventory consumers retain
+the default API response; Hub Inventory requests product grouping explicitly.
+
+Distributor self-delivery and NCM order lists allow selecting orders for a shared compact 80 mm thermal parcel slip. The slip includes recipient and sender contact/location, order and carrier references where available, item variants, quantities, unit and line prices, assigned gifts, totals, and the amount to collect. Print slips separately from dispatch or NCM booking; attach each printed slip to the outside of its parcel. The browser print dialog should use the printer's 80 mm roll setting.
+
+The distributor Finance dashboard keeps COD balances distinct from delivery-service earnings: open company receivable, pending remittance, verified refund payable, and eligibility for an Admin-approved offset are shown separately. Earnings include delivery compensation, per-product stock-transfer compensation for successfully delivered units across delivery channels, and a separate net hub counter-sale summary; itemized transactions and settlement breakdowns display hub-sale compensation and return reversals. The cash panel spans the dashboard width rather than being squeezed into the earnings summary grid. Distributors submit COD transfers with a bank/wallet reference and a JPG/PNG image; Admin verification posts the receipt. Admins can explicitly approve a partial or full offset in distributor detail after reviewing refund evidence; the UI presents the available cap and offset history. The self-delivery return panel requires a JPG/PNG photo of returned goods and lets the distributor submit an editable customer-refund amount, method/reference/image for review; a reason is mandatory when the submitted amount differs from the Admin-approved amount, and the amount cannot exceed returned product value. Admin sees the difference and reason before verification. Delivery/refund money flows are not browser-cached because stale financial balances could permit invalid submissions.
+
+The Admin distributor profile's general rate card separates self-delivery/phone-order compensation, per-unit stock-transfer compensation (additional across all successful delivery channels), and hub counter-sale compensation. Rate changes create immutable approved versions; portal earnings are snapshots, and verified hub-sale returns appear as proportional negative adjustments.
+
+The public `GET /api/features` response includes company contact values configured through the backend's `COMPANY_CONTACT_EMAIL` and `COMPANY_CONTACT_PHONE` environment variables. The Manufacturer/Distributor portal displays those values on parcel slips; blank values are omitted.
+
+The distributor demand screen loads the factory catalog separately from inbound
+transfer history so a history API error does not hide requestable stock. Its
+factory selector lists only active factories with unreserved ledger quantities
+for active SKUs on published products; each factory's returned `stock` array is
+the SKU variant list used to compose a request. A successfully loaded empty
+selector means there is no eligible factory stock in that catalog response,
+not that a request can be submitted against legacy-only inventory; catalog
+authorization or loading failures are shown separately.
+The stock-request composer groups these variants by product, displays the
+product image and available size/color stock, and supports searching products.
+Distributors can set each selected variant's quantity by typing it directly or
+using the increment/decrement controls. Submitted quantities must be positive
+whole numbers and cannot exceed the displayed unreserved factory stock.
 
 ## 5. Marketing Portal (`marketing/`)
 
@@ -177,7 +459,6 @@ The marketing portal is built around a protected dashboard layout and includes t
 | `/redemptions` | Redemption processing |
 | `/qr-validator` | QR validation |
 | `/reports` | Campaign reporting |
-| `/collaborations` | Collaboration module |
 | `/profile` | Partner profile |
 | `/settings` | Settings |
 
@@ -189,19 +470,24 @@ This portal is clearly structured around the backend `marketing-cards` router an
 
 1. Product catalog loads from the backend.
 2. `ShopContext` handles cart state and local storage fallback.
-3. Checkout uses backend order creation plus shipping/config lookup.
-4. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account). Each card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Own Store code entries and QR scans are tracked, and eligible cards can be claimed on demand.
-5. Checkout offers a mutually exclusive selection between one claimed card reward, the active VIP loyalty reward, or no reward.
-6. `Orders` page reads customer order history and supports cancellation, return requests, and exchange requests with replacement-variant selection.
-7. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
-8. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
+3. Customer registration and social-profile activation require explicit Terms & Conditions consent. The submitted version must still be current; the backend records the immutable terms snapshot, SHA-256 version, server timestamp, source, request IP, and user agent atomically with account creation/activation.
+4. Checkout uses backend order creation plus shipping/config lookup.
+5. Customers scan a marketing card's QR directly without entering its card code. The server validates the QR, campaign, card status, order delivery, and customer eligibility before consuming the card; the scan response does not disclose whether the card has a reward or its value. Configured campaign advertising appears after a successful scan and before the scratch/reveal flow. Only after the scratch interaction completes does the storefront request and display the reward result. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account) for public, partner, and custom-organization assignments. Distributor-issued Own Store cards are order-bound, available only to the customer on the delivered order, and exempt from scan caps; distinct cards from multiple orders can each be claimed once. Every physical card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Eligible discount, voucher, and gift rewards can be claimed.
+6. Checkout retains its mutually exclusive reward selection and defaults to no reward. Physical gifts can be attached from Own Store card entitlements created after the customer scans and claims the card, or from the loyalty gift when the customer selects that reward. Loyalty gifts first try exact-value accepted stock held by distributors assigned to the checkout; if unavailable, the order is unaffected and the entitlement is retried on a later checkout after all shipments from the original checkout are packed. Gift catalog category is not a matching constraint. Order-value rules do not attach physical gifts.
+7. `Orders` page presents order history in a table with order ID, creation time, product summary, order status, total, payment status, delivery date, and any physical gift assigned to that shipment. The View invoice also identifies the gift. One checkout group receives at most one physical gift, even when it ships from multiple distributors.
+8. Return/exchange requests await admin approval. The Admin panel identifies the original delivery handler: NCM-delivered orders are submitted to NCM, while self-delivered orders are assigned to the original distributor. NCM-specific charge, attempt, and reconciliation controls are shown only on NCM cases; reconciliation warnings identify incomplete carrier history. Customers can see carrier failures, exchange progress, and recorded charges. Exchange selection shows replacement catalog prices and variant stock, an estimated price difference, and admin links to the posted journal/period and credit note. NCM exchange-create accepts only the original order ID, so any upgrade COD amount is an estimate and is not represented as carrier-confirmed. For either delivery route, the distributor submits exact-amount price-difference evidence; Admin verification is required before a self-delivered exchange can be marked delivered.
+9. Customer tracking follows the actual fulfillment route: NCM orders show carrier tracking, while distributor self-delivery uses the assigned distributor's status and dispatch/on-the-way/delivery timestamps. A completed self-delivery COD order is shown as delivered and collected.
+10. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 
 ### Admin flow
 
 1. Admin logs in and receives a token.
 2. `PermissionsProvider` resolves role permissions.
-3. Route access is checked against the route-permission map.
-4. Each module calls the backend APIs for product, order, accounting, or access-management actions.
+3. Shipping Rate Settings manage normal customer delivery tiers and four company-paid return/exchange settlement rates; the latter are snapshotted on approval and are not displayed as customer delivery charges.
+4. Storefront Content Settings updates the announcement bar, shared storefront header/footer logo, and three policy/benefit cards, including image upload, title, and description. Uploaded logo images are managed through the protected image-upload endpoint; removing a custom logo restores the bundled storefront default. The storefront reloads these values from the public content endpoint.
+5. Route access is checked against the route-permission map.
+6. Each module calls the backend APIs for product, order, accounting, or access-management actions.
+7. The Returns page displays the distributor assigned to each distributor-handled order, its fulfillment status, and return-received date alongside evidence; settling a verified distributor refund still requires selecting the company treasury payout account.
 
 ### Manufacturer flow
 
@@ -209,12 +495,34 @@ This portal is clearly structured around the backend `marketing-cards` router an
 2. The provider loads manufacturer context and verifies a valid token.
 3. Orders, inventory, and pickup configuration are managed via manufacturer-specific pages.
 4. The orders page shows a manufacturer-scoped queue of incoming customer returns with pickup state and NCM charge payer.
+5. The production pre-check sends `fabricPassed`, `qualitySamplePassed`, and `colorShadeMatched` boolean fields; the API also accepts the prior UI field aliases for compatibility.
+6. Admin creates each production order by selecting the manufacturer, product SKUs and quantities, fabric/GSM, target date, and batch plan. Admin can edit the order until the manufacturer passes its pre-production checklist; edits clear the quote and checks and require a new quote/approval. The manufacturer portal only shows assigned orders and lets the manufacturer submit per-piece pricing, order-level production expenses, VAT terms, and a note; the quote must be approved by Admin before the manufacturer can complete the pre-check and start production. A passed pre-check exposes Start Production; an in-production request exposes post-production QA and stock intake. The post-check submits one actual count per requested size/color variant using the backend checklist contract.
+7. Distributor stock requests can be edited by the distributor, assigned manufacturer, or Admin until every manufacturer preparation check passes. Any edit clears preparation checks and approvals and returns the request to Admin review; requests are locked once checks pass or shipment activity begins.
+   Manufacturer onboarding and Admin manufacturer registration require a PAN/VAT selection and a 9-digit number. Production screens show the supplier tax identity, gross estimated manufacturer payable, and potential input VAT receivable separately. VAT cannot be quoted by a PAN-only supplier. Admin acceptance posts inventory, gross manufacturer payable, and eligible input VAT atomically; input VAT requires a verified dated invoice, a VAT-registered manufacturer, and the buyer's effective VAT registration on that invoice date. Delivery freight is shown separately on stock-transfer screens and is not included in production batch charges. The Admin VAT reconciliation displays posted journal totals rather than recalculating credits from estimated COGS.
+7. The manufacturer dashboard shows factory products/SKUs and available factory units separately from inspected production and damaged counts. Factory stock does not show as available to customers; that happens only after the distributor receives the transfer.
+8. The **Distributor Demands** page only shows admin-approved distributor requests; its sidebar badge refreshes periodically and announces newly approved demands. Manufacturers must save passing checks for availability, quality, color, size, and packaging before delivery controls unlock. They can choose NCM or local freight, while a transfer between the same account's manufacturer/distributor profiles automatically uses direct own-store delivery with NPR 0 freight.
 
 ### Marketing partner flow
 
 1. Partner signs in or signs up.
 2. Protected routes ensure partner-only access.
 3. Campaigns and cards are fetched from backend endpoints and manipulated through partner-specific views.
+
+### Operational list and detail pattern
+
+Operational queues use compact, responsive tables to show only identifiers, dates,
+customer or counterparty, product summary, quantity/value, and current status.
+Explicit row actions navigate to dedicated detail routes; state-changing actions
+(such as accepting/rejecting an application or recording receipt QA) remain
+deliberate and are not triggered just by opening a record. Breadcrumbs appear in
+the storefront, admin, manufacturer/distributor, and marketing shells, with parent
+links for navigating back to the relevant list. Admin-created and storefront
+orders retain separate views, with print/selection controls preserved. Manufacturer
+assignment and stock-transfer detail routes retain NCM milestones, preparation
+checks, approval/reconciliation controls, and receipt inspection actions.
+Marketing campaigns link to their existing detail route, while already table-based
+card and redemption lists remain unchanged. Customer-facing order history is not
+an operational queue and retains its dedicated tracking/detail experience.
 
 ## 7. UI-specific implementation details
 

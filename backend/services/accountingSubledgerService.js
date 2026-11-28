@@ -21,6 +21,8 @@ export const createAccountingDocument = async ({
   documentType = "INVOICE",
   documentNumber,
   partyId,
+  partyTaxIdType = null,
+  partyTaxIdNumber = null,
   side = "RECEIVABLE", // RECEIVABLE | PAYABLE
   sourceType,
   sourceId,
@@ -29,6 +31,7 @@ export const createAccountingDocument = async ({
   currency = "NPR",
   amount,
   notes = null,
+  idempotencyKey = null,
 }, { client = prisma } = {}) => {
   if (!partyId) throw new Error("Accounting document requires a valid partyId.");
   if (!documentNumber) throw new Error("Accounting document requires a unique documentNumber.");
@@ -41,24 +44,42 @@ export const createAccountingDocument = async ({
   if (!["RECEIVABLE", "PAYABLE"].includes(normalizedSide)) {
     throw new Error("Document side must be RECEIVABLE or PAYABLE.");
   }
+  const normalizedTaxIdType = partyTaxIdType ? String(partyTaxIdType).trim().toUpperCase() : null;
+  const normalizedTaxIdNumber = partyTaxIdNumber ? String(partyTaxIdNumber).trim() : null;
+  if ((normalizedTaxIdType || normalizedTaxIdNumber) &&
+      (!["PAN", "VAT"].includes(normalizedTaxIdType) || !/^\d{9}$/.test(normalizedTaxIdNumber || ""))) {
+    throw new Error("Accounting document party tax identity must be PAN or VAT with exactly nine digits.");
+  }
 
+  const data = {
+    idempotencyKey: idempotencyKey ? String(idempotencyKey).trim() : null,
+    documentType: String(documentType).toUpperCase(),
+    documentNumber: String(documentNumber).trim(),
+    partyId,
+    partyTaxIdType: normalizedTaxIdType,
+    partyTaxIdNumber: normalizedTaxIdNumber,
+    side: normalizedSide,
+    sourceType: String(sourceType || "MANUAL"),
+    sourceId: String(sourceId || documentNumber),
+    issueDate: new Date(issueDate),
+    dueDate: dueDate ? new Date(dueDate) : null,
+    currency: String(currency || "NPR").toUpperCase(),
+    originalAmount: decAmount,
+    allocatedAmount: new Prisma.Decimal(0),
+    remainingAmount: decAmount,
+    status: "OPEN",
+    notes: notes ? String(notes) : null,
+  };
+  if (data.idempotencyKey) {
+    return client.accountingDocument.upsert({
+      where: { idempotencyKey: data.idempotencyKey },
+      create: data,
+      update: {},
+      include: { party: true },
+    });
+  }
   return client.accountingDocument.create({
-    data: {
-      documentType: String(documentType).toUpperCase(),
-      documentNumber: String(documentNumber).trim(),
-      partyId,
-      side: normalizedSide,
-      sourceType: String(sourceType || "MANUAL"),
-      sourceId: String(sourceId || documentNumber),
-      issueDate: new Date(issueDate),
-      dueDate: dueDate ? new Date(dueDate) : null,
-      currency: String(currency || "NPR").toUpperCase(),
-      originalAmount: decAmount,
-      allocatedAmount: new Prisma.Decimal(0),
-      remainingAmount: decAmount,
-      status: "OPEN",
-      notes: notes ? String(notes) : null,
-    },
+    data,
     include: { party: true },
   });
 };
@@ -72,8 +93,13 @@ export const allocatePaymentToDocuments = async ({
   side = "RECEIVABLE", // RECEIVABLE (Receipt) | PAYABLE (Disbursement)
   amount,
   journalEntryId = null,
+  cashTransactionId = null,
+  settlementBatchId = null,
+  allocationType = null,
   targetDocumentIds = [],
+  sourceTypes = [],
   notes = null,
+  idempotencyKey = null,
 }, { client = prisma } = {}) => {
   if (!partyId) throw new Error("partyId is required for allocation.");
   let remainingToAllocate = toNonNegativeDecimal(amount, "Allocation amount");
@@ -82,6 +108,12 @@ export const allocatePaymentToDocuments = async ({
   }
 
   const normalizedSide = String(side || "").toUpperCase();
+  const normalizedAllocationType = allocationType === null
+    ? null
+    : String(allocationType).trim().toUpperCase();
+  if (normalizedAllocationType && !["CASH", "OFFSET"].includes(normalizedAllocationType)) {
+    throw new Error("Allocation type must be CASH or OFFSET.");
+  }
 
   // Load open or partially paid documents
   const where = {
@@ -91,17 +123,25 @@ export const allocatePaymentToDocuments = async ({
     ...(Array.isArray(targetDocumentIds) && targetDocumentIds.length > 0
       ? { id: { in: targetDocumentIds } }
       : {}),
+    ...(Array.isArray(sourceTypes) && sourceTypes.length > 0
+      ? { sourceType: { in: sourceTypes.map((sourceType) => String(sourceType).toUpperCase()) } }
+      : {}),
   };
 
   const openDocs = await client.accountingDocument.findMany({
     where,
-    orderBy: [{ dueDate: "asc" }, { issueDate: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ dueDate: "asc" }, { issueDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
 
   const allocations = [];
   const updatedDocs = [];
 
   for (const doc of openDocs) {
+    const isExplicitCreditNoteOffset = normalizedAllocationType === "OFFSET" &&
+      Array.isArray(targetDocumentIds) &&
+      targetDocumentIds.includes(doc.id) &&
+      sourceTypes.includes("DISTRIBUTOR_SERVICE_EARNING_REVERSAL");
+    if (doc.documentType === "CREDIT_NOTE" && !isExplicitCreditNoteOffset) continue;
     if (remainingToAllocate.lessThanOrEqualTo(0)) break;
 
     const docRemaining = new Prisma.Decimal(String(doc.remainingAmount));
@@ -111,28 +151,58 @@ export const allocatePaymentToDocuments = async ({
       const newAllocated = new Prisma.Decimal(String(doc.allocatedAmount)).plus(allocAmount);
       const newRemaining = docRemaining.minus(allocAmount);
       const newStatus = newRemaining.equals(0) ? "PAID" : "PARTIALLY_PAID";
+      const allocationKey = idempotencyKey ? `${String(idempotencyKey).slice(0, 130)}:${doc.id}` : null;
 
-      const allocation = await client.accountingAllocation.create({
-        data: {
-          documentId: doc.id,
-          journalEntryId,
-          amount: allocAmount,
-          allocatedAt: new Date(),
-          notes: notes || `Payment allocation of NPR ${allocAmount.toFixed(2)}`,
+      if (allocationKey) {
+        const existingAllocation = await client.accountingAllocation.findUnique({
+          where: { idempotencyKey: allocationKey },
+        });
+        if (existingAllocation) {
+          if (
+            existingAllocation.documentId !== doc.id ||
+            !new Prisma.Decimal(String(existingAllocation.amount)).equals(allocAmount)
+          ) {
+            throw new Error("Accounting allocation idempotency key was reused with different details.");
+          }
+          allocations.push(existingAllocation);
+          remainingToAllocate = remainingToAllocate.minus(allocAmount);
+          continue;
+        }
+      }
+
+      const claimed = await client.accountingDocument.updateMany({
+        where: {
+          id: doc.id,
+          allocatedAmount: doc.allocatedAmount,
+          remainingAmount: doc.remainingAmount,
+          status: doc.status,
         },
-      });
-
-      const updated = await client.accountingDocument.update({
-        where: { id: doc.id },
         data: {
           allocatedAmount: newAllocated,
           remainingAmount: newRemaining,
           status: newStatus,
         },
       });
+      if (claimed.count !== 1) {
+        throw new Error(`Accounting document ${doc.id} changed during payment allocation.`);
+      }
+
+      const allocation = await client.accountingAllocation.create({
+        data: {
+          documentId: doc.id,
+          cashTransactionId,
+          journalEntryId,
+          settlementBatchId,
+          allocationType: normalizedAllocationType,
+          amount: allocAmount,
+          allocatedAt: new Date(),
+          notes: notes || `Payment allocation of NPR ${allocAmount.toFixed(2)}`,
+          idempotencyKey: allocationKey,
+        },
+      });
 
       allocations.push(allocation);
-      updatedDocs.push(updated);
+      updatedDocs.push({ ...doc, allocatedAmount: newAllocated, remainingAmount: newRemaining, status: newStatus });
       remainingToAllocate = remainingToAllocate.minus(allocAmount);
     }
   }
@@ -146,10 +216,10 @@ export const allocatePaymentToDocuments = async ({
 };
 
 /**
- * Reconciles open subledger documents against the control GL account balance.
+ * Reconciles open subledger documents against the mapped control GL account balance.
  */
 export const reconcileSubledgerToControl = async ({
-  side = "RECEIVABLE", // RECEIVABLE (1130) | PAYABLE (2160 / 2110)
+  side = "RECEIVABLE", // RECEIVABLE (1130, 1170, 1190) | PAYABLE (2110, 2160-2190)
   accountCode,
   partyType = null,
 }, { client = prisma } = {}) => {
@@ -173,7 +243,10 @@ export const reconcileSubledgerToControl = async ({
   });
 
   const subledgerTotal = openDocuments.reduce(
-    (acc, doc) => acc.plus(new Prisma.Decimal(String(doc.remainingAmount))),
+    (acc, doc) => {
+      const amount = new Prisma.Decimal(String(doc.remainingAmount));
+      return doc.documentType === "CREDIT_NOTE" ? acc.minus(amount) : acc.plus(amount);
+    },
     new Prisma.Decimal(0)
   );
 

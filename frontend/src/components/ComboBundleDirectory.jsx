@@ -3,6 +3,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import axios from "axios";
 import { ShopContext } from "../context/ShopContext";
+import Pagination from "./Pagination";
+
+const BUNDLE_PAGE_SIZE = 12;
 
 const getComboBundleImages = (value) => {
   if (Array.isArray(value)) return value.filter(Boolean);
@@ -22,6 +25,8 @@ const ComboBundleDirectory = () => {
   const [category, setCategory] = useState(null);
   const [comboBundles, setComboBundles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   const requestedCategoryId = searchParams.get("categoryId");
   const requestedCategoryName = searchParams.get("category") || "";
@@ -52,17 +57,25 @@ const ComboBundleDirectory = () => {
           if (!cancelled) {
             setCategory(null);
             setComboBundles([]);
+            setPagination(null);
           }
           return;
         }
 
         const response = await axios.get(`${backendUrl}/api/combo-bundles`, {
-          params: { categoryId: resolvedCategoryId, status: "ACTIVE", includeProducts: "false" },
+          params: {
+            categoryId: resolvedCategoryId,
+            status: "ACTIVE",
+            includeProducts: "false",
+            page,
+            limit: BUNDLE_PAGE_SIZE,
+          },
         });
 
         if (!cancelled) {
           setCategory(resolvedCategory || { id: resolvedCategoryId, name: requestedCategoryName });
           setComboBundles(response.data.success ? response.data.comboBundles || [] : []);
+          setPagination(response.data.pagination || null);
         }
       } catch (error) {
         console.error("Unable to load category collections:", error);
@@ -79,7 +92,7 @@ const ComboBundleDirectory = () => {
     return () => {
       cancelled = true;
     };
-  }, [backendUrl, requestedCategoryId, requestedCategoryName]);
+  }, [backendUrl, page, requestedCategoryId, requestedCategoryName]);
 
   return (
     <main className="mx-auto w-full max-w-[1440px] pb-16">
@@ -135,6 +148,14 @@ const ComboBundleDirectory = () => {
             })}
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || comboBundles.length}
+          limit={pagination?.limit || BUNDLE_PAGE_SIZE}
+          loading={loading}
+          onPageChange={setPage}
+        />
       </section>
     </main>
   );

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ADMIN_ROUTE_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
+import { ADMIN_ROUTE_PERMISSIONS, ADMIN_SECTION_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
 import { createAuthorize } from "../middleware/authorize.js";
 import { requireRole } from "../middleware/unifiedAuth.js";
-import { hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
+import { deactivateAccountRole, hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
 
 const invoke = (middleware, req) => new Promise((resolve) => {
   const response = {
@@ -40,6 +40,56 @@ test("resolveAccountPermissions returns only active mapped permissions", async (
   assert.equal(calls[1].where.role.portalScope, "CUSTOMER");
   assert.equal(hasPermission(permissions, "product:create"), true);
   assert.equal(hasPermission(permissions, "finance:read"), true);
+});
+
+test("permission cache is isolated by active workspace role", async () => {
+  const cache = new Map();
+  const client = {
+    rolePermissionMapping: {
+      findMany: async ({ where }) => [{ permission: { code: `${where.role.portalScope.toLowerCase()}:read` } }],
+    },
+  };
+
+  const manufacturer = await resolveAccountPermissions("shared-account", {
+    client,
+    cache,
+    principalRole: "MANUFACTURER",
+  });
+  const distributor = await resolveAccountPermissions("shared-account", {
+    client,
+    cache,
+    principalRole: "DISTRIBUTOR",
+  });
+
+  assert.deepEqual([...manufacturer], ["manufacturer:read"]);
+  assert.deepEqual([...distributor], ["distributor:read"]);
+  assert.equal(cache.size, 2);
+});
+
+test("deactivateAccountRole centralizes role-mapping changes", async () => {
+  let updateQuery;
+  const result = await deactivateAccountRole("account-1", "distributor", {
+    client: {
+      role: {
+        findUnique: async (query) => {
+          assert.deepEqual(query, { where: { code: "DISTRIBUTOR" }, select: { id: true } });
+          return { id: "role-1" };
+        },
+      },
+      authAccountRoleMapping: {
+        updateMany: async (query) => {
+          updateQuery = query;
+          return { count: 1 };
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(updateQuery, {
+    where: { accountId: "account-1", roleId: "role-1" },
+    data: { isActive: false },
+  });
+  assert.deepEqual(result, { count: 1 });
 });
 
 test("authorize allows, denies, caches, and fails closed", async () => {
@@ -93,6 +143,25 @@ test("authorize allows, denies, caches, and fails closed", async () => {
   assert.equal(unavailable.code, 500);
 });
 
+test("dual-role manufacturer authorization includes distributor permissions", async () => {
+  const resolvedRoles = [];
+  const middleware = createAuthorize(async (_accountId, { principalRole }) => {
+    resolvedRoles.push(principalRole);
+    return new Set(principalRole === "DISTRIBUTOR" ? ["transfer:distributor_request"] : ["manufacturer:profile_read"]);
+  }, ignoreAudit)("transfer:distributor_request");
+
+  const result = await invoke(middleware, {
+    auth: {
+      accountId: "shared-account",
+      role: "MANUFACTURER",
+      roles: ["MANUFACTURER", "DISTRIBUTOR"],
+    },
+  });
+
+  assert.equal(result.code, 200);
+  assert.deepEqual(resolvedRoles.sort(), ["DISTRIBUTOR", "MANUFACTURER"]);
+});
+
 test("requireRole uses the centralized mapped role context", async () => {
   assert.equal(
     (await invoke(requireRole("MANUFACTURER"), {
@@ -127,4 +196,9 @@ test("required password rotation permits only the Admin password-change permissi
 
 test("combo bundle management permissions are exposed to the admin route map", () => {
   assert.deepEqual(ADMIN_ROUTE_PERMISSIONS["/combo-bundles"], ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"]);
+});
+
+test("Admin expenses route and finance section include direct-income read permission", () => {
+  assert.equal(ADMIN_ROUTE_PERMISSIONS["/expenses"].includes("finance:income_read"), true);
+  assert.equal(ADMIN_SECTION_PERMISSIONS.finance.includes("finance:income_read"), true);
 });

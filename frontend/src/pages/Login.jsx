@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
 import axios from "axios";
@@ -8,6 +8,7 @@ import CryptoJS from "crypto-js";
 
 import { sanitizeInput } from "../utils/sanitize";
 import { storeAuthTokens } from "../auth/tokenStorage";
+import PasswordResetFlow from "../components/PasswordResetFlow";
 
 const encryptValue = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
@@ -33,7 +34,14 @@ const isValidNepalMobileNumber = (value = "") => {
 
 const Login = () => {
   const [currentState, setCurrentState] = useState("Login");
-  const { token, setToken, navigate, backendUrl } = useContext(ShopContext);
+  const {
+    token,
+    setToken,
+    navigate,
+    backendUrl,
+    storefrontContent,
+    setStorefrontContent,
+  } = useContext(ShopContext);
   const location = useLocation();
   const redirectTo = location.state?.from || "/";
 
@@ -46,10 +54,24 @@ const Login = () => {
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showExistingClient, setShowExistingClient] = useState(false);
   const [existingCustomerPhone, setExistingCustomerPhone] = useState("");
   const [existingCustomerCode, setExistingCustomerCode] = useState("");
   const [validatedExistingCustomer, setValidatedExistingCustomer] = useState(null);
+
+  const refreshTermsForAcceptance = async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/storefront-content`);
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to refresh Terms & Conditions.");
+      setStorefrontContent(response.data.content);
+    } catch (error) {
+      console.error("Unable to refresh Terms & Conditions:", error);
+      toast.error(error.response?.data?.message || error.message || "Unable to refresh Terms & Conditions.");
+    }
+    setAgreeTerms(false);
+    setIsTermsOpen(true);
+  };
 
   const onSubmitHandler = async (event) => {
     event.preventDefault();
@@ -111,6 +133,10 @@ const Login = () => {
         toast.error("Please agree to the Terms & Conditions to continue");
         return;
       }
+      if (!storefrontContent?.termsVersion) {
+        toast.error("Terms & Conditions are still loading. Please try again.");
+        return;
+      }
 
       try {
         setLoading(true);
@@ -122,6 +148,8 @@ const Login = () => {
           firstName: sanitizeInput(firstName, { stripAllHtml: true }),
           lastName: sanitizeInput(lastName, { stripAllHtml: true }),
           gender,
+          termsAccepted: true,
+          termsVersion: storefrontContent?.termsVersion,
         });
 
         if (response.data.success) {
@@ -131,6 +159,9 @@ const Login = () => {
           toast.error(response.data.message || "Unable to activate your customer account");
         }
       } catch (error) {
+        if (error.response?.data?.code === "TERMS_VERSION_CHANGED") {
+          await refreshTermsForAcceptance();
+        }
         console.log(error);
         toast.error(error.response?.data?.message || error.message);
       } finally {
@@ -161,6 +192,10 @@ const Login = () => {
         toast.error("Please agree to the Terms & Conditions to register");
         return;
       }
+      if (!storefrontContent?.termsVersion) {
+        toast.error("Terms & Conditions are still loading. Please try again.");
+        return;
+      }
     }
 
     try {
@@ -173,6 +208,8 @@ const Login = () => {
           email: sanitizeInput(email).toLowerCase(),
           phone: phone.trim(),
           password,
+          termsAccepted: true,
+          termsVersion: storefrontContent?.termsVersion,
         });
         if (response.data.success) {
           setToken(storeAuthTokens(response.data));
@@ -196,6 +233,9 @@ const Login = () => {
         }
       }
     } catch (error) {
+      if (error.response?.data?.code === "TERMS_VERSION_CHANGED") {
+        await refreshTermsForAcceptance();
+      }
       console.log(error);
       toast.error(error.response?.data?.message || error.message);
     } finally {
@@ -208,6 +248,22 @@ const Login = () => {
       navigate(redirectTo, { replace: true });
     }
   }, [token, redirectTo]);
+
+  const passwordResetEnabled = import.meta.env.VITE_PASSWORD_RESET_ENABLED === "true";
+
+  if (passwordResetEnabled && showForgotPassword) {
+    return (
+      <PasswordResetFlow
+        backendUrl={backendUrl}
+        onBack={() => setShowForgotPassword(false)}
+        onComplete={() => {
+          setShowForgotPassword(false);
+          setPassword("");
+          toast.success("Password reset successfully. Sign in with your new password.");
+        }}
+      />
+    );
+  }
 
   return (
     <>
@@ -461,10 +517,14 @@ const Login = () => {
 
         {/* Switch Between Login and Sign Up */}
         <div className="w-full flex justify-between text-sm mt-1">
-          {currentState === "Login" ? (
-            <p className="cursor-pointer text-xs text-gray-500 hover:text-black">
+          {currentState === "Login" && passwordResetEnabled ? (
+            <button
+              type="button"
+              onClick={() => setShowForgotPassword(true)}
+              className="cursor-pointer text-xs text-gray-500 hover:text-black"
+            >
               Forgot your password?
-            </p>
+            </button>
           ) : (
             <div></div>
           )}

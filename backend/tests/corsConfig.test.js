@@ -4,9 +4,23 @@ import assert from "node:assert/strict";
 const originalEnv = { ...process.env };
 
 const loadCorsConfig = async () => {
-  const { getAllowedOrigins, isOriginAllowed } = await import("../config/cors.js");
-  return { getAllowedOrigins, isOriginAllowed };
+  const { ALLOWED_CORS_HEADERS, getAllowedOrigins, isOriginAllowed } = await import("../config/cors.js");
+  return { ALLOWED_CORS_HEADERS, getAllowedOrigins, isOriginAllowed };
 };
+
+test("CORS permits idempotency keys used by state-changing API requests", async () => {
+  const { ALLOWED_CORS_HEADERS } = await loadCorsConfig();
+
+  assert.ok(ALLOWED_CORS_HEADERS.some((header) => header.toLowerCase() === "idempotency-key"));
+});
+
+test("CORS permits request-signature headers used by portal clients", async () => {
+  const { ALLOWED_CORS_HEADERS } = await loadCorsConfig();
+  const allowedHeaders = ALLOWED_CORS_HEADERS.map((header) => header.toLowerCase());
+
+  assert.ok(allowedHeaders.includes("request-signature"));
+  assert.ok(allowedHeaders.includes("x-request-signature"));
+});
 
 test("CORS accepts origins from env and keeps localhost allowed", async () => {
   process.env.CORS_ALLOWED_ORIGINS = "https://shop.example.com, https://admin.example.com";

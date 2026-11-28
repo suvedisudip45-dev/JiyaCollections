@@ -1,0 +1,31 @@
+CREATE TABLE `DistributorReconciliationFinding` (
+    `id` VARCHAR(36) NOT NULL,
+    `distributorId` VARCHAR(191) NOT NULL,
+    `findingKey` CHAR(64) NOT NULL,
+    `occurrence` INTEGER NOT NULL DEFAULT 1,
+    `category` VARCHAR(64) NOT NULL,
+    `severity` VARCHAR(16) NOT NULL,
+    `state` VARCHAR(24) NOT NULL DEFAULT 'OPEN',
+    `sourceStatus` VARCHAR(32) NULL,
+    `recordRefs` JSON NOT NULL,
+    `expected` JSON NULL,
+    `observed` JSON NULL,
+    `explanation` TEXT NOT NULL,
+    `nextAction` TEXT NOT NULL,
+    `workflowPath` VARCHAR(191) NOT NULL,
+    `detectedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `lastSeenAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `acknowledgedAt` DATETIME(3) NULL,
+    `acknowledgedBy` VARCHAR(191) NULL,
+    `resolvedAt` DATETIME(3) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+    INDEX `DistributorReconciliationFinding_distributorId_state_detecte_idx` (`distributorId`, `state`, `detectedAt`),
+    INDEX `DistributorReconciliationFinding_distributorId_category_seve_idx` (`distributorId`, `category`, `severity`, `state`, `detectedAt`),
+    INDEX `DistributorReconciliationFinding_distributorId_lastSeenAt_idx` (`distributorId`, `lastSeenAt`),
+    UNIQUE INDEX `DistributorReconciliationFinding_distributorId_findingKey_oc_key` (`distributorId`, `findingKey`, `occurrence`),
+    PRIMARY KEY (`id`),
+    CONSTRAINT `DistributorReconciliationFinding_distributorId_fkey`
+      FOREIGN KEY (`distributorId`) REFERENCES `Distributor` (`id`)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

@@ -188,6 +188,7 @@ const AccessRoles = ({ token }) => {
           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Access control</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-950">Admin roles</h1>
           <p className="mt-1 text-sm text-slate-500">Roles apply only to Admin accounts; permissions are enforced by the API.</p>
+          <p className="mt-2 text-xs text-amber-800">The built-in Administrator role is broad and seed-managed. Use custom roles for staff; the full-access wildcard is not assignable.</p>
         </div>
         {can("access:roles_create") && <button type="button" onClick={openCreate} className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"><Plus size={16} /> Create role</button>}
       </div>

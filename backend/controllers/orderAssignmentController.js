@@ -1,12 +1,23 @@
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
+import { getPlatformFeatures } from "../services/platformFeatureService.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 import { onOrderPacked } from "../services/giftService.js";
-import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
+import {
+  autoAssignGiftForCheckout,
+  reconcileNonCardGiftAssignment,
+  releaseUnfulfilledGiftForPackedCheckout,
+} from "../services/giftService.js";
+import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
+import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
+import { isDistributorLocalDeliveryEligible } from "../services/deliveryLocationService.js";
+import { resolveLocationEntry } from "../utils/nepalLocationData.js";
+import { resolveSellerTaxTreatment } from "../services/sellerTaxProfileService.js";
+import { validatePaperBillChoice } from "../services/paperBillService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -92,8 +103,8 @@ const buildFulfillmentBenefits = (order, items = []) => {
     productDiscount: Number(productDiscount.toFixed(2)),
     totalDiscount: Number((loyaltyDiscount + productDiscount).toFixed(2)),
     freeShipping: Boolean(reward.freeShipping),
-    giftAmount: Number(reward.giftAmount || 0),
-    giftDescription: order?.assignedGift?.name || reward.giftDescription || "",
+    giftAmount: Number(order?.assignedGift?.priceValue || 0),
+    giftDescription: order?.assignedGift?.name || "",
     assignedGift: order?.assignedGift ? {
       id: order.assignedGift.id,
       name: order.assignedGift.name,
@@ -106,323 +117,535 @@ const buildFulfillmentBenefits = (order, items = []) => {
     offerItems,
     packingInstructions: [
       reward.letterIncluded ? "Include a handwritten thank-you card." : "",
-      reward.giftDescription ? `Include gift: ${reward.giftDescription}.` : "",
+      order?.assignedGift?.name ? `Include gift: ${order.assignedGift.name}.` : "",
       reward.customPerk || "",
     ].filter(Boolean),
   };
 };
 
-// ─── NEPAL CITY PROXIMITY MAP ─────────────────────────────────────────────────
-const CITY_PROXIMITY = {
-  kathmandu: ["lalitpur", "bhaktapur", "kirtipur", "madhyapur thimi", "budhanilkantha", "banepa", "dhulikhel"],
-  lalitpur: ["kathmandu", "bhaktapur", "kirtipur", "madhyapur thimi", "godawari"],
-  bhaktapur: ["kathmandu", "lalitpur", "madhyapur thimi", "banepa", "dhulikhel"],
-  pokhara: ["lekhnath", "prithvichowk", "birauta", "syangja", "damauli", "kaski"],
-  lekhnath: ["pokhara", "damauli"],
-  biratnagar: ["itahari", "inaruwa", "dharan", "damak", "belbari", "urlabari"],
-  itahari: ["biratnagar", "dharan", "damak", "inaruwa"],
-  dharan: ["itahari", "biratnagar", "damak"],
-  butwal: ["bhairahawa", "siddharthanagar", "palpa", "sunwal", "tilottama"],
-  bhairahawa: ["butwal", "siddharthanagar", "sunwal"],
-  siddharthanagar: ["bhairahawa", "butwal"],
-  birgunj: ["parwanipur", "simara", "hetauda", "kalaiya"],
-  hetauda: ["birgunj", "makwanpur", "chitwan", "bharatpur"],
-  chitwan: ["bharatpur", "hetauda", "nawalpur", "ratnanagar"],
-  bharatpur: ["chitwan", "hetauda", "ratnanagar", "gaindakot"],
-  nepalgunj: ["kohalpur", "banke", "surkhet"],
-  dhangadhi: ["attariya", "tikapur", "mahendranagar", "kailali"],
-  janakpur: ["dhanusa", "bardibas", "jaleshwor", "mahottari"],
+const normalizeLocationKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
+
+const getDistributorAvailableStock = (distributor, requirement) =>
+  (distributor.inventoryBalances || (distributor.stockLocations || [])
+    .flatMap((location) => location.balances || []))
+    .filter((balance) =>
+      balance.inventorySku?.productId === requirement.productId &&
+      normalizeSkuKey(balance.inventorySku?.sizeKey || balance.inventorySku?.size) === normalizeSkuKey(requirement.size) &&
+      normalizeSkuKey(balance.inventorySku?.colorKey || balance.inventorySku?.color) === normalizeSkuKey(requirement.color)
+    )
+    .reduce((total, balance) => total + Math.max(0, balance.quantityOnHand - balance.reservedQuantity), 0);
+
+const getStockShortages = (distributor, requirements) => requirements
+  .map((requirement) => ({
+    productId: requirement.productId,
+    size: requirement.size,
+    color: requirement.color,
+    requiredQuantity: requirement.qty,
+    availableQuantity: getDistributorAvailableStock(distributor, requirement),
+  }))
+  .filter((item) => item.availableQuantity < item.requiredQuantity);
+
+const distributorHasStock = (distributor, requirements) =>
+  getStockShortages(distributor, requirements).length === 0;
+
+const resolveDistributorOrigins = async (distributors) => {
+  const unresolved = distributors.filter((distributor) =>
+    !canonicalizeNepalLocation(distributor.province, distributor.district)
+  );
+  if (!unresolved.length) return distributors;
+
+  const accountIds = unresolved.map((distributor) => distributor.accountId).filter(Boolean);
+  const manufacturerProfiles = accountIds.length
+    ? await prisma.manufacturer.findMany({
+      where: { accountId: { in: accountIds } },
+      select: { accountId: true, city: true, ncmPickupBranch: true },
+    })
+    : [];
+  const manufacturersByAccount = new Map(manufacturerProfiles.map((manufacturer) => [
+    manufacturer.accountId,
+    manufacturer,
+  ]));
+  const profiles = unresolved.map((distributor) => ({
+    distributor,
+    manufacturer: manufacturersByAccount.get(distributor.accountId),
+  }));
+  const branchNames = [...new Set(profiles
+    .map(({ distributor, manufacturer }) => manufacturer?.ncmPickupBranch || distributor.ncmPickupBranch)
+    .filter(Boolean))];
+  const branches = branchNames.length
+    ? await prisma.ncmBranch.findMany({
+      where: { name: { in: branchNames } },
+      select: { name: true, provinceName: true, districtName: true },
+    })
+    : [];
+  const branchesByName = new Map(branches.map((branch) => [
+    normalizeLocationKey(branch.name),
+    branch,
+  ]));
+  const originsByDistributor = new Map();
+  for (const { distributor, manufacturer } of profiles) {
+    const cityEntry = resolveLocationEntry(manufacturer?.city || distributor.city);
+    const cityOrigin = cityEntry?.type === "DISTRICT"
+      ? canonicalizeNepalLocation(cityEntry.province, cityEntry.name)
+      : null;
+    const branchName = manufacturer?.ncmPickupBranch || distributor.ncmPickupBranch;
+    const branch = branchesByName.get(normalizeLocationKey(branchName));
+    const origin = cityOrigin || canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
+    if (origin) originsByDistributor.set(distributor.id, origin);
+  }
+
+  return distributors.map((distributor) => {
+    const origin = canonicalizeNepalLocation(distributor.province, distributor.district) ||
+      originsByDistributor.get(distributor.id);
+    return origin
+      ? { ...distributor, province: origin.province, district: origin.district }
+      : distributor;
+  });
 };
 
-const normalize = (city) => (city || "").toLowerCase().trim();
-
-/**
- * Multi-Factor Smart Allocation Engine
- * Evaluates all candidate manufacturers based on:
- * 1. Location Proximity (Exact city vs nearby city vs regional)
- * 2. Quality Rating (Customer-driven 1.0 - 5.0 score)
- * 3. Real-time Variant Stock Availability (Size & Color match in hub inventory)
- * 4. Reliability (On-time fulfillment history and defect rates)
- */
-export const runAllocationEngine = async (orderId, actorContext = {}) => {
-  try {
-    const allocationActor = {
-      actorId: null,
-      actorRole: "SYSTEM",
-      portalSource: "SYSTEM",
-      ipAddress: null,
-      userAgent: null,
-      correlationId: null,
-      ...actorContext,
+const selectDistributorForOrder = async ({
+  address,
+  items,
+  preferredDistributorId = null,
+  forcePreferredDistributorId = false,
+  allowSplit = false,
+}) => {
+  const location = canonicalizeNepalLocation(address.province || address.state, address.district || address.city);
+  if (!location) {
+    return { success: false, message: "A valid customer province and district are required for distributor hub allocation." };
+  }
+  const lineItems = parseJSON(items, []).map((item) => ({
+    productId: String(item.productId || item._id || item.id || ""),
+    size: String(item.size || "Standard"),
+    color: String(item.color || "Standard"),
+    qty: Number(item.quantity ?? 1),
+  }));
+  if (!lineItems.length || lineItems.some((item) => !item.productId || !Number.isSafeInteger(item.qty) || item.qty < 1)) {
+    return { success: false, message: "Order items are invalid for distributor allocation." };
+  }
+  const requirementsBySku = new Map();
+  for (const item of lineItems) {
+    const key = [item.productId, normalizeSkuKey(item.size), normalizeSkuKey(item.color)].join("\0");
+    const existing = requirementsBySku.get(key);
+    if (existing) existing.qty += item.qty;
+    else requirementsBySku.set(key, { ...item });
+  }
+  const requirements = [...requirementsBySku.values()];
+  const productIds = [...new Set(requirements.map((item) => item.productId))];
+  const existingProducts = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true },
+  });
+  const existingProductIds = new Set(existingProducts.map((product) => product.id));
+  const missingProductId = productIds.find((productId) => !existingProductIds.has(productId));
+  if (missingProductId) {
+    return {
+      success: false,
+      code: "PRICE_PRODUCT_NOT_FOUND",
+      message: `Product not found: ${missingProductId}`,
+      productId: missingProductId,
     };
-    const order = await prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) return { success: false, message: "Order not found" };
-    if (String(order.status || "").toLowerCase() === "cancelled") {
-      return { success: false, message: "Cancelled orders cannot be assigned to a manufacturer." };
-    }
+  }
 
-    if (order.assignmentId) return { success: false, message: "Order already assigned" };
+  const distributors = await prisma.distributor.findMany({
+    where: {
+      status: "ACTIVE",
+      isActive: true,
+    },
+    include: {
+      locations: { where: { isActive: true } },
+    },
+  });
+  if (!distributors.length) {
+    return {
+      success: false,
+      code: "NO_ACTIVE_DISTRIBUTOR",
+      message: "There are no active distributors available for allocation.",
+    };
+  }
+  const distributorsWithOrigins = await resolveDistributorOrigins(distributors);
+  const routeableDistributors = distributorsWithOrigins.filter((distributor) =>
+    canonicalizeNepalLocation(distributor.province, distributor.district)
+  );
+  if (!routeableDistributors.length) {
+    return {
+      success: false,
+      code: "DISTRIBUTOR_LOCATION_UNAVAILABLE",
+      message: "Active distributors need a valid registered province and district before they can be allocated.",
+    };
+  }
+  const customerBranch = normalizeLocationKey(address.ncmBranch || address.ncmPickupBranch);
+  const compareRating = (left, right) =>
+    Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
+    Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
+    left.id.localeCompare(right.id);
+  const compareCandidatePriority = (left, right) => {
+    if (left.id === preferredDistributorId) return -1;
+    if (right.id === preferredDistributorId) return 1;
+    return compareRating(left, right);
+  };
+  const forcedDistributor = forcePreferredDistributorId
+    ? routeableDistributors.find((distributor) => distributor.id === preferredDistributorId)
+    : null;
+  if (forcePreferredDistributorId && !forcedDistributor) {
+    return {
+      success: false,
+      code: "DISTRIBUTOR_NOT_ELIGIBLE",
+      message: "The selected distributor is not active or does not have a valid registered province and district.",
+    };
+  }
+  const getCoverageLocations = (distributor) => {
+    const configuredLocations = (distributor.locations || [])
+      .filter((serviceArea) => serviceArea.isActive !== false)
+      .map((serviceArea) => canonicalizeNepalLocation(serviceArea.province, serviceArea.district))
+      .filter(Boolean);
+    if (configuredLocations.length) return configuredLocations;
+    const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+    return registeredLocation ? [registeredLocation] : [];
+  };
+  const hasExactCoverage = (distributor) => getCoverageLocations(distributor).some((serviceLocation) =>
+    serviceLocation.province === location.province &&
+    serviceLocation.district === location.district
+  );
+  const hasBranchMatch = (distributor) => customerBranch &&
+    normalizeLocationKey(distributor.ncmPickupBranch) === customerBranch;
+  const hasDistrictMatch = (distributor) => {
+    const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+    return registeredLocation?.province === location.province &&
+      registeredLocation?.district === location.district;
+  };
+  const hasProvinceMatch = (distributor) =>
+    getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
+    canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
 
-    if (order.specialOrder) {
-      const fallbackManufacturerId = order.manufacturerId || (parseJSON(order.specialOrderManufacturerIds, [])[0] ?? null);
-      if (!fallbackManufacturerId) {
-        return {
-          success: false,
-          message: "Order is marked as a special order and requires manual assignment because no fallback manufacturer is available.",
-        };
-      }
-
-      const [manufacturer, assignment] = await Promise.all([
-        prisma.manufacturer.findUnique({ where: { id: fallbackManufacturerId } }),
-        prisma.$transaction(async (tx) => {
-          const claimed = await tx.order.updateMany({
-            where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
-            data: { fulfillmentStatus: "assigned", manufacturerId: fallbackManufacturerId },
-          });
-          if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
-          const assignment = await tx.orderAssignment.create({
-            data: {
-              orderId,
-              manufacturerId: fallbackManufacturerId,
-              status: "assigned",
-              notes: `Special order fallback assignment: ${order.specialOrderReason || "Mixed manufacturer fulfillment requires manual oversight."}`,
-            },
-          });
-          await tx.order.update({ where: { id: orderId }, data: { assignmentId: assignment.id } });
-          await recordSystemAudit(allocationActor, {
-            action: "ORDER_AUTO_ASSIGNED",
-            entityType: "Order",
-            entityId: orderId,
-            beforeState: {
-              fulfillmentStatus: order.fulfillmentStatus,
-              manufacturerId: order.manufacturerId,
-              assignmentId: order.assignmentId,
-            },
-            afterState: {
-              fulfillmentStatus: "assigned",
-              manufacturerId: fallbackManufacturerId,
-              assignmentId: assignment.id,
-              allocationMode: "special_order_fallback",
-            },
-          }, { client: tx });
-          return assignment;
-        }, { isolationLevel: "Serializable" }),
-      ]);
-
-      return {
-        success: true,
-        assignment,
-        manufacturer,
-        scoreDetails: {
-          totalScore: 0,
-          locationTier: "Special Order Fallback",
-          qualityRating: 0,
-          hasAllItemsInStock: false,
-        },
-      };
-    }
-
-    const address = parseJSON(order.address, {});
-    const customerCity = normalize(address?.city);
-
-    // Parse ordered line items with requested variants
-    const rawItems = parseJSON(order.items, []);
-    const itemRequirements = rawItems.map((item) => ({
-      productId: item.productId || item._id || item.id,
-      name: item.name || "Garment",
-      size: item.size || "Standard",
-      color: item.color || "Standard",
-      qty: Math.max(1, Number(item.quantity || 1)),
-    }));
-
-    // Fetch all active and available contracted manufacturers
-    const candidateManufacturers = await prisma.manufacturer.findMany({
+  const districtCandidates = routeableDistributors.filter(hasDistrictMatch);
+  const coverageCandidates = routeableDistributors.filter((distributor) =>
+    !hasDistrictMatch(distributor) && hasExactCoverage(distributor)
+  );
+  const branchCandidates = routeableDistributors.filter((distributor) =>
+    !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
+  );
+  const provinceCandidates = routeableDistributors.filter((distributor) =>
+    !hasExactCoverage(distributor) &&
+    !hasDistrictMatch(distributor) &&
+    !hasBranchMatch(distributor) &&
+    hasProvinceMatch(distributor)
+  );
+  const nationwideCandidates = routeableDistributors.filter((distributor) =>
+    !hasExactCoverage(distributor) &&
+    !hasDistrictMatch(distributor) &&
+    !hasBranchMatch(distributor) &&
+    !hasProvinceMatch(distributor)
+  );
+  const candidateTiers = forcePreferredDistributorId
+    ? [["admin-selected distributor", [forcedDistributor]]]
+    : [
+    ["same district", districtCandidates],
+    ["service-area coverage", coverageCandidates],
+    ["NCM branch", branchCandidates],
+    ["same province", provinceCandidates],
+    ["review-ranked nationwide", nationwideCandidates],
+    ].map(([tierName, tierCandidates]) => [
+      tierName,
+      tierCandidates.slice().sort(compareCandidatePriority),
+    ]);
+  let allocationTier = "";
+  let candidates = [];
+  let stockRows = [];
+  for (const [tierName, tierCandidates] of candidateTiers) {
+    if (!tierCandidates.length) continue;
+    const tierStockRows = await prisma.inventoryBalance.findMany({
       where: {
-        isActive: true,
-        isAvailable: true,
-        contractStatus: "ACTIVE",
+        location: {
+          distributorId: { in: tierCandidates.map((distributor) => distributor.id) },
+          kind: "DISTRIBUTOR",
+          inventoryOwner: "PLATFORM",
+          isActive: true,
+        },
+        inventorySku: {
+          isActive: true,
+          OR: requirements.map((requirement) => ({
+            productId: requirement.productId,
+            sizeKey: normalizeSkuKey(requirement.size),
+            colorKey: normalizeSkuKey(requirement.color),
+          })),
+        },
       },
-      include: {
-        inventory: true,
+      select: {
+        quantityOnHand: true,
+        reservedQuantity: true,
+        location: { select: { distributorId: true } },
+        inventorySku: { select: { productId: true, sizeKey: true, colorKey: true } },
       },
     });
-
-    if (candidateManufacturers.length === 0) {
-      return { success: false, message: "No active manufacturer hubs available in the network." };
+    stockRows = stockRows.concat(tierStockRows);
+    const stockedCandidates = tierCandidates
+      .map((distributor) => ({
+        ...distributor,
+        inventoryBalances: tierStockRows
+          .filter((balance) => balance.location.distributorId === distributor.id),
+      }))
+      .filter((distributor) => distributorHasStock(distributor, requirements))
+      .sort(compareCandidatePriority);
+    if (stockedCandidates.length) {
+      allocationTier = tierName;
+      candidates = stockedCandidates;
+      break;
     }
-
-    const nearbyCities = CITY_PROXIMITY[customerCity] || [];
-
-    // Evaluate each candidate and calculate comprehensive matching score
-    const scoredCandidates = candidateManufacturers.map((mfg) => {
-      const hubCity = normalize(mfg.city);
-      let locationScore = 15; // default cross-region base
-      let locationTier = "National";
-
-      if (hubCity === customerCity && customerCity !== "") {
-        locationScore = 100; // Exact same city match
-        locationTier = "Same City (Local)";
-      } else if (nearbyCities.includes(hubCity)) {
-        locationScore = 70; // Adjacent metro hub
-        locationTier = "Neighboring City";
-      }
-
-      // ─── 2. Evaluate Stock Availability per Ordered Variant ─────────────────
-      let totalReqQty = 0;
-      let availableReqQty = 0;
-      let hasAllItemsInStock = true;
-
-      const inventoryMap = {};
-      mfg.inventory.forEach((inv) => {
-        inventoryMap[inv.productId] = inv;
-      });
-
-      for (const req of itemRequirements) {
-        totalReqQty += req.qty;
-        const inv = inventoryMap[req.productId];
-
-        if (!inv) {
-          hasAllItemsInStock = false;
-          continue;
-        }
-
-        const variantsStock = parseJSON(inv.variantsStock, []);
-        let variantAvailable = 0;
-
-        if (variantsStock.length > 0) {
-          const matched = variantsStock.find(
-            (v) =>
-              (v.size || "Standard") === req.size &&
-              (v.color || "Standard") === req.color
-          );
-          if (matched) {
-            variantAvailable = Math.max(
-              0,
-              (matched.quantity || 0) - (matched.reservedQty || 0)
-            );
-          }
-        } else {
-          variantAvailable = Math.max(0, (inv.quantity || 0) - (inv.reservedQty || 0));
-        }
-
-        const fulfilledQty = Math.min(req.qty, variantAvailable);
-        availableReqQty += fulfilledQty;
-
-        if (variantAvailable < req.qty) {
-          hasAllItemsInStock = false;
-        }
-      }
-
-      const stockFulfillmentRatio = totalReqQty > 0 ? availableReqQty / totalReqQty : 1;
-      let stockScore = 0;
-      if (hasAllItemsInStock) {
-        stockScore = 120; // 100% variant stock ready
-      } else if (stockFulfillmentRatio > 0) {
-        stockScore = Math.round(stockFulfillmentRatio * 60); // Partial stock
-      } else {
-        stockScore = 0; // 0 physical units available
-      }
-
-      // ─── 3. Customer Quality Rating Score ─────────────────────────────────
-      const rawQuality = Number(mfg.qualityRating) || 5.0;
-      const normalizedQuality = Math.min(5.0, Math.max(1.0, rawQuality));
-      // Quality rating contributes up to 75 points (5.0 rating = 75 pts)
-      const ratingScore = Math.round((normalizedQuality / 5.0) * 75);
-
-      // ─── 4. Reliability & On-Time Performance Score ───────────────────────
-      let reliabilityScore = 10;
-      if (mfg.totalOrdersFulfilled > 0) {
-        const onTimeRate = (mfg.onTimeCount || 0) / mfg.totalOrdersFulfilled;
-        const defectRate = (mfg.defectCount || 0) / mfg.totalOrdersFulfilled;
-        reliabilityScore = Math.round(onTimeRate * 15) - Math.round(defectRate * 10);
-      }
-
-      const totalScore = locationScore + stockScore + ratingScore + reliabilityScore;
-
-      return {
-        manufacturer: mfg,
-        totalScore,
-        locationScore,
-        locationTier,
-        stockScore,
-        hasAllItemsInStock,
-        stockFulfillmentRatio,
-        ratingScore,
-        qualityRating: normalizedQuality,
-        reliabilityScore,
-      };
-    });
-
-    // Sort descending by total score
-    scoredCandidates.sort((a, b) => b.totalScore - a.totalScore);
-
-    // Pick top scoring candidate (giving strong preference to in-stock hubs)
-    let bestCandidate = scoredCandidates.find((c) => c.hasAllItemsInStock);
-    if (!bestCandidate) {
-      bestCandidate = scoredCandidates.find((c) => c.stockFulfillmentRatio > 0);
-    }
-
-    if (!bestCandidate || !bestCandidate.manufacturer) {
+  }
+  const selected = candidates[0];
+  if (!selected) {
+    const shortageCandidates = forcePreferredDistributorId
+      ? routeableDistributors.filter((distributor) => distributor.id === preferredDistributorId)
+      : routeableDistributors;
+    const stockShortages = shortageCandidates.map((distributor) => ({
+      distributor: distributor.name,
+      shortages: getStockShortages({
+        ...distributor,
+        inventoryBalances: stockRows.filter((balance) =>
+          balance.location.distributorId === distributor.id
+        ),
+      }, requirements),
+    }));
+    if (!allowSplit) {
       return {
         success: false,
-        message: "No manufacturer hub currently has available inventory to fulfill this order.",
+        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
+        message: "No single active distributor has enough available distributor-ledger stock for every requested variant.",
+        stockShortages,
       };
     }
+    const rankedDistributors = candidateTiers.flatMap(([, tierCandidates]) =>
+      tierCandidates.slice().sort(compareRating)
+    );
+    const splitByDistributor = new Map();
 
-    const assignedManufacturer = bestCandidate.manufacturer;
+    for (const requirement of requirements) {
+      let remaining = requirement.qty;
+      for (const distributor of rankedDistributors) {
+        const availableQuantity = stockRows
+          .filter((balance) =>
+            balance.location.distributorId === distributor.id &&
+            balance.inventorySku.productId === requirement.productId &&
+            normalizeSkuKey(balance.inventorySku.sizeKey) === normalizeSkuKey(requirement.size) &&
+            normalizeSkuKey(balance.inventorySku.colorKey) === normalizeSkuKey(requirement.color)
+          )
+          .reduce((total, balance) =>
+            total + Math.max(0, balance.quantityOnHand - balance.reservedQuantity), 0);
+        const allocatedQuantity = Math.min(remaining, availableQuantity);
+        if (allocatedQuantity > 0) {
+          const shipment = splitByDistributor.get(distributor.id) || {
+            distributor,
+            items: [],
+          };
+          shipment.items.push({ ...requirement, qty: allocatedQuantity });
+          splitByDistributor.set(distributor.id, shipment);
+          remaining -= allocatedQuantity;
+        }
+        if (!remaining) break;
+      }
+    }
 
-    // Create OrderAssignment record
-    const assignmentNote = `Auto-allocated by smart engine: Location [${bestCandidate.locationTier} +${bestCandidate.locationScore}pts], Customer Rating [${bestCandidate.qualityRating}★ +${bestCandidate.ratingScore}pts], Stock Status [${bestCandidate.hasAllItemsInStock ? "100% In Stock" : "Production Required"} +${bestCandidate.stockScore}pts]. Total Score: ${bestCandidate.totalScore}.`;
+    const allocatedQuantity = [...splitByDistributor.values()]
+      .flatMap(({ items: shipmentItems }) => shipmentItems)
+      .reduce((total, item) => total + item.qty, 0);
+    const requiredQuantity = requirements.reduce((total, item) => total + item.qty, 0);
+    if (allocatedQuantity !== requiredQuantity) {
+      return {
+        success: false,
+        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
+        message: "The active distributors do not have enough combined available stock for every requested variant.",
+        stockShortages,
+      };
+    }
+    return {
+      success: true,
+      selected: null,
+      distributors,
+      requirements,
+      productIds,
+      allocationTier: "split distributor stock",
+      location,
+      splitShipments: [...splitByDistributor.values()],
+    };
+  }
+  return {
+    success: true,
+    selected,
+    distributors,
+    requirements,
+    productIds,
+    allocationTier,
+    location,
+  };
+};
 
+export const previewDistributorAllocation = async ({ address, items }) => {
+  const result = await selectDistributorForOrder({ address, items, allowSplit: true });
+  if (!result.success) return result;
+  if (result.splitShipments) {
+    return {
+      success: true,
+      splitShipments: result.splitShipments.map(({ distributor, items: shipmentItems }) => ({
+        distributor: {
+          id: distributor.id,
+          name: distributor.name,
+          district: distributor.district,
+          province: distributor.province,
+        },
+        items: shipmentItems,
+      })),
+      location: result.location,
+    };
+  }
+  return {
+    success: true,
+    distributor: result.selected,
+    allocationTier: result.allocationTier,
+    location: result.location,
+  };
+};
+
+export const runAllocationEngine = async (orderId, actorContext = {}) => {
+  const {
+    preferredDistributorId = null,
+    forcePreferredDistributorId = false,
+    adminOverrideReason = null,
+    ...auditContext
+  } = actorContext;
+  const actor = {
+    actorId: null,
+    actorRole: "SYSTEM",
+    portalSource: "SYSTEM",
+    ipAddress: null,
+    userAgent: null,
+    correlationId: null,
+    ...auditContext,
+  };
+
+  try {
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) return { success: false, message: "Order not found." };
+    if (String(order.status || "").toLowerCase() === "cancelled") {
+      return { success: false, message: "Cancelled orders cannot be assigned to a distributor." };
+    }
+    if (order.assignmentId) return { success: false, message: "Order already assigned." };
+
+    const address = parseJSON(order.address, {});
+    const selection = await selectDistributorForOrder({
+      address,
+      items: order.items,
+      preferredDistributorId,
+      forcePreferredDistributorId,
+    });
+    if (!selection.success) return selection;
+    const {
+      selected,
+      distributors,
+      requirements,
+      productIds,
+      allocationTier,
+      location,
+    } = selection;
     const assignment = await prisma.$transaction(async (tx) => {
+      const stillActive = await tx.distributor.findFirst({
+        where: { id: selected.id, status: "ACTIVE", isActive: true },
+        select: { id: true },
+      });
+      if (!stillActive) {
+        throw Object.assign(new Error("The selected distributor is no longer active. Retry the allocation."), {
+          code: "DISTRIBUTOR_INACTIVE",
+          statusCode: 409,
+        });
+      }
       const claimed = await tx.order.updateMany({
-        where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
-        data: { fulfillmentStatus: "assigned", manufacturerId: assignedManufacturer.id },
+        where: {
+          id: orderId,
+          assignmentId: null,
+          status: { not: "Cancelled" },
+          ...(forcePreferredDistributorId
+            ? { orderType: "ONLINE_STORE", fulfillmentStatus: "PENDING_ASSIGNMENT" }
+            : {}),
+        },
+        data: { fulfillmentStatus: "assigned", manufacturerId: null },
       });
       if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
 
-      for (const requirement of itemRequirements) {
-        const inventory = await tx.manufacturerInventory.findUnique({
-          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
-        });
-        if (!inventory) continue;
-        const variantsStock = parseJSON(inventory.variantsStock, []);
-        const updatedVariants = variantsStock.length > 0
-          ? variantsStock.map((variant) => (
-              (variant.size || "Standard") === requirement.size && (variant.color || "Standard") === requirement.color
-                ? { ...variant, reservedQty: Number(variant.reservedQty || 0) + requirement.qty }
-                : variant
-            ))
-          : [{ size: requirement.size, color: requirement.color, quantity: inventory.quantity, reservedQty: Number(inventory.reservedQty || 0) + requirement.qty }];
-
-        await tx.manufacturerInventory.update({
-          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
-          data: {
-            reservedQty: Number(inventory.reservedQty || 0) + requirement.qty,
-            variantsStock: updatedVariants,
+      for (const requirement of requirements) {
+        let remaining = requirement.qty;
+        const balances = await tx.inventoryBalance.findMany({
+          where: {
+            location: {
+              distributorId: selected.id,
+              kind: "DISTRIBUTOR",
+              inventoryOwner: "PLATFORM",
+              isActive: true,
+            },
+            inventorySku: {
+              productId: requirement.productId,
+              isActive: true,
+              sizeKey: normalizeSkuKey(requirement.size),
+              colorKey: normalizeSkuKey(requirement.color),
+            },
           },
+          orderBy: { id: "asc" },
         });
-        await syncProductStock(requirement.productId, { client: tx, throwOnError: true });
+        for (const balance of balances) {
+          const available = Math.max(0, balance.quantityOnHand - balance.reservedQuantity);
+          const reserveQuantity = Math.min(remaining, available);
+          if (!reserveQuantity) continue;
+          const updated = await tx.inventoryBalance.updateMany({
+            where: {
+              id: balance.id,
+              reservedQuantity: balance.reservedQuantity,
+              quantityOnHand: { gte: balance.reservedQuantity + reserveQuantity },
+            },
+            data: { reservedQuantity: { increment: reserveQuantity } },
+          });
+          if (updated.count !== 1) {
+            throw Object.assign(new Error("Distributor stock changed during allocation. Retry the assignment."), {
+              code: "DISTRIBUTOR_STOCK_CHANGED",
+              statusCode: 409,
+            });
+          }
+          remaining -= reserveQuantity;
+          if (!remaining) break;
+        }
+        if (remaining) {
+          throw Object.assign(new Error("Distributor stock changed during allocation. Retry the assignment."), {
+            code: "DISTRIBUTOR_STOCK_CHANGED",
+            statusCode: 409,
+          });
+        }
       }
+      await Promise.all(productIds.map((productId) =>
+        syncProductStock(productId, { client: tx, throwOnError: true })
+      ));
 
       const createdAssignment = await tx.orderAssignment.create({
-        data: { orderId, manufacturerId: assignedManufacturer.id, status: "assigned", notes: assignmentNote },
+        data: {
+          orderId,
+          distributorId: selected.id,
+          status: "assigned",
+          notes: forcePreferredDistributorId
+            ? `Admin assigned to ${selected.name}. Reason: ${adminOverrideReason}`
+            : `Auto-allocated to ${selected.name} by ${allocationTier} priority for ${location.district}; all requested variants were in stock.`,
+        },
       });
       await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
-      await recordSystemAudit(allocationActor, {
-        action: "ORDER_AUTO_ASSIGNED",
+      await recordSystemAudit(actor, {
+        action: forcePreferredDistributorId ? "ORDER_ADMIN_ASSIGNED_DISTRIBUTOR" : "ORDER_AUTO_ASSIGNED",
         entityType: "Order",
         entityId: orderId,
-        beforeState: {
-          fulfillmentStatus: order.fulfillmentStatus,
-          manufacturerId: order.manufacturerId,
-          assignmentId: order.assignmentId,
-        },
+        beforeState: { fulfillmentStatus: order.fulfillmentStatus, assignmentId: order.assignmentId },
         afterState: {
           fulfillmentStatus: "assigned",
-          manufacturerId: assignedManufacturer.id,
+          distributorId: selected.id,
           assignmentId: createdAssignment.id,
-          allocationMode: "smart_allocation",
+          allocationMode: "distributor_hub",
+          allocationTier,
+          ...(forcePreferredDistributorId ? { reason: adminOverrideReason } : {}),
         },
       }, { client: tx });
       return createdAssignment;
@@ -431,17 +654,11 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
     return {
       success: true,
       assignment,
-      manufacturer: assignedManufacturer,
-      scoreDetails: {
-        totalScore: bestCandidate.totalScore,
-        locationTier: bestCandidate.locationTier,
-        qualityRating: bestCandidate.qualityRating,
-        hasAllItemsInStock: bestCandidate.hasAllItemsInStock,
-      },
+      distributor: distributors.find((distributor) => distributor.id === selected.id),
     };
   } catch (error) {
     console.error("runAllocationEngine error:", error);
-    return { success: false, message: error.message };
+    return { success: false, message: error.message, ...(error.code ? { code: error.code } : {}) };
   }
 };
 
@@ -455,13 +672,17 @@ const assignOrder = async (req, res) => {
     if (result.success) {
       res.json({
         success: true,
-        message: "Order successfully auto-allocated based on location, rating & stock!",
+        message: "Order successfully allocated to a distributor covering the customer location.",
         assignment: result.assignment,
-        manufacturer: result.manufacturer?.name,
-        scoreDetails: result.scoreDetails,
+        distributor: result.distributor?.name,
       });
     } else {
-      res.json({ success: false, message: result.message });
+      res.json({
+        success: false,
+        message: result.message,
+        ...(result.code ? { code: result.code } : {}),
+        ...(result.stockShortages ? { stockShortages: result.stockShortages } : {}),
+      });
     }
   } catch (error) {
     console.error("assignOrder error:", error);
@@ -469,15 +690,391 @@ const assignOrder = async (req, res) => {
   }
 };
 
-// ─── MANUFACTURER: GET MY ASSIGNMENTS ────────────────────────────────────────
+const getAdminAssignmentDistributors = async (req, res) => {
+  try {
+    const distributors = await prisma.distributor.findMany({
+      where: { status: "ACTIVE", isActive: true },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      select: { id: true, name: true, province: true, district: true },
+    });
+    return res.json({ success: true, distributors });
+  } catch (error) {
+    console.error("getAdminAssignmentDistributors error:", error);
+    return res.status(500).json({ success: false, message: "Active distributors could not be loaded." });
+  }
+};
+
+const adminAssignFailedOrder = async (req, res) => {
+  const orderId = String(req.body?.orderId || "").trim();
+  const distributorId = String(req.body?.distributorId || "").trim();
+  const reason = String(req.body?.reason || "").trim();
+  if (!orderId || !distributorId || reason.length < 10 || reason.length > 500) {
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_ADMIN_ASSIGNMENT",
+      message: "Order, distributor, and a reason between 10 and 500 characters are required.",
+    });
+  }
+
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, orderType: true, status: true, fulfillmentStatus: true, assignmentId: true },
+    });
+    if (
+      !order ||
+      order.orderType !== "ONLINE_STORE" ||
+      order.status === "Cancelled" ||
+      order.assignmentId ||
+      String(order.fulfillmentStatus || "").toUpperCase() !== "PENDING_ASSIGNMENT"
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "ORDER_NOT_AWAITING_ALLOCATION",
+        message: "Only an unassigned online order with a failed/pending allocation can be manually assigned.",
+      });
+    }
+
+    const result = await runAllocationEngine(orderId, {
+      ...auditActorContext(req, "ADMIN"),
+      preferredDistributorId: distributorId,
+      forcePreferredDistributorId: true,
+      adminOverrideReason: reason,
+    });
+    if (!result.success) {
+      const statusCode = result.code === "DISTRIBUTOR_STOCK_CHANGED" || result.code === "DISTRIBUTOR_INACTIVE"
+        ? 409
+        : 400;
+      return res.status(statusCode).json({
+        success: false,
+        code: result.code || "ADMIN_ASSIGNMENT_FAILED",
+        message: result.message,
+        ...(result.stockShortages ? { stockShortages: result.stockShortages } : {}),
+      });
+    }
+    return res.json({
+      success: true,
+      message: `Order assigned to ${result.distributor?.name || "the selected distributor"}.`,
+      assignment: result.assignment,
+      distributor: result.distributor?.name,
+    });
+  } catch (error) {
+    console.error("adminAssignFailedOrder error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "ADMIN_ASSIGNMENT_FAILED",
+      message: error.message || "Order could not be assigned.",
+    });
+  }
+};
+
+const adminReassignOrder = async (req, res) => {
+  const assignmentId = String(req.body?.assignmentId || "").trim();
+  const distributorId = String(req.body?.distributorId || "").trim();
+  const reason = String(req.body?.reason || "").trim();
+  if (!assignmentId || !distributorId || reason.length < 10 || reason.length > 500) {
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_ADMIN_REASSIGNMENT",
+      message: "Assignment, distributor, and a reason between 10 and 500 characters are required.",
+    });
+  }
+
+  try {
+    const assignment = await prisma.orderAssignment.findUnique({
+      where: { id: assignmentId },
+    });
+    if (!assignment?.distributorId || assignment.manufacturerId) {
+      return res.status(409).json({
+        success: false,
+        code: "DISTRIBUTOR_ASSIGNMENT_REQUIRED",
+        message: "Only an existing distributor assignment can be rerouted through this operation.",
+      });
+    }
+
+    const [order, delivery] = await Promise.all([
+      prisma.order.findUnique({ where: { id: assignment.orderId } }),
+      prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } }),
+    ]);
+    if (
+      !order ||
+      order.assignmentId !== assignment.id ||
+      !["ONLINE_STORE", "ADMIN_DIRECT"].includes(String(order.orderType || "").toUpperCase()) ||
+      String(order.status || "").toLowerCase() === "cancelled"
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "ORDER_NOT_REROUTABLE",
+        message: "This order is not an active customer order with the current assignment.",
+      });
+    }
+    if (!canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(delivery) })) {
+      return res.status(409).json({
+        success: false,
+        code: "ORDER_FULFILLMENT_LOCKED",
+        message: "Reassignment is allowed only before distributor acceptance and before delivery handoff.",
+      });
+    }
+    if (assignment.distributorId === distributorId) {
+      return res.status(400).json({
+        success: false,
+        code: "SAME_DISTRIBUTOR_SELECTED",
+        message: "Select a different distributor to reroute this assignment.",
+      });
+    }
+
+    const selection = await selectDistributorForOrder({
+      address: parseJSON(order.address, {}),
+      items: order.items,
+      preferredDistributorId: distributorId,
+      forcePreferredDistributorId: true,
+    });
+    if (!selection.success) {
+      return res.status(selection.code === "DISTRIBUTOR_NOT_ELIGIBLE" ? 400 : 409).json({
+        success: false,
+        code: selection.code || "DISTRIBUTOR_STOCK_UNAVAILABLE",
+        message: selection.message,
+        ...(selection.stockShortages ? { stockShortages: selection.stockShortages } : {}),
+      });
+    }
+
+    const { selected, requirements, productIds } = selection;
+    const result = await prisma.$transaction(async (tx) => {
+      const currentAssignment = await tx.orderAssignment.findUnique({ where: { id: assignmentId } });
+      const currentOrder = await tx.order.findUnique({ where: { id: assignment.orderId } });
+      const currentDelivery = await tx.deliveryOrder.findUnique({
+        where: { orderId: assignment.orderId },
+        select: { id: true },
+      });
+      if (
+        !currentAssignment ||
+        currentAssignment.status !== assignment.status ||
+        currentAssignment.distributorId !== assignment.distributorId ||
+        currentAssignment.manufacturerId ||
+        !currentOrder ||
+        currentOrder.assignmentId !== assignmentId ||
+        !["ONLINE_STORE", "ADMIN_DIRECT"].includes(String(currentOrder.orderType || "").toUpperCase()) ||
+        String(currentOrder.status || "").toLowerCase() === "cancelled" ||
+        !canAdminReassignAssignment({
+          status: currentAssignment.status,
+          hasDeliveryOrder: Boolean(currentDelivery),
+        })
+      ) {
+        throw Object.assign(new Error("The assignment changed or advanced while reassignment was being prepared. Refresh and retry."), {
+          code: "ORDER_REASSIGNMENT_CONFLICT",
+          statusCode: 409,
+        });
+      }
+
+      const activeDistributor = await tx.distributor.findFirst({
+        where: { id: selected.id, status: "ACTIVE", isActive: true },
+        select: { id: true },
+      });
+      if (!activeDistributor) {
+        throw Object.assign(new Error("The selected distributor is no longer active. Refresh and retry."), {
+          code: "DISTRIBUTOR_INACTIVE",
+          statusCode: 409,
+        });
+      }
+
+      for (const requirement of requirements) {
+        let remaining = requirement.qty;
+        const balances = await tx.inventoryBalance.findMany({
+          where: {
+            location: {
+              distributorId: selected.id,
+              kind: "DISTRIBUTOR",
+              inventoryOwner: "PLATFORM",
+              isActive: true,
+            },
+            inventorySku: {
+              productId: requirement.productId,
+              isActive: true,
+              sizeKey: normalizeSkuKey(requirement.size),
+              colorKey: normalizeSkuKey(requirement.color),
+            },
+          },
+          orderBy: { id: "asc" },
+        });
+        for (const balance of balances) {
+          const available = Math.max(0, balance.quantityOnHand - balance.reservedQuantity);
+          const reserveQuantity = Math.min(remaining, available);
+          if (!reserveQuantity) continue;
+          const reserved = await tx.inventoryBalance.updateMany({
+            where: {
+              id: balance.id,
+              reservedQuantity: balance.reservedQuantity,
+              quantityOnHand: { gte: balance.reservedQuantity + reserveQuantity },
+            },
+            data: { reservedQuantity: { increment: reserveQuantity } },
+          });
+          if (reserved.count !== 1) {
+            throw Object.assign(new Error("The selected distributor's stock changed. Refresh and retry."), {
+              code: "DISTRIBUTOR_STOCK_CHANGED",
+              statusCode: 409,
+            });
+          }
+          remaining -= reserveQuantity;
+          if (!remaining) break;
+        }
+        if (remaining) {
+          throw Object.assign(new Error("The selected distributor no longer has enough available stock."), {
+            code: "DISTRIBUTOR_STOCK_CHANGED",
+            statusCode: 409,
+          });
+        }
+      }
+
+      for (const requirement of requirements) {
+        let remaining = requirement.qty;
+        const balances = await tx.inventoryBalance.findMany({
+          where: {
+            location: {
+              distributorId: assignment.distributorId,
+              kind: "DISTRIBUTOR",
+              inventoryOwner: "PLATFORM",
+            },
+            inventorySku: {
+              productId: requirement.productId,
+              sizeKey: normalizeSkuKey(requirement.size),
+              colorKey: normalizeSkuKey(requirement.color),
+            },
+          },
+          orderBy: { id: "asc" },
+        });
+        for (const balance of balances) {
+          const releaseQuantity = Math.min(remaining, balance.reservedQuantity);
+          if (!releaseQuantity) continue;
+          const released = await tx.inventoryBalance.updateMany({
+            where: {
+              id: balance.id,
+              reservedQuantity: balance.reservedQuantity,
+              quantityOnHand: { gte: balance.reservedQuantity },
+            },
+            data: { reservedQuantity: { decrement: releaseQuantity } },
+          });
+          if (released.count !== 1) {
+            throw Object.assign(new Error("The previous distributor's reservation changed. Refresh and retry."), {
+              code: "ORDER_RESERVATION_CONFLICT",
+              statusCode: 409,
+            });
+          }
+          remaining -= releaseQuantity;
+          if (!remaining) break;
+        }
+        if (remaining) {
+          throw Object.assign(new Error("The previous distributor's stock reservation does not match the order quantity."), {
+            code: "ORDER_RESERVATION_MISMATCH",
+            statusCode: 409,
+          });
+        }
+      }
+
+      const claimed = await tx.orderAssignment.updateMany({
+        where: {
+          id: assignmentId,
+          orderId: assignment.orderId,
+          status: assignment.status,
+          distributorId: assignment.distributorId,
+          manufacturerId: null,
+        },
+        data: {
+          distributorId: selected.id,
+          manufacturerId: null,
+          status: "assigned",
+          assignedAt: new Date(),
+          acceptedAt: null,
+          rejectionReason: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw Object.assign(new Error("The assignment changed during reassignment. Refresh and retry."), {
+          code: "ORDER_REASSIGNMENT_CONFLICT",
+          statusCode: 409,
+        });
+      }
+      const orderUpdated = await tx.order.updateMany({
+        where: {
+          id: order.id,
+          assignmentId: assignment.id,
+          status: currentOrder.status,
+          fulfillmentStatus: currentOrder.fulfillmentStatus,
+        },
+        data: {
+          fulfillmentStatus: "assigned",
+          ...(String(currentOrder.status || "").toLowerCase() === "rejected by hub"
+            ? { status: "Order Placed" }
+            : {}),
+        },
+      });
+      if (orderUpdated.count !== 1) {
+        throw Object.assign(new Error("The order changed during reassignment. Refresh and retry."), {
+          code: "ORDER_REASSIGNMENT_CONFLICT",
+          statusCode: 409,
+        });
+      }
+      await Promise.all(productIds.map((productId) =>
+        syncProductStock(productId, { client: tx, throwOnError: true })
+      ));
+
+      await recordSystemAudit(auditActorContext(req, "ADMIN"), {
+        action: "ORDER_ADMIN_REASSIGNED_DISTRIBUTOR",
+        entityType: "Order",
+        entityId: order.id,
+        beforeState: {
+          distributorId: assignment.distributorId,
+          assignmentStatus: assignment.status,
+          fulfillmentStatus: order.fulfillmentStatus,
+        },
+        afterState: {
+          distributorId: selected.id,
+          assignmentStatus: "assigned",
+          fulfillmentStatus: "assigned",
+          reason,
+        },
+      }, { client: tx });
+
+      return tx.orderAssignment.findUnique({
+        where: { id: assignmentId },
+        include: { distributor: { select: { id: true, name: true } } },
+      });
+    }, { isolationLevel: "Serializable" });
+
+    return res.json({
+      success: true,
+      message: `Order reassigned to ${result.distributor?.name || "the selected distributor"}.`,
+      assignment: result,
+    });
+  } catch (error) {
+    console.error("adminReassignOrder error:", error);
+    const serializationConflict = error.code === "P2034";
+    return res.status(error.statusCode || (serializationConflict ? 409 : 500)).json({
+      success: false,
+      code: serializationConflict ? "ORDER_REASSIGNMENT_CONFLICT" : error.code || "ADMIN_REASSIGNMENT_FAILED",
+      message: serializationConflict
+        ? "Inventory or assignment changed during reassignment. Refresh and retry."
+        : error.message || "Order could not be reassigned.",
+    });
+  }
+};
+
+// ─── WORKSPACE: GET MY CUSTOMER-ORDER ASSIGNMENTS ────────────────────────────
 const getMyAssignments = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const distributorId = req.distributorId;
+    const manufacturerId = distributorId ? null : (req.manufacturerId || req.body?.manufacturerId);
+    if (!distributorId && !manufacturerId) {
+      return res.status(403).json({ success: false, message: "No active assignment workspace is available." });
+    }
     const { status } = req.query;
     const pagination = getPagination(req.query);
 
-    const where = { manufacturerId };
-    if (status && status !== "all") where.status = status;
+    const where = distributorId
+      ? { distributorId }
+      : { manufacturerId };
+    if (status && status !== "all") {
+      where.status = status;
+    }
 
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
@@ -486,9 +1083,26 @@ const getMyAssignments = async (req, res) => {
         skip: pagination.skip,
         take: pagination.limit,
         include: {
-        manufacturer: {
-          select: { id: true, name: true, city: true, phone: true, qualityRating: true },
-        },
+          manufacturer: {
+            select: { id: true, name: true, city: true, phone: true, qualityRating: true },
+          },
+          distributor: {
+            select: {
+              id: true,
+              name: true,
+              city: true,
+              phone: true,
+              district: true,
+              ncmPickupBranch: true,
+              pickupAddress: true,
+              pickupContactName: true,
+              pickupContactPhone: true,
+              locations: {
+                where: { isActive: true },
+                select: { district: true },
+              },
+            },
+          },
         },
       }),
       prisma.orderAssignment.count({ where }),
@@ -567,10 +1181,8 @@ const getMyAssignments = async (req, res) => {
 
     const enriched = assignments.map((a) => ({
       ...a,
-      manufacturer: {
-        ...a.manufacturer,
-        businessName: a.manufacturer.name,
-      },
+      manufacturer: a.manufacturer ? { ...a.manufacturer, businessName: a.manufacturer.name } : null,
+      distributor: a.distributor || null,
       order: orderMap[a.orderId] || null,
       delivery: deliveryMap[a.orderId]
         ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
@@ -585,16 +1197,66 @@ const getMyAssignments = async (req, res) => {
   }
 };
 
-// ─── MANUFACTURER: ACCEPT ORDER ───────────────────────────────────────────────
+const getUnassignedOrders = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const where = {
+      assignmentId: null,
+      orderType: { in: ["ONLINE_STORE", "ADMIN_DIRECT"] },
+      status: { not: "Cancelled" },
+    };
+    const [orders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+        select: {
+          id: true,
+          orderReference: true,
+          items: true,
+          address: true,
+          amount: true,
+          status: true,
+          orderType: true,
+          fulfillmentStatus: true,
+          date: true,
+        },
+      }),
+      prisma.order.count({ where }),
+    ]);
+    const serializedOrders = orders.map((order) => ({
+      ...order,
+      items: parseJSON(order.items, []),
+      address: parseJSON(order.address, {}),
+      date: Number(order.date),
+      allocationFailed:
+        String(order.orderType || "").toUpperCase() === "ONLINE_STORE" &&
+        String(order.fulfillmentStatus || "").toUpperCase() === "PENDING_ASSIGNMENT",
+    }));
+    return res.json(paginatedResponse("orders", serializedOrders, pagination, total));
+  } catch (error) {
+    console.error("getUnassignedOrders error:", error);
+    return res.status(500).json({ success: false, message: "Unassigned customer orders could not be loaded." });
+  }
+};
+
+// ─── FULFILLMENT HUB: ACCEPT ORDER ───────────────────────────────────────────────
 const acceptOrder = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
 
     const acceptedAt = new Date();
     await prisma.$transaction(async (tx) => {
       const assignment = await tx.orderAssignment.findUnique({ where: { id: assignmentId } });
-      if (!assignment || assignment.manufacturerId !== manufacturerId) {
+      const isOwner =
+        (distributorId && assignment?.distributorId === distributorId) ||
+        (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+        req.adminId;
+
+      if (!assignment || !isOwner) {
         const error = new Error("Assignment not found");
         error.statusCode = 404;
         throw error;
@@ -602,7 +1264,7 @@ const acceptOrder = async (req, res) => {
 
       const deliveryExists = await tx.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
       if (deliveryExists || !canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
-        const error = new Error("This order is already in production or has moved to delivery handoff and cannot be re-routed.");
+        const error = new Error("This order is already in fulfillment or has moved to delivery handoff and cannot be re-routed.");
         error.statusCode = 409;
         throw error;
       }
@@ -613,15 +1275,36 @@ const acceptOrder = async (req, res) => {
         error.statusCode = 404;
         throw error;
       }
+
       const items = parseJSON(order.items, []);
-      const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
-      const inventoryRows = await tx.manufacturerInventory.findMany({
-        where: { manufacturerId, productId: { in: productIds } },
-      });
-      const acceptedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
+      let acceptedItems = items;
+
+      if (manufacturerId && !distributorId) {
+        const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
+        const inventoryRows = await tx.manufacturerInventory.findMany({
+          where: { manufacturerId, productId: { in: productIds } },
+        });
+        const costSnapshottedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
+        acceptedItems = [];
+        for (let index = 0; index < costSnapshottedItems.length; index += 1) {
+          const item = costSnapshottedItems[index];
+          const productionAllocation = await allocateProductionLayersForOrderItem({
+            tx,
+            orderId: order.id,
+            itemIndex: index,
+            manufacturerId,
+            item,
+          });
+          acceptedItems.push({
+            ...item,
+            legacyUnitCogsVatInclusiveAtAcceptance: item.agreedUnitCogsVatInclusiveAtAcceptance,
+            ...productionAllocation,
+          });
+        }
+      }
 
       const claimed = await tx.orderAssignment.updateMany({
-        where: { id: assignmentId, manufacturerId, status: assignment.status },
+        where: { id: assignmentId, status: assignment.status },
         data: { status: "accepted", acceptedAt },
       });
       if (claimed.count !== 1) {
@@ -634,8 +1317,11 @@ const acceptOrder = async (req, res) => {
         where: { id: assignment.orderId },
         data: { items: acceptedItems, fulfillmentStatus: "accepted", status: "In Production" },
       });
-      await recordSystemAudit(auditActorContext(req), {
-        action: "ORDER_ACCEPTED_FOR_PRODUCTION",
+      await recordSystemAudit(auditActorContext(
+        req,
+        req.adminControlReason ? "ADMIN" : distributorId ? "DISTRIBUTOR" : "MANUFACTURER",
+      ), {
+        action: "ORDER_ACCEPTED_FOR_FULFILLMENT",
         entityType: "Order",
         entityId: assignment.orderId,
         beforeState: {
@@ -645,33 +1331,40 @@ const acceptOrder = async (req, res) => {
         afterState: {
           fulfillmentStatus: "accepted",
           status: "In Production",
+          ...(req.adminControlReason ? { adminReason: req.adminControlReason } : {}),
         },
       }, { client: tx });
     });
 
-    res.json({ success: true, message: "Order accepted for production!" });
+    res.json({ success: true, message: "Order accepted for fulfillment!" });
   } catch (error) {
     console.error("acceptOrder error:", error);
     res.status(error.statusCode || 400).json({ success: false, message: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 };
 
-// ─── MANUFACTURER: REJECT ORDER ───────────────────────────────────────────────
+// ─── FULFILLMENT HUB: REJECT ORDER ───────────────────────────────────────────────
 const rejectOrder = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
     const reason = req.body?.reason || req.body?.rejectionReason;
 
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
-    if (!assignment || assignment.manufacturerId !== manufacturerId)
+    const isOwner =
+      (distributorId && assignment?.distributorId === distributorId) ||
+      (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+      req.adminId;
+
+    if (!assignment || !isOwner)
       return res.json({ success: false, message: "Assignment not found" });
 
     const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
     if (!canManufacturerRejectAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
       return res.status(409).json({
         success: false,
-        message: "This order is already accepted or already assigned to a delivery partner. Only the admin can reassign it to a different manufacturer.",
+        message: "This order is already accepted or already assigned to a delivery partner. Only the admin can reassign it.",
       });
     }
 
@@ -680,20 +1373,22 @@ const rejectOrder = async (req, res) => {
         where: { id: assignment.orderId },
         select: { fulfillmentStatus: true, status: true },
       });
-      await tx.manufacturer.update({
-        where: { id: manufacturerId },
-        data: { rejectionCount: { increment: 1 } },
-      });
+      if (manufacturerId) {
+        await tx.manufacturer.update({
+          where: { id: manufacturerId },
+          data: { rejectionCount: { increment: 1 } },
+        }).catch(() => null);
+      }
       await tx.orderAssignment.update({
         where: { id: assignmentId },
         data: { status: "rejected", rejectionReason: reason || "No capacity" },
       });
       await tx.order.update({
         where: { id: assignment.orderId },
-        data: { fulfillmentStatus: "rejected", status: "Rejected by Manufacturer" },
+        data: { fulfillmentStatus: "rejected", status: "Rejected by Hub" },
       });
-      await recordSystemAudit(auditActorContext(req), {
-        action: "ORDER_REJECTED_BY_MANUFACTURER",
+      await recordSystemAudit(auditActorContext(req, distributorId ? "DISTRIBUTOR" : "MANUFACTURER"), {
+        action: "ORDER_REJECTED_BY_HUB",
         entityType: "Order",
         entityId: assignment.orderId,
         beforeState: {
@@ -702,21 +1397,22 @@ const rejectOrder = async (req, res) => {
         },
         afterState: {
           fulfillmentStatus: "rejected",
-          status: "Rejected by Manufacturer",
+          status: "Rejected by Hub",
         },
       }, { client: tx });
     });
 
-    res.json({ success: true, message: "Order rejected. Only an admin can reassign this order to another manufacturer." });
+    res.json({ success: true, message: "Order rejected. Admin or allocation engine will reassign this order." });
   } catch (error) {
     console.error("rejectOrder error:", error);
     res.json({ success: false, message: error.message });
   }
 };
 
-// ─── MANUFACTURER: UPDATE ASSIGNMENT STATUS ───────────────────────────────────
+// ─── FULFILLMENT HUB: UPDATE ASSIGNMENT STATUS ───────────────────────────────────
 const updateAssignmentStatus = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
     const {
@@ -731,12 +1427,14 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction,
       instruction,
       packagingChecklist,
-      giftInventoryId,
+      paperBillRequested,
+      paperBillNumber,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
-    const manufacturerStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
-    if (!manufacturerStatuses.has(normalizedStatus)) {
+    const adminControlReason = req.adminControlReason || "";
+    const allowedStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
+    if (!allowedStatuses.has(normalizedStatus)) {
       return res.status(400).json({
         success: false,
         message: "Carrier delivery states are controlled by the NCM integration. Use the dedicated ready-for-delivery action for handoff.",
@@ -744,40 +1442,52 @@ const updateAssignmentStatus = async (req, res) => {
     }
 
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
-    if (!assignment || assignment.manufacturerId !== manufacturerId)
+    const isOwner =
+      (distributorId && assignment?.distributorId === distributorId) ||
+      (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+      req.adminId;
+
+    if (!assignment || !isOwner)
       return res.json({ success: false, message: "Assignment not found" });
 
-    if (giftInventoryId && normalizedStatus !== "checklist_complete") {
-      return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
-    }
-    if (normalizedStatus === "checklist_complete") {
-      const giftOptions = await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
-      if (giftOptions.eligible && !giftOptions.alreadyAssigned && giftOptions.options.length > 0 && !giftInventoryId) {
-        return res.status(409).json({
-          success: false,
-          message: "This order has an active gift reward. Select one of the accepted gifts available at your hub before completing the checklist.",
-          code: "GIFT_SELECTION_REQUIRED",
-        });
-      }
-    }
-
-    if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
-      try {
-        await ensureOrderCardAttached({ orderId: assignment.orderId, manufacturerId });
-      } catch (error) {
-        return res.status(error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400).json({
-          success: false,
-          message: error.message,
-          code: error.code || "MARKETING_CARD_VALIDATION_FAILED",
-        });
-      }
-    }
-
-    const lockedStatuses = new Set(["ready_for_pickup", "picked_up", "in_transit", "delivered", "return_requested"]);
-    if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined || packagingChecklist !== undefined)) {
+    const delivery = await prisma.deliveryOrder.findUnique({
+      where: { orderId: assignment.orderId },
+      select: { ncmOrderId: true, state: true, pickedUpAt: true, deliveredAt: true },
+    });
+    const lockedStatuses = new Set([
+      "on_hold",
+      "ready_for_pickup",
+      "picked_up",
+      "in_transit",
+      "arrived_at_destination",
+      "out_for_delivery",
+      "delivered",
+      "return_requested",
+    ]);
+    const deliveryHasBeenBooked = Boolean(
+      delivery?.ncmOrderId ||
+      delivery?.pickedUpAt ||
+      delivery?.deliveredAt ||
+      ["SUBMISSION_PENDING", "NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "PICKED_UP", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"]
+        .includes(String(delivery?.state || "").toUpperCase())
+    );
+    if (
+      lockedStatuses.has(String(assignment.status || "").toLowerCase()) ||
+      deliveryHasBeenBooked ||
+      (req.adminControlReason && delivery)
+    ) {
       return res.status(409).json({
         success: false,
-        message: "This order is already ready for dispatch. Packaging details are locked and cannot be changed after handoff.",
+        code: "ORDER_FULFILLMENT_LOCKED",
+        message: "This order is in the delivery queue or has been handed to the delivery partner. Its fulfillment details are read-only.",
+      });
+    }
+
+    const distributorOwnsAssignment = Boolean(assignment.distributorId);
+    if (req.body?.giftInventoryId) {
+      return res.status(400).json({
+        success: false,
+        message: "Gift selection is managed automatically for distributor checkout fulfillment.",
       });
     }
 
@@ -799,69 +1509,290 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
       packagingChecklist: packagingChecklist !== undefined ? packagingChecklist : existingNotes.packagingChecklist,
     };
+    const platformFeatures = await getPlatformFeatures();
     const transition = validateFulfillmentTransition({
       currentStatus: assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : assignment.status,
       nextStatus: normalizedStatus,
       notes: assignment.notes,
       packageData: payload,
+      workflowType: distributorOwnsAssignment ? "DISTRIBUTOR" : "MANUFACTURER",
+      features: platformFeatures,
     });
     if (!transition.valid) {
       return res.status(409).json({ success: false, message: transition.message });
+    }
+    if (adminControlReason && transition.direction === "backward") {
+      return res.status(409).json({
+        success: false,
+        code: "ADMIN_FULFILLMENT_ROLLBACK_NOT_ALLOWED",
+        message: "Admin fulfillment control may advance only to the next validated stage. Use the fulfillment correction workflow for a rollback.",
+      });
     }
     if (Object.keys(payload).some((key) => payload[key] !== undefined)) {
       updateData.notes = JSON.stringify(payload);
     }
 
+    let paperBillAuditState = null;
     await prisma.$transaction(async (tx) => {
       const orderBefore = await tx.order.findUnique({
         where: { id: assignment.orderId },
-        select: { fulfillmentStatus: true },
+        select: { fulfillmentStatus: true, date: true },
       });
-      if (giftInventoryId) {
-        await assignGiftToOrder({
-          orderId: assignment.orderId,
-          manufacturerId,
-          inventoryId: giftInventoryId,
-          client: tx,
+      if ((adminControlReason || distributorOwnsAssignment) && !orderBefore) {
+        throw Object.assign(new Error("Order not found for the fulfillment update."), {
+          code: "ORDER_NOT_FOUND",
+          statusCode: 404,
         });
       }
-      await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
-      await tx.order.update({
-        where: { id: assignment.orderId },
-        data: { fulfillmentStatus: normalizedStatus },
-      });
+      if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
+        try {
+          await ensureOrderCardAttached({
+            tx,
+            orderId: assignment.orderId,
+            manufacturerId: distributorOwnsAssignment ? undefined : manufacturerId,
+            distributorId: distributorOwnsAssignment
+              ? (adminControlReason ? assignment.distributorId : distributorId)
+              : undefined,
+          });
+        } catch (error) {
+          error.code = error.code || "MARKETING_CARD_VALIDATION_FAILED";
+          error.cardValidationStatusCode = ["MARKETING_CARD_REQUIRED", "MARKETING_CARD_REATTACH_REQUIRED"].includes(error.code) ? 409 : 400;
+          throw error;
+        }
+      }
+      if (distributorOwnsAssignment) {
+        const currentAssignment = await tx.orderAssignment.findUnique({
+          where: { id: assignmentId },
+          select: {
+            status: true,
+            paperBillStatus: true,
+            paperBillRequested: true,
+            paperBillNumber: true,
+            paperBillDocumentType: true,
+          },
+        });
+        if (!currentAssignment) {
+          throw Object.assign(new Error("Assignment not found while recording the customer bill choice."), {
+            code: "ASSIGNMENT_NOT_FOUND",
+            statusCode: 404,
+          });
+        }
+        if (["packed", "package_details_complete"].includes(normalizedStatus) &&
+            currentAssignment.paperBillStatus === "NOT_SELECTED") {
+          throw Object.assign(new Error("Record whether the customer requested a physical bill before packing or dispatch."), {
+            code: "PAPER_BILL_CHOICE_REQUIRED",
+            statusCode: 409,
+          });
+        }
+        if (normalizedStatus === "checklist_complete") {
+          if (typeof paperBillRequested !== "boolean") {
+            throw Object.assign(new Error("Choose whether the customer requested a physical bill before completing the packing checklist."), {
+              code: "PAPER_BILL_CHOICE_REQUIRED",
+              statusCode: 400,
+            });
+          }
+          const sellerTaxTreatment = await resolveSellerTaxTreatment(
+            new Date(Number(orderBefore.date)),
+            { client: tx },
+          );
+          const documentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+            ? "VAT_TAX_INVOICE"
+            : sellerTaxTreatment.taxStatus === "PAN_ONLY"
+              ? "PAN_BILL"
+              : "INTERNAL_SALES_RECORD";
+          const normalizedPaperNumber = String(paperBillNumber || "").trim();
+          if (currentAssignment.paperBillStatus !== "NOT_SELECTED") {
+            const sameChoice = currentAssignment.paperBillRequested === paperBillRequested &&
+              Boolean(currentAssignment.paperBillDocumentType) &&
+              (paperBillRequested
+                ? currentAssignment.paperBillNumber === normalizedPaperNumber
+                : !currentAssignment.paperBillNumber);
+            if (!sameChoice) {
+              throw Object.assign(new Error("The recorded paper bill choice is immutable. Use the return/void workflow to correct an issued number."), {
+                code: "PAPER_BILL_CHOICE_IMMUTABLE",
+                statusCode: 409,
+              });
+            }
+          } else {
+            const billDetails = paperBillRequested
+              ? await validatePaperBillChoice({
+                client: tx,
+                distributorId: assignment.distributorId,
+                documentType,
+                billNumber: normalizedPaperNumber,
+                assignmentId,
+                taxPoint: new Date(Number(orderBefore.date)),
+              })
+              : { paperBillAllocationId: null, paperBillNumber: null, paperBillDocumentType: documentType };
+            const issuedAt = paperBillRequested ? new Date() : null;
+            const billStatus = paperBillRequested ? "ISSUED" : "NO_PHYSICAL_COPY";
+            const billIssuedBy = paperBillRequested
+              ? String(req.auth?.accountId || req.auth?.userId || distributorId).slice(0, 191)
+              : null;
+            const choiceClaim = await tx.orderAssignment.updateMany({
+              where: {
+                id: assignmentId,
+                status: assignment.status,
+                paperBillStatus: "NOT_SELECTED",
+              },
+              data: {
+                paperBillRequested,
+                paperBillStatus: billStatus,
+                ...billDetails,
+                paperBillIssuedAt: issuedAt,
+                paperBillIssuedBy: billIssuedBy,
+              },
+            });
+            if (choiceClaim.count !== 1) {
+              throw Object.assign(new Error("The physical bill choice changed concurrently. Refresh the order and try again."), {
+                code: "PAPER_BILL_CHOICE_CONFLICT",
+                statusCode: 409,
+              });
+            }
+            paperBillAuditState = {
+              paperBillRequested,
+              paperBillStatus: billStatus,
+              ...billDetails,
+            };
+          }
+        }
+      }
+      if (distributorOwnsAssignment && normalizedStatus === "letter_ready") {
+        await autoAssignGiftForCheckout({ orderId: assignment.orderId, client: tx });
+      }
+      if (adminControlReason) {
+        const assignmentUpdate = await tx.orderAssignment.updateMany({
+          where: { id: assignmentId, status: assignment.status },
+          data: updateData,
+        });
+        if (assignmentUpdate.count !== 1) {
+          throw Object.assign(new Error("Assignment changed during the Admin fulfillment update. Refresh and retry."), {
+            code: "ORDER_FULFILLMENT_CONFLICT",
+            statusCode: 409,
+          });
+        }
+        const orderUpdate = await tx.order.updateMany({
+          where: { id: assignment.orderId, fulfillmentStatus: orderBefore?.fulfillmentStatus },
+          data: { fulfillmentStatus: normalizedStatus },
+        });
+        if (orderUpdate.count !== 1) {
+          throw Object.assign(new Error("Order changed during the Admin fulfillment update. Refresh and retry."), {
+            code: "ORDER_FULFILLMENT_CONFLICT",
+            statusCode: 409,
+          });
+        }
+      } else {
+        await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
+        await tx.order.update({
+          where: { id: assignment.orderId },
+          data: { fulfillmentStatus: normalizedStatus },
+        });
+      }
       await recordSystemAudit(auditActorContext(req), {
         action: "ORDER_FULFILLMENT_STATUS_UPDATED",
         entityType: "Order",
         entityId: assignment.orderId,
-        beforeState: { fulfillmentStatus: orderBefore?.fulfillmentStatus || null },
-        afterState: { fulfillmentStatus: normalizedStatus },
+        beforeState: {
+          assignmentStatus: assignment.status,
+          fulfillmentStatus: orderBefore?.fulfillmentStatus || null,
+        },
+        afterState: {
+          assignmentStatus: normalizedStatus,
+          fulfillmentStatus: normalizedStatus,
+          ...(paperBillAuditState
+            ? paperBillAuditState
+            : {}),
+          ...(adminControlReason ? { adminReason: adminControlReason } : {}),
+        },
       }, { client: tx });
     });
     if (normalizedStatus === "packed") {
-      await onOrderPacked(assignment.orderId, manufacturerId);
+      await onOrderPacked(
+        assignment.orderId,
+        distributorOwnsAssignment ? undefined : assignment.manufacturerId,
+        distributorOwnsAssignment ? assignment.distributorId : undefined,
+      );
+      await releaseUnfulfilledGiftForPackedCheckout({ orderId: assignment.orderId });
     }
 
     res.json({ success: true, message: `Status updated to ${status}` });
   } catch (error) {
     console.error("updateAssignmentStatus error:", error);
-    res.json({ success: false, message: error.message });
+    const paperBillConflict = error.code === "P2002" && paperBillNumber;
+    const statusCode = error.cardValidationStatusCode ||
+      (paperBillConflict ? 409 :
+        error.code?.startsWith("PAPER_BILL") ? error.statusCode || 400 :
+        (req.adminControlReason ? error.statusCode || 500 : 200));
+    return res.status(statusCode).json({
+      success: false,
+      ...(paperBillConflict ? { code: "PAPER_BILL_NUMBER_ALREADY_USED" } : error.code ? { code: error.code } : {}),
+      message: paperBillConflict
+        ? "This physical bill number has already been recorded against another order."
+        : error.message,
+    });
   }
+};
+
+const adminUpdateAssignmentFulfillment = async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (reason.length < 10 || reason.length > 500) {
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_ADMIN_FULFILLMENT_REASON",
+      message: "A fulfillment change reason between 10 and 500 characters is required.",
+    });
+  }
+  if (req.auth?.role !== "ADMIN" || !req.adminId) {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only an administrator can control order fulfillment.",
+    });
+  }
+  req.adminControlReason = reason;
+  const status = String(req.body?.status || "").toLowerCase();
+  if (status === "accepted") {
+    try {
+      const assignment = await prisma.orderAssignment.findUnique({
+        where: { id: req.params?.id },
+        select: { id: true, distributorId: true, manufacturerId: true },
+      });
+      if (!assignment || (!assignment.distributorId && !assignment.manufacturerId)) {
+        return res.status(404).json({
+          success: false,
+          code: "ORDER_ASSIGNMENT_NOT_FOUND",
+          message: "An active fulfillment assignment was not found.",
+        });
+      }
+      req.distributorId = assignment.distributorId || undefined;
+      req.manufacturerId = assignment.manufacturerId || undefined;
+      return acceptOrder(req, res);
+    } catch (error) {
+      console.error("adminUpdateAssignmentFulfillment acceptance error:", error);
+      return res.status(500).json({
+        success: false,
+        code: "ADMIN_FULFILLMENT_UPDATE_FAILED",
+        message: "Order acceptance could not be completed.",
+      });
+    }
+  }
+  return updateAssignmentStatus(req, res);
 };
 
 // ─── ADMIN: GET ALL ASSIGNMENTS ───────────────────────────────────────────────
 const getAllAssignments = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
-    const { status, manufacturerId } = req.query;
+    const { status, manufacturerId, distributorId } = req.query;
     const where = {};
     if (status && status !== "all") where.status = status;
     if (manufacturerId) where.manufacturerId = manufacturerId;
+    if (distributorId) where.distributorId = distributorId;
 
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
         where,
-        orderBy: { assignedAt: "desc" },
+        orderBy: [{ assignedAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         include: {
@@ -879,6 +1810,18 @@ const getAllAssignments = async (req, res) => {
             pickupWindow: true,
           },
         },
+          distributor: {
+            select: {
+              id: true,
+              name: true,
+              city: true,
+              phone: true,
+              ncmPickupBranch: true,
+              pickupAddress: true,
+              pickupContactName: true,
+              pickupContactPhone: true,
+            },
+          },
         },
       }),
       prisma.orderAssignment.count({ where }),
@@ -943,10 +1886,8 @@ const getAllAssignments = async (req, res) => {
 
     const enriched = assignments.map((a) => ({
       ...a,
-      manufacturer: {
-        ...a.manufacturer,
-        businessName: a.manufacturer.name,
-      },
+      manufacturer: a.manufacturer ? { ...a.manufacturer, businessName: a.manufacturer.name } : null,
+      distributor: a.distributor || null,
       order: orderMap[a.orderId] || null,
       delivery: deliveryMap[a.orderId]
         ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
@@ -982,6 +1923,24 @@ const getAssignmentById = async (req, res) => {
             pickupWindow: true,
           },
         },
+        distributor: {
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            province: true,
+            district: true,
+            phone: true,
+            ncmPickupBranch: true,
+            pickupAddress: true,
+            pickupContactName: true,
+            pickupContactPhone: true,
+            locations: {
+              where: { isActive: true },
+              select: { province: true, district: true },
+            },
+          },
+        },
       },
     });
 
@@ -992,6 +1951,11 @@ const getAssignmentById = async (req, res) => {
     if (req.manufacturerId && assignment.manufacturerId !== req.manufacturerId) {
       return res.status(403).json({ success: false, message: "Unauthorized access" });
     }
+    if (req.distributorId && assignment.distributorId !== req.distributorId) {
+      return res.status(403).json({ success: false, message: "Unauthorized access" });
+    }
+
+    await reconcileNonCardGiftAssignment(assignment.orderId);
 
     const [order, delivery] = await Promise.all([
       prisma.order.findUnique({ where: { id: assignment.orderId }, include: { assignedGift: true } }),
@@ -1029,15 +1993,24 @@ const getAssignmentById = async (req, res) => {
           fulfillmentBenefits: buildFulfillmentBenefits(order, enrichedItems),
         }
       : null;
+    const selfDeliveryAvailable = Boolean(
+      req.distributorId &&
+      enrichedOrder &&
+      isDistributorLocalDeliveryEligible({
+        customerAddress: enrichedOrder.address,
+        distributor: assignment.distributor || {},
+      })
+    );
 
     res.json({
       success: true,
       assignment: {
         ...assignment,
-        manufacturer: {
-          ...assignment.manufacturer,
-          businessName: assignment.manufacturer.name,
-        },
+        manufacturer: assignment.manufacturer
+          ? { ...assignment.manufacturer, businessName: assignment.manufacturer.name }
+          : null,
+        distributor: assignment.distributor || null,
+        selfDeliveryAvailable,
         order: enrichedOrder,
         delivery: delivery ? { ...delivery, comments } : null,
         createdAt: assignment.assignedAt,
@@ -1051,90 +2024,24 @@ const getAssignmentById = async (req, res) => {
 
 // ─── ADMIN: MANUAL OVERRIDE ASSIGN ───────────────────────────────────────────
 const manualAssign = async (req, res) => {
-  try {
-    const { orderId, manufacturerId, reason } = req.body;
-    if (!orderId || !manufacturerId)
-      return res.json({ success: false, message: "orderId and manufacturerId required" });
-
-    const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
-    if (!manufacturer) return res.json({ success: false, message: "Manufacturer not found" });
-
-    const existing = await prisma.orderAssignment.findUnique({ where: { orderId } });
-    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId } });
-    if (existing && !canAdminReassignAssignment({ status: existing.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
-      return res.status(409).json({
-        success: false,
-        message: "This order is already accepted by the manufacturer or assigned to a delivery partner, so it cannot be reassigned to another hub.",
-      });
-    }
-
-    const assignment = await prisma.$transaction(async (tx) => {
-      const orderBefore = await tx.order.findUnique({
-        where: { id: orderId },
-        select: { fulfillmentStatus: true, manufacturerId: true, assignmentId: true },
-      });
-      let updatedAssignment;
-      if (existing) {
-        updatedAssignment = await tx.orderAssignment.update({
-          where: { orderId },
-          data: {
-            manufacturerId,
-            status: "assigned",
-            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-          },
-        });
-      } else {
-        updatedAssignment = await tx.orderAssignment.create({
-          data: {
-            orderId,
-            manufacturerId,
-            status: "assigned",
-            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-          },
-        });
-      }
-
-      await tx.order.update({
-        where: { id: orderId },
-        data: {
-          fulfillmentStatus: "assigned",
-          assignmentId: updatedAssignment.id,
-          manufacturerId,
-        },
-      });
-      await recordSystemAudit(auditActorContext(req, "ADMIN"), {
-        action: "ORDER_MANUALLY_ASSIGNED",
-        entityType: "Order",
-        entityId: orderId,
-        beforeState: {
-          fulfillmentStatus: orderBefore?.fulfillmentStatus || null,
-          manufacturerId: orderBefore?.manufacturerId || null,
-          assignmentId: orderBefore?.assignmentId || null,
-        },
-        afterState: {
-          fulfillmentStatus: "assigned",
-          manufacturerId,
-          assignmentId: updatedAssignment.id,
-          reason: reason || null,
-        },
-      }, { client: tx });
-      return updatedAssignment;
-    });
-
-    res.json({ success: true, message: "Order manually assigned to manufacturer", assignment });
-  } catch (error) {
-    console.error("manualAssign error:", error);
-    res.json({ success: false, message: error.message });
-  }
+  return res.status(409).json({
+    success: false,
+    message: "Manual manufacturer assignment is disabled. Route customer orders through distributor allocation.",
+  });
 };
 
 export {
   assignOrder,
   getMyAssignments,
+  getUnassignedOrders,
   getAssignmentById,
   acceptOrder,
   rejectOrder,
   updateAssignmentStatus,
   getAllAssignments,
   manualAssign,
+  getAdminAssignmentDistributors,
+  adminAssignFailedOrder,
+  adminReassignOrder,
+  adminUpdateAssignmentFulfillment,
 };

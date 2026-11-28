@@ -1,5 +1,8 @@
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "./auditService.js";
 import { syncProductStock } from "./stockSyncService.js";
+import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
+import { releaseGiftRewardOnOrderCancellation } from "./giftService.js";
 
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -13,8 +16,9 @@ const parseJsonArray = (value) => {
 };
 
 const normalize = (value) => String(value || "").trim().toLowerCase();
+const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
-const cancelledError = (message, code) => Object.assign(new Error(message), { code });
+const cancelledError = (message, code, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
 
 export const isBeforeNcmHandoff = ({ order, delivery, submissionAttempt }) => {
   const attemptMayHaveReachedCarrier = submissionAttempt && (
@@ -46,36 +50,6 @@ const aggregateOrderItems = (items) => {
   return [...quantities.values()];
 };
 
-const restoreUnhubbedProductStock = async (tx, productId, itemLines) => {
-  const product = await tx.product.findUnique({ where: { id: productId } });
-  if (!product) return null;
-
-  const totalQuantity = itemLines.reduce((sum, item) => sum + item.quantity, 0);
-  const variants = parseJsonArray(product.variants);
-  const hasVariants = variants.length > 0;
-  const restoredVariants = hasVariants
-    ? variants.map((variant) => {
-        const itemQuantity = itemLines
-          .filter((item) => normalize(item.size) === normalize(variant.size) && normalize(item.color) === normalize(variant.color))
-          .reduce((sum, item) => sum + item.quantity, 0);
-        return itemQuantity > 0
-          ? { ...variant, quantity: Number(variant.quantity || 0) + itemQuantity }
-          : variant;
-      })
-    : variants;
-  const newStock = Number(product.stockQuantity || 0) + totalQuantity;
-
-  await tx.product.update({
-    where: { id: productId },
-    data: {
-      stockQuantity: newStock,
-      ...(hasVariants ? { variants: restoredVariants } : {}),
-    },
-  });
-
-  return { productName: product.name, previousQty: Number(product.stockQuantity || 0), newQty: newStock, quantity: totalQuantity };
-};
-
 const releaseManufacturerReservation = async (tx, manufacturerId, item) => {
   const inventory = await tx.manufacturerInventory.findUnique({
     where: { manufacturerId_productId: { manufacturerId, productId: item.productId } },
@@ -105,43 +79,115 @@ const releaseManufacturerReservation = async (tx, manufacturerId, item) => {
   return true;
 };
 
-export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
+const releaseDistributorReservation = async (tx, distributorId, item) => {
+  const balances = await tx.inventoryBalance.findMany({
+    where: {
+      location: {
+        distributorId,
+        kind: "DISTRIBUTOR",
+        inventoryOwner: "PLATFORM",
+      },
+      inventorySku: {
+        productId: item.productId,
+        sizeKey: normalizeSkuKey(item.size),
+        colorKey: normalizeSkuKey(item.color),
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  let remaining = item.quantity;
+  for (const balance of balances) {
+    const releaseQuantity = Math.min(remaining, balance.reservedQuantity);
+    if (!releaseQuantity) continue;
+    const updated = await tx.inventoryBalance.updateMany({
+      where: {
+        id: balance.id,
+        reservedQuantity: balance.reservedQuantity,
+        quantityOnHand: { gte: balance.reservedQuantity },
+      },
+      data: { reservedQuantity: { decrement: releaseQuantity } },
+    });
+    if (updated.count !== 1) {
+      throw cancelledError("Distributor stock changed during cancellation. Refresh and try again.", "CANCELLATION_STOCK_CONFLICT");
+    }
+    remaining -= releaseQuantity;
+    if (!remaining) break;
+  }
+  if (remaining) {
+    throw cancelledError("The distributor reservation could not be fully released. Contact support before retrying.", "CANCELLATION_RESERVATION_MISMATCH");
+  }
+};
+
+const cancelOrderBeforeHandoff = async ({
+  orderId,
+  customerId = null,
+  actorId,
+  actorRole,
+  reason,
+}) => {
   const cancellationReason = String(reason || "").trim();
-  if (!orderId || !customerId || cancellationReason.length < 3) {
+  if (!orderId || !actorId || cancellationReason.length < 3) {
     throw cancelledError("Order ID and a cancellation reason are required.", "INVALID_CANCELLATION");
   }
+  const orderWhere = { id: orderId, ...(customerId ? { userId: customerId } : {}) };
 
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
-      where: { id: orderId, userId: customerId },
+      where: orderWhere,
       include: { deliveryOrder: true },
     });
-    if (!order) throw cancelledError("Order not found.", "ORDER_NOT_FOUND");
+    if (!order) throw cancelledError("Order not found.", "ORDER_NOT_FOUND", 404);
     if (order.status === "Cancelled") {
       return { alreadyCancelled: true, order };
+    }
+    const [journalEntry, accountingDocument, cashTransaction, distributorCashEvent] = await Promise.all([
+      tx.journalEntry.findFirst({ where: { sourceId: order.id }, select: { id: true } }),
+      tx.accountingDocument.findFirst({ where: { sourceId: order.id }, select: { id: true } }),
+      tx.cashTransaction.findFirst({ where: { referenceId: order.id }, select: { id: true } }),
+      tx.distributorCashEvent.findFirst({ where: { orderId: order.id }, select: { id: true } }),
+    ]);
+    if (order.payment || journalEntry || accountingDocument || cashTransaction || distributorCashEvent) {
+      throw cancelledError(
+        "This order has payment or financial activity and requires the approved refund workflow before it can be cancelled.",
+        "PAID_ORDER_REFUND_REQUIRED",
+        409,
+      );
     }
 
     const delivery = order.deliveryOrder;
     const submissionAttempt = delivery
-      ? await tx.ncmRequestAttempt.findFirst({ where: { deliveryOrderId: delivery.id } })
+      ? await tx.ncmRequestAttempt.findFirst({
+          where: {
+            deliveryOrderId: delivery.id,
+            OR: [
+              { result: { in: ["STARTED", "UNKNOWN", "SUCCESS"] } },
+              {
+                result: "FAILED",
+                OR: [{ httpStatus: null }, { httpStatus: { gte: 500 } }],
+              },
+            ],
+          },
+          select: { result: true, httpStatus: true },
+        })
       : null;
     if (!isBeforeNcmHandoff({ order, delivery, submissionAttempt })) {
-      throw cancelledError("This order can no longer be cancelled because it has been handed to the delivery partner. Submit an exchange request instead.", "CANCELLATION_CUTOFF_PASSED");
+      throw cancelledError("This order can no longer be cancelled because it has been handed to the delivery partner. Submit an exchange request instead.", "CANCELLATION_CUTOFF_PASSED", 409);
     }
 
     const changed = await tx.order.updateMany({
-      where: { id: order.id, userId: customerId, status: { not: "Cancelled" } },
+      where: { ...orderWhere, status: { not: "Cancelled" } },
       data: {
         status: "Cancelled",
         fulfillmentStatus: "cancelled",
         cancelledAt: new Date(),
         cancellationReason,
-        cancelledByUserId: customerId,
+        cancelledByUserId: customerId || null,
       },
     });
     if (changed.count !== 1) {
-      throw cancelledError("The order changed while cancellation was being processed. Refresh and try again.", "CANCELLATION_CONFLICT");
+      throw cancelledError("The order changed while cancellation was being processed. Refresh and try again.", "CANCELLATION_CONFLICT", 409);
     }
+    await releaseGiftRewardOnOrderCancellation(tx, order.id);
 
     const assignment = await tx.orderAssignment.findUnique({ where: { orderId: order.id } });
     const itemLines = aggregateOrderItems(order.items);
@@ -150,9 +196,20 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
       if (assignment?.manufacturerId && !order.specialOrder) {
         await releaseManufacturerReservation(tx, assignment.manufacturerId, item);
       }
+      if (assignment?.distributorId) {
+        await releaseDistributorReservation(tx, assignment.distributorId, item);
+      }
       const lines = productLines.get(item.productId) || [];
       lines.push(item);
       productLines.set(item.productId, lines);
+    }
+    if (assignment?.manufacturerId) {
+      await transitionOrderProductionAllocations({
+        tx,
+        orderId: order.id,
+        fromState: "RESERVED",
+        toState: "RELEASED",
+      });
     }
 
     if (assignment) {
@@ -179,8 +236,8 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
         data: {
           cardId: cardLink.cardId,
           eventType: "CARD_RELEASED_AFTER_ORDER_CANCELLATION",
-          actorId: customerId,
-          actorRole: "CUSTOMER",
+          actorId,
+          actorRole,
           fromStatus: "ATTACHED",
           toStatus: "AVAILABLE",
           referenceId: order.id,
@@ -190,12 +247,37 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
       await tx.marketingCardOrder.delete({ where: { id: cardLink.id } });
     }
 
+    const rewardData = typeof order.rewardApplied === "string"
+      ? (() => { try { return JSON.parse(order.rewardApplied); } catch { return null; } })()
+      : order.rewardApplied;
+    if (rewardData?.source === "MARKETING_CARD" && rewardData.cardId) {
+      await tx.marketingBenefitRedemption.updateMany({
+        where: {
+          cardId: rewardData.cardId,
+          ...(rewardData.benefitId ? { benefitId: rewardData.benefitId } : {}),
+          customerId: order.userId,
+          status: "REDEEMED",
+        },
+        data: {
+          status: "CLAIMED",
+          redeemedAt: null,
+        },
+      });
+      await tx.marketingCardEvent.create({
+        data: {
+          cardId: rewardData.cardId,
+          eventType: "BENEFIT_RESTORED_ON_ORDER_CANCELLATION",
+          actorId,
+          actorRole,
+          referenceId: order.id,
+          metadata: { benefitId: rewardData.benefitId, reason: cancellationReason },
+        },
+      });
+    }
+
     for (const [productId, lines] of productLines) {
-      const hubs = await tx.manufacturerInventory.count({ where: { productId } });
       const before = await tx.product.findUnique({ where: { id: productId }, select: { stockQuantity: true, name: true } });
-      const stockChange = hubs > 0
-        ? await syncProductStock(productId, { client: tx, throwOnError: true })
-        : await restoreUnhubbedProductStock(tx, productId, lines);
+      const stockChange = await syncProductStock(productId, { client: tx, throwOnError: true });
       if (stockChange) {
         await tx.stockLog.create({
           data: {
@@ -204,12 +286,34 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
             previousQty: Number(before?.stockQuantity || 0),
             newQty: Number(stockChange.stockQuantity ?? stockChange.newQty ?? 0),
             changeQty: lines.reduce((sum, item) => sum + item.quantity, 0),
-            reason: `Customer order cancelled before NCM handoff (${order.id})`,
-            source: "customer_cancel",
+            reason: `${actorRole === "ADMIN" ? "Admin" : "Customer"} cancelled order before NCM handoff (${order.id})`,
+            source: actorRole === "ADMIN" ? "admin_cancel" : "customer_cancel",
             orderId: order.id,
           },
         });
       }
+    }
+    if (actorRole === "ADMIN") {
+      await recordSystemAudit({
+        actorId,
+        actorRole,
+        portalSource: "ADMIN",
+      }, {
+        action: "ORDER_CANCELLED_BY_ADMIN",
+        entityType: "Order",
+        entityId: order.id,
+        beforeState: {
+          status: order.status,
+          fulfillmentStatus: order.fulfillmentStatus,
+          payment: order.payment,
+          assignmentId: order.assignmentId,
+        },
+        afterState: {
+          status: "Cancelled",
+          fulfillmentStatus: "cancelled",
+          cancellationReason,
+        },
+      }, { client: tx });
     }
 
     return {
@@ -218,3 +322,20 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
     };
   }, { isolationLevel: "Serializable" });
 };
+
+export const cancelCustomerOrder = ({ orderId, customerId, reason }) =>
+  cancelOrderBeforeHandoff({
+    orderId,
+    customerId,
+    actorId: customerId,
+    actorRole: "CUSTOMER",
+    reason,
+  });
+
+export const cancelAdminOrder = ({ orderId, actorId, reason }) =>
+  cancelOrderBeforeHandoff({
+    orderId,
+    actorId,
+    actorRole: "ADMIN",
+    reason,
+  });

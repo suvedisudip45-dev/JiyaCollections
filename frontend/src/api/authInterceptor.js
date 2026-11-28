@@ -1,4 +1,6 @@
 import axios from "axios";
+import { clearResponseCache, installResponseCache } from "./responseCache";
+import { signRequestWithLegacyHmac } from "../utils/hmac";
 import {
   ACCESS_TOKEN_KEY,
   clearAuthTokens,
@@ -84,12 +86,16 @@ const scheduleSessionExpiry = () => {
 export const installAuthInterceptor = () => {
   if (installed) return;
   installed = true;
+  installResponseCache(axios, getAccessToken);
 
-  axios.interceptors.request.use((config) => {
+  axios.interceptors.request.use(async (config) => {
     const requestUrl = config.url || "";
     if (/\/api\/auth\//.test(requestUrl) || /\/api\/user\/(login|register)/.test(requestUrl)) {
       config.withCredentials = true;
     }
+
+    await signRequestWithLegacyHmac(config);
+
     return config;
   });
 
@@ -97,6 +103,10 @@ export const installAuthInterceptor = () => {
     (response) => response,
     async (error) => {
       const originalRequest = error.config;
+      const errorCode = error.response?.data?.code;
+      if (typeof errorCode === "string" && errorCode.startsWith("HMAC_")) {
+        return Promise.reject(error);
+      }
       const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(originalRequest?.url || "");
       const headers = originalRequest?.headers;
       const hasAccessToken = Boolean(
@@ -129,8 +139,14 @@ export const installAuthInterceptor = () => {
     }
   );
 
-  window.addEventListener("auth:tokens-updated", scheduleSessionExpiry);
-  window.addEventListener("auth:tokens-cleared", () => window.clearTimeout(expiryTimer));
+  window.addEventListener("auth:tokens-updated", () => {
+    clearResponseCache();
+    scheduleSessionExpiry();
+  });
+  window.addEventListener("auth:tokens-cleared", () => {
+    clearResponseCache();
+    window.clearTimeout(expiryTimer);
+  });
   window.addEventListener("storage", (event) => {
     if (event.key === ACCESS_TOKEN_KEY) {
       if (event.newValue) {

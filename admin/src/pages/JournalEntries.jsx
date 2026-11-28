@@ -1,15 +1,18 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import { formatNepaliDate } from "../utils/nepaliDate";
 
 const SOURCE_TYPE_BADGES = {
   SALES_INVOICE: "bg-blue-50 text-blue-700 border-blue-200",
   CUSTOMER_PAYMENT: "bg-emerald-50 text-emerald-700 border-emerald-200",
   PURCHASE_BILL: "bg-orange-50 text-orange-700 border-orange-200",
   SUPPLIER_PAYMENT: "bg-teal-50 text-teal-700 border-teal-200",
+  MARKETING_CPA_PAYMENT: "bg-violet-50 text-violet-700 border-violet-200",
   SALES_RETURN: "bg-rose-50 text-rose-700 border-rose-200",
   EXPENSE_PAYMENT: "bg-amber-50 text-amber-700 border-amber-200",
   ASSET_ACQUISITION: "bg-indigo-50 text-indigo-700 border-indigo-200",
@@ -28,18 +31,23 @@ const JournalEntries = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [sourceTypeFilter, setSourceTypeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [expandedEntryId, setExpandedEntryId] = useState(null);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
+  const [accountingPostingStatus, setAccountingPostingStatus] = useState(null);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const calendarDateInitialized = useRef(false);
 
   // Manual Journal Entry Modal State
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualDescription, setManualDescription] = useState("");
   const [manualReference, setManualReference] = useState("");
-  const [manualDate, setManualDate] = useState(new Date().toISOString().split("T")[0]);
+  const [manualReason, setManualReason] = useState("");
+  const [journalActionType, setJournalActionType] = useState("MANUAL_JOURNAL");
+  const [manualDate, setManualDate] = useState(() => formatNepaliDate(new Date()));
   const [lines, setLines] = useState([
     { accountId: "", debit: "", credit: "", description: "" },
     { accountId: "", debit: "", credit: "", description: "" },
@@ -56,6 +64,7 @@ const JournalEntries = ({ token }) => {
       const params = {
         page,
         limit: 15,
+        calendar: "BS",
       };
       if (sourceTypeFilter !== "ALL") params.sourceType = sourceTypeFilter;
       if (statusFilter !== "ALL") params.status = statusFilter;
@@ -63,22 +72,30 @@ const JournalEntries = ({ token }) => {
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
 
-      const [entriesRes, accountsRes] = await Promise.all([
+      const [entriesRes, accountsRes, calendarRes] = await Promise.all([
         axios.get(`${backendUrl}/api/accounting/journal-entries`, {
           headers: { token },
           params,
         }),
         axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } }),
       ]);
 
       if (entriesRes.data.success) {
         setEntries(entriesRes.data.journalEntries || entriesRes.data.entries || []);
         setPagination(entriesRes.data.pagination || null);
+        setAccountingPostingStatus(entriesRes.data.accountingPostingStatus || null);
       } else {
         toast.error(entriesRes.data.message || "Failed to load journal entries");
       }
       if (accountsRes.data.success) {
         setAccounts(accountsRes.data.accounts || []);
+      }
+      if (!calendarRes.data?.success) throw new Error(calendarRes.data?.message || "Could not load the configured Nepali calendar.");
+      setCalendarYears(calendarRes.data.years || []);
+      if (calendarRes.data.currentDate && !calendarDateInitialized.current) {
+        setManualDate(calendarRes.data.currentDate);
+        calendarDateInitialized.current = true;
       }
     } catch (err) {
       console.error(err);
@@ -143,8 +160,11 @@ const JournalEntries = ({ token }) => {
     try {
       const payload = {
         transactionDate: manualDate,
-        description: manualDescription.trim() || "Manual Journal Entry",
+        calendar: "BS",
+        actionType: journalActionType,
+        description: manualDescription.trim(),
         referenceNumber: manualReference.trim() || "",
+        reason: manualReason.trim(),
         lines: lines.map((l) => ({
           accountId: l.accountId,
           debit: Number(l.debit || 0),
@@ -154,14 +174,16 @@ const JournalEntries = ({ token }) => {
       };
 
       const res = await axios.post(`${backendUrl}/api/accounting/manual-journal`, payload, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": crypto.randomUUID() },
       });
 
       if (res.data.success) {
-        toast.success(res.data.message || "Journal entry posted successfully");
+        toast.success(res.data.message || "Journal submitted for independent approval");
         setShowManualModal(false);
         setManualDescription("");
         setManualReference("");
+        setManualReason("");
+        setJournalActionType("MANUAL_JOURNAL");
         setLines([
           { accountId: "", debit: "", credit: "", description: "" },
           { accountId: "", debit: "", credit: "", description: "" },
@@ -185,13 +207,13 @@ const JournalEntries = ({ token }) => {
         `${backendUrl}/api/accounting/reverse-journal`,
         {
           journalEntryId: selectedEntryForReverse.id,
-          reversalReason: reverseReason.trim() || "Reversed by Admin",
+          reversalReason: reverseReason.trim(),
         },
-        { headers: { token } }
+        { headers: { token, "Idempotency-Key": crypto.randomUUID() } }
       );
 
       if (res.data.success) {
-        toast.success(res.data.message || "Journal entry reversed successfully");
+        toast.success(res.data.message || "Journal reversal submitted for independent approval");
         setShowReverseModal(false);
         setSelectedEntryForReverse(null);
         setReverseReason("");
@@ -242,6 +264,8 @@ const JournalEntries = ({ token }) => {
         </div>
       </div>
 
+      <AccountingPostingStatusBanner status={accountingPostingStatus} />
+
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
         <form onSubmit={handleSearchSubmit} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
@@ -280,6 +304,7 @@ const JournalEntries = ({ token }) => {
               <option value="CUSTOMER_PAYMENT">Customer Receipts / COD</option>
               <option value="PURCHASE_BILL">Purchase Bills</option>
               <option value="SUPPLIER_PAYMENT">Supplier / Manufacturer Payments</option>
+              <option value="MARKETING_CPA_PAYMENT">Marketing CPA Payments</option>
               <option value="SALES_RETURN">Sales Returns & RMA</option>
               <option value="EXPENSE_PAYMENT">Operating Expenses</option>
               <option value="ASSET_ACQUISITION">Fixed Assets</option>
@@ -407,7 +432,7 @@ const JournalEntries = ({ token }) => {
                         {ent.description || ent.memo || "Double-entry Posting"}
                       </div>
                       <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-3">
-                        <span>Date: {txDate ? new Date(txDate).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }) : "—"}</span>
+                        <span>Date (BS): {txDate ? formatNepaliDate(txDate, calendarYears) : "—"}</span>
                         {ent.referenceNumber && <span>• Ref: <strong className="text-slate-600 font-mono">{ent.referenceNumber}</strong></span>}
                         {ent.createdBy && <span>• By: {ent.createdBy}</span>}
                       </div>
@@ -422,7 +447,7 @@ const JournalEntries = ({ token }) => {
                       </div>
                     </div>
 
-                    {ent.status === "POSTED" && ent.sourceType !== "REVERSAL" && (
+                    {ent.status === "POSTED" && ent.sourceType === "MANUAL_JOURNAL" && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -509,18 +534,28 @@ const JournalEntries = ({ token }) => {
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Create Manual Journal Entry</h2>
-                <p className="text-[11px] text-slate-400">Total Debits must equal Total Credits before posting to the authoritative ledger.</p>
+                <h2 className="text-base font-bold text-slate-900">Submit Journal for Approval</h2>
+                <p className="text-[11px] text-slate-400">No ledger entry is posted until a different Admin approves the request.</p>
               </div>
               <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
             <form onSubmit={handlePostManualEntry} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Journal type *</label>
+                <select value={journalActionType} onChange={(event) => setJournalActionType(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <option value="MANUAL_JOURNAL">Manual journal</option>
+                  <option value="OPENING_BALANCE">Opening balance</option>
+                </select>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Posting Date *</label>
                   <input
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                    placeholder="2083-04-01"
                     required
                     value={manualDate}
                     onChange={(e) => setManualDate(e.target.value)}
@@ -539,15 +574,20 @@ const JournalEntries = ({ token }) => {
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reference Document #</label>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Source / Evidence Reference {journalActionType === "OPENING_BALANCE" ? "*" : ""}</label>
                   <input
                     type="text"
-                    placeholder="e.g. ADJ-2026-09"
+                    required={journalActionType === "OPENING_BALANCE"}
+                    placeholder="e.g. source document or opening balance schedule"
                     value={manualReference}
                     onChange={(e) => setManualReference(e.target.value)}
                     className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Reason for journal *</label>
+                <textarea required minLength={3} maxLength={2000} rows="2" value={manualReason} onChange={(event) => setManualReason(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs" />
               </div>
 
               {/* Dynamic Line Items Table */}
@@ -676,7 +716,7 @@ const JournalEntries = ({ token }) => {
                   disabled={!isBalanced}
                   className="px-5 py-2 bg-slate-900 disabled:bg-slate-300 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
                 >
-                  Post Journal Entry
+                  Submit for Approval
                 </button>
               </div>
             </form>
@@ -694,7 +734,7 @@ const JournalEntries = ({ token }) => {
             </div>
 
             <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
-              This action will mark <strong>{selectedEntryForReverse.journalNumber || selectedEntryForReverse.entryNumber}</strong> as REVERSED and generate an offsetting double-entry reversal to preserve the full audit trail.
+              This manual journal will be marked reversed and a linked offsetting entry will be posted atomically. Source-backed business transactions must be corrected through their originating workflow.
             </div>
 
             <form onSubmit={handleReverseEntry} className="space-y-4">
@@ -705,6 +745,7 @@ const JournalEntries = ({ token }) => {
                 <textarea
                   rows="2"
                   required
+                  minLength={3}
                   placeholder="Explain why this journal entry is being reversed..."
                   value={reverseReason}
                   onChange={(e) => setReverseReason(e.target.value)}
@@ -722,9 +763,10 @@ const JournalEntries = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={reverseReason.trim().length < 3}
                   className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs"
                 >
-                  Confirm Reversal
+                  Submit Reversal for Approval
                 </button>
               </div>
             </form>
