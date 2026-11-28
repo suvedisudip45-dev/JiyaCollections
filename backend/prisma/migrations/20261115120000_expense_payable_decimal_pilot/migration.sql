@@ -1,4 +1,4 @@
-CREATE TABLE `AccountingDecimalConversionEvidence` (
+CREATE TABLE IF NOT EXISTS `AccountingDecimalConversionEvidence` (
     `migrationKey` VARCHAR(64) NOT NULL,
     `tableName` VARCHAR(64) NOT NULL,
     `recordId` VARCHAR(191) NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE `AccountingDecimalConversionEvidence` (
     INDEX `AccountingDecimalConversionEvidence_table_field_idx` (`tableName`, `fieldName`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `AccountingDecimalJsonConversionEvidence` (
+CREATE TABLE IF NOT EXISTS `AccountingDecimalJsonConversionEvidence` (
     `migrationKey` VARCHAR(64) NOT NULL,
     `sourceRecordId` VARCHAR(191) NOT NULL,
     `originalItems` JSON NOT NULL,
@@ -223,19 +223,15 @@ items_converted AS (
            END AS `convertedItem`
     FROM unit_converted
 ),
-aggregated AS (
-    SELECT `id`,
-           JSON_ARRAYAGG(`convertedItem`) OVER (
-               PARTITION BY `id`
-               ORDER BY `itemIndex`
-               ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-           ) AS `convertedItems`,
-           ROW_NUMBER() OVER (PARTITION BY `id` ORDER BY `itemIndex`) AS `rowNumber`
+ordered_items AS (
+    SELECT `id`, `itemIndex`, `convertedItem`
     FROM items_converted
+    ORDER BY `id`, `itemIndex`
 )
-SELECT `id`, `convertedItems`
-FROM aggregated
-WHERE `rowNumber` = 1;
+SELECT `id`,
+       JSON_ARRAYAGG(`convertedItem`) AS `convertedItems`
+FROM ordered_items
+GROUP BY `id`;
 
 INSERT INTO `AccountingDecimalJsonConversionEvidence`
     (`migrationKey`, `sourceRecordId`, `originalItems`, `convertedItems`)
