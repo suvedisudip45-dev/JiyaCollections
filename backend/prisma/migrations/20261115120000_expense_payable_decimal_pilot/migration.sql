@@ -302,7 +302,7 @@ ALTER TABLE `OperatingExpense`
         `paidAmount` >= 0
         AND `payableAmount` >= 0
         AND `paidAmount` + `payableAmount` = `amount`
-    ) ENFORCED;
+    );
 
 ALTER TABLE `SupplierReturn`
     ADD COLUMN `totalDebitAmountP42` DECIMAL(20, 2) NULL,
