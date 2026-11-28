@@ -151,7 +151,7 @@ CREATE TABLE `PeerStockTransferCustodyEvent` (
   PRIMARY KEY (`id`),
   UNIQUE INDEX `PeerStockTransferCustodyEvent_idempotencyKey_key`(`idempotencyKey`),
   INDEX `PeerStockTransferCustodyEvent_stockTransferId_createdAt_idx`(`stockTransferId`,`createdAt`),
-  INDEX `PeerStockTransferCustodyEvent_distributorId_custodyStage_createdAt_idx`(`distributorId`,`custodyStage`,`createdAt`),
+  INDEX `PeerTransferCustody_dist_stage_created_idx`(`distributorId`,`custodyStage`,`createdAt`),
   CONSTRAINT `PeerStockTransferCustodyEvent_stockTransferId_fkey`
     FOREIGN KEY (`stockTransferId`) REFERENCES `StockTransfer`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `PeerStockTransferCustodyEvent_distributorId_fkey`

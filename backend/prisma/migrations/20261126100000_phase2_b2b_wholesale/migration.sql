@@ -1,6 +1,6 @@
 -- Additive Phase 2 wholesale distribution models.
 
-CREATE TABLE `B2BWholesalePriceTier` (
+CREATE TABLE IF NOT EXISTS `B2BWholesalePriceTier` (
   `id` VARCHAR(191) NOT NULL,
   `distributorId` VARCHAR(191) NOT NULL,
   `name` VARCHAR(191) NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE `B2BWholesalePriceTier` (
   CONSTRAINT `B2BWholesalePriceTier_distributorId_fkey` FOREIGN KEY (`distributorId`) REFERENCES `Distributor`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE TABLE `B2BDealerAccount` (
+CREATE TABLE IF NOT EXISTS `B2BDealerAccount` (
   `id` VARCHAR(191) NOT NULL,
   `distributorId` VARCHAR(191) NOT NULL,
   `dealerCode` VARCHAR(32) NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE `B2BWholesaleQuantityDiscount` (
   `effectiveUntil` DATETIME(3) NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
-  INDEX `B2BWholesaleQuantityDiscount_tierId_minimumQuantity_effectiveFrom_idx`(`tierId`,`minimumQuantity`,`effectiveFrom`),
+  INDEX `B2BWholesaleQtyDiscount_tier_minQty_effFrom_idx`(`tierId`,`minimumQuantity`,`effectiveFrom`),
   CONSTRAINT `B2BWholesaleQuantityDiscount_tierId_fkey` FOREIGN KEY (`tierId`) REFERENCES `B2BWholesalePriceTier`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -75,7 +75,7 @@ CREATE TABLE `B2BDealerContractPrice` (
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   INDEX `B2BDealerContractPrice_distributorId_dealerId_effectiveFrom_idx`(`distributorId`,`dealerId`,`effectiveFrom`),
-  INDEX `B2BDealerContractPrice_productId_inventorySkuId_effectiveFrom_idx`(`productId`,`inventorySkuId`,`effectiveFrom`),
+  INDEX `B2BDealerContractPrice_prod_sku_effFrom_idx`(`productId`,`inventorySkuId`,`effectiveFrom`),
   CONSTRAINT `B2BDealerContractPrice_distributorId_fkey` FOREIGN KEY (`distributorId`) REFERENCES `Distributor`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
   CONSTRAINT `B2BDealerContractPrice_dealerId_fkey` FOREIGN KEY (`dealerId`) REFERENCES `B2BDealerAccount`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `B2BDealerContractPrice_productId_fkey` FOREIGN KEY (`productId`) REFERENCES `Product`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,

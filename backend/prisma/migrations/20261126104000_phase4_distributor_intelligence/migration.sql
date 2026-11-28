@@ -53,8 +53,8 @@ CREATE TABLE `DistributorReplenishmentSuggestion` (
   `updatedAt` DATETIME(3) NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `DistributorReplenishmentSuggestion_idempotencyKey_key`(`idempotencyKey`),
-  INDEX `DistributorReplenishmentSuggestion_distributorId_status_createdAt_idx`(`distributorId`,`status`,`createdAt`),
-  INDEX `DistributorReplenishmentSuggestion_distributorId_inventorySkuId_periodEnd_idx`(`distributorId`,`inventorySkuId`,`periodEnd`),
+  INDEX `DistReplenishment_dist_status_created_idx`(`distributorId`,`status`,`createdAt`),
+  INDEX `DistReplenishment_dist_sku_periodEnd_idx`(`distributorId`,`inventorySkuId`,`periodEnd`),
   CONSTRAINT `DistributorReplenishmentSuggestion_distributorId_fkey`
     FOREIGN KEY (`distributorId`) REFERENCES `Distributor`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `DistributorReplenishmentSuggestion_inventorySkuId_fkey`
@@ -77,7 +77,7 @@ CREATE TABLE `DistributorProfitSnapshot` (
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE INDEX `DistributorProfitSnapshot_idempotencyKey_key`(`idempotencyKey`),
-  UNIQUE INDEX `DistributorProfitSnapshot_distributorId_periodStart_periodEnd_key`(`distributorId`,`periodStart`,`periodEnd`),
+  UNIQUE INDEX `DistProfitSnapshot_dist_periodStart_end_key`(`distributorId`,`periodStart`,`periodEnd`),
   INDEX `DistributorProfitSnapshot_distributorId_periodEnd_idx`(`distributorId`,`periodEnd`),
   CONSTRAINT `DistributorProfitSnapshot_distributorId_fkey`
     FOREIGN KEY (`distributorId`) REFERENCES `Distributor`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
