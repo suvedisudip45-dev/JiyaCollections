@@ -252,6 +252,22 @@ test("refresh cookies are isolated by portal", () => {
   assert.equal(getRefreshCookie(request, "MANUFACTURER"), "");
 
   clearRefreshCookie(response, "ADMIN");
-  assert.deepEqual(clearedCookies, ["refresh_token_admin"]);
+  assert.deepEqual(clearedCookies, ["refresh_token", "refresh_token", "refresh_token_admin", "refresh_token"]);
   assert.equal(issuedCookies.get("refresh_token_customer"), "customer-refresh");
+});
+
+test("legacy unscoped refresh cookies remain usable until migrated to a portal cookie", () => {
+  const request = {
+    headers: {
+      cookie: "refresh_token=legacy-refresh",
+    },
+  };
+  const response = {
+    cookie: () => {},
+    clearCookie: () => {},
+  };
+
+  assert.equal(getRefreshCookie(request, "CUSTOMER"), "legacy-refresh");
+  setRefreshCookie(response, "CUSTOMER", "rotated-refresh", Date.now() + 60_000);
+  assert.equal(getRefreshCookie({ headers: { cookie: "refresh_token_customer=rotated-refresh" } }, "CUSTOMER"), "rotated-refresh");
 });

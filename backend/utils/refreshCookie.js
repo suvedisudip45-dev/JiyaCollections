@@ -41,24 +41,31 @@ const refreshCookieOptions = (expiresAt, req = null) => {
   };
 };
 
-export const setRefreshCookie = (res, portal, refreshToken, expiresAt) => {
-  const cookieName = getPortalCookieName(portal);
-  if (!cookieName) throw new Error("A valid portal is required for a refresh cookie.");
-  res.cookie(cookieName, refreshToken, refreshCookieOptions(expiresAt, res?.req));
-};
-
-export const clearRefreshCookie = (res, portal) => {
-  const cookieName = getPortalCookieName(portal);
-  if (cookieName) res.clearCookie(cookieName, refreshCookieOptions(undefined, res?.req));
-};
-
-export const getRefreshCookie = (req, portal) => {
-  const cookieName = getPortalCookieName(portal);
-  if (!cookieName) return "";
+const getCookieValue = (req, cookieName) => {
   const cookieHeader = req.headers.cookie || "";
   const cookie = cookieHeader
     .split(";")
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${cookieName}=`));
   return cookie ? decodeURIComponent(cookie.slice(cookieName.length + 1)) : "";
+};
+
+export const setRefreshCookie = (res, portal, refreshToken, expiresAt) => {
+  const cookieName = getPortalCookieName(portal);
+  if (!cookieName) throw new Error("A valid portal is required for a refresh cookie.");
+  res.cookie(cookieName, refreshToken, refreshCookieOptions(expiresAt, res?.req));
+  res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions(undefined, res?.req));
+};
+
+export const clearRefreshCookie = (res, portal) => {
+  const cookieName = getPortalCookieName(portal);
+  const options = refreshCookieOptions(undefined, res?.req);
+  if (cookieName) res.clearCookie(cookieName, options);
+  res.clearCookie(REFRESH_COOKIE_NAME, options);
+};
+
+export const getRefreshCookie = (req, portal) => {
+  const cookieName = getPortalCookieName(portal);
+  if (!cookieName) return "";
+  return getCookieValue(req, cookieName) || getCookieValue(req, REFRESH_COOKIE_NAME);
 };

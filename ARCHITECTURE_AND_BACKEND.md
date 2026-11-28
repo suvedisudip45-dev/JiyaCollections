@@ -643,6 +643,8 @@ The actual validation logic is in:
 - `backend/config/cors.js`
 - `backend/services/tokenService.js`
 
+Refresh tokens are kept in portal-scoped HttpOnly cookies and are never returned in JSON or stored by the portals. For existing sessions created before portal-scoped cookies were introduced, refresh accepts the legacy `refresh_token` cookie only when the requested portal cookie is absent; the token's portal is still validated during rotation, which issues a scoped cookie and clears the legacy cookie.
+
 ### Role and permission model
 
 The schema includes:
