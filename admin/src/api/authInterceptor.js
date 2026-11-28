@@ -10,7 +10,7 @@ import {
   storeAuthTokens,
 } from "../auth/tokenStorage";
 
-const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
+const backendUrl = String(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000").replace(/\/+$/, "");
 let installed = false;
 let refreshPromise = null;
 let expiryTimer = null;
@@ -65,19 +65,29 @@ const refreshAccessToken = (staleAccessToken = getAccessToken()) => {
   return refreshPromise;
 };
 
+const getTokenJwtExpiry = (token) => {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3) return 0;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const exp = Number(payload?.exp);
+    return exp > 0 ? exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+};
+
 const scheduleSessionExpiry = () => {
   window.clearTimeout(expiryTimer);
-  if (!getAccessToken()) return;
+  const accessToken = getAccessToken();
+  if (!accessToken) return;
 
-  const expiresAt = getRefreshTokenExpiresAt();
-  if (!expiresAt) {
-    refreshAccessToken().catch(redirectToLogin);
-    return;
-  }
+  const expiresAt = getRefreshTokenExpiresAt() || getTokenJwtExpiry(accessToken);
+  if (!expiresAt) return;
 
   const remaining = expiresAt - Date.now();
   if (remaining <= 0) {
-    redirectToLogin();
+    refreshAccessToken().catch(redirectToLogin);
     return;
   }
 
