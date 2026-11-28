@@ -630,7 +630,7 @@ const OrderAssignments = ({ token }) => {
 
               <label className="block text-xs font-semibold text-slate-700">
                 Quality Inspection &amp; Packaging Notes
-                <textarea rows={3} value={ncmForm.packagingNotes || ""} onChange={(event) => setNcmForm({ ...ncmForm, packagingNotes: event.target.value })} placeholder="e.g. Ironed, tagged with Aama hologram, wrapped in waterproof polybag." className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-normal text-slate-800" />
+                <textarea rows={3} value={ncmForm.packagingNotes || ""} onChange={(event) => setNcmForm({ ...ncmForm, packagingNotes: event.target.value })} placeholder="e.g. Ironed, tagged with Aashrit Corner hologram, wrapped in waterproof polybag." className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-normal text-slate-800" />
               </label>
             </section>
 

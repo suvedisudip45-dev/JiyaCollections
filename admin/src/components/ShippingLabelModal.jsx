@@ -20,7 +20,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
 
   // Form state for creating/editing sender
   const [senderForm, setSenderForm] = useState({
-    name: "Aama Clothings",
+    name: "Aashrit Corner",
     phone: "",
     street: "",
     city: "Kathmandu",
@@ -223,7 +223,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
           <div className="flex items-center justify-between border-b-2 border-black pb-1.5">
             <div>
               <h1 className="text-base font-black tracking-tight uppercase leading-none">
-                {activeSender?.name || "AAMA CLOTHINGS"}
+                {activeSender?.name || "AASHRIT CORNER"}
               </h1>
               <p className="text-[9px] font-bold tracking-wider text-gray-700 uppercase mt-0.5">
                 Domestic Courier & Delivery Slip
@@ -271,7 +271,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
                 FROM (Shipper / Warehouse):
               </p>
               <p className="font-bold text-[11px] leading-tight">
-                {activeSender?.name || "Aama Clothings"}
+                {activeSender?.name || "Aashrit Corner"}
               </p>
               <p className="leading-tight text-gray-800">{activeSender?.street}</p>
               <p className="leading-tight text-gray-800">
@@ -472,7 +472,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
           </div>
 
           <div className="text-center text-[7px] text-gray-500 mt-1 uppercase tracking-widest">
-            Aama Clothings • Order #{ord.orderReference} • Standard 4x6" Courier Label
+            Aashrit Corner • Order #{ord.orderReference} • Standard 4x6" Courier Label
           </div>
         </div>
       </div>

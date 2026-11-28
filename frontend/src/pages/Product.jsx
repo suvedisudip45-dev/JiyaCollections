@@ -535,7 +535,7 @@ const Product = () => {
   const isWishlisted = wishlist.includes(productData._id || productData.id);
 
   return (
-    <div className="pt-4 pb-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 animate-fade-in">
+    <div className="min-w-0 pt-4 pb-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 animate-fade-in">
       {/* --- Breadcrumbs --- */}
       <nav
         aria-label="Breadcrumb"
@@ -561,9 +561,9 @@ const Product = () => {
       </nav>
 
       {/* --- Main Product Grid --- */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 xl:gap-16 items-start">
+      <div className="grid min-w-0 grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 xl:gap-16 items-start">
         {/* ================= LEFT COLUMN: IMAGERY ================= */}
-        <div className="lg:col-span-7">
+        <div className="min-w-0 lg:col-span-7">
 
           {/* ─── MOBILE CAROUSEL (hidden on md+) ─── */}
           <div className="md:hidden relative select-none">
@@ -884,7 +884,7 @@ const Product = () => {
         </div>
 
         {/* ================= RIGHT COLUMN: DETAILS & ACTIONS ================= */}
-        <div className="lg:col-span-5 flex flex-col space-y-6 lg:sticky lg:top-24">
+        <div className="min-w-0 lg:col-span-5 flex flex-col space-y-6 lg:sticky lg:top-24">
           {/* Header & Title */}
           <div>
             <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -906,7 +906,7 @@ const Product = () => {
               )}
             </div>
 
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-snug">
+            <h1 className="break-words text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-snug">
               {productData.name}
             </h1>
 
@@ -965,7 +965,7 @@ const Product = () => {
 
           {/* Short Bio */}
           {productBio && (
-            <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
+            <p className="break-words text-sm text-gray-600 leading-relaxed line-clamp-3">
               {productBio}
             </p>
           )}
@@ -1238,11 +1238,11 @@ const Product = () => {
       </div>
 
       {/* ================= BOTTOM CONTENT: TABS / SPECS / REVIEWS ================= */}
-      <div id="product-tabs-section" className="mt-20">
-        <div className="flex border-b border-stone-200">
+      <div id="product-tabs-section" className="mt-12 min-w-0 sm:mt-20">
+        <div className="flex flex-col border-b border-stone-200 md:flex-row">
           <button
             onClick={() => setActiveTab("reviews")}
-            className={`px-6 sm:px-8 py-4 text-xs sm:text-sm font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer flex items-center gap-2 ${
+            className={`flex w-full items-center justify-between gap-2 px-4 py-3 text-left text-xs font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer md:w-auto md:justify-center md:px-6 md:py-4 md:text-center md:text-sm lg:px-8 ${
               activeTab === "reviews"
                 ? "border-black text-black bg-white shadow-2xs"
                 : "border-transparent text-gray-500 hover:text-black bg-stone-50"
@@ -1262,7 +1262,7 @@ const Product = () => {
 
           <button
             onClick={() => setActiveTab("description")}
-            className={`px-6 sm:px-8 py-4 text-xs sm:text-sm font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            className={`w-full px-4 py-3 text-left text-xs font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer md:w-auto md:px-6 md:py-4 md:text-center md:text-sm lg:px-8 ${
               activeTab === "description"
                 ? "border-black text-black bg-white shadow-2xs"
                 : "border-transparent text-gray-500 hover:text-black bg-stone-50"
@@ -1273,7 +1273,7 @@ const Product = () => {
 
           <button
             onClick={() => setActiveTab("details")}
-            className={`px-6 sm:px-8 py-4 text-xs sm:text-sm font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer ${
+            className={`w-full px-4 py-3 text-left text-xs font-extrabold uppercase tracking-wider transition-all border-b-2 cursor-pointer md:w-auto md:px-6 md:py-4 md:text-center md:text-sm lg:px-8 ${
               activeTab === "details"
                 ? "border-black text-black bg-white shadow-2xs"
                 : "border-transparent text-gray-500 hover:text-black bg-stone-50"
@@ -1295,7 +1295,7 @@ const Product = () => {
             }
 
             return (
-              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+              <div className="min-w-0 break-words bg-white border border-t-0 border-stone-200 p-4 sm:p-10 rounded-b-3xl space-y-6">
                 <h3 className="text-lg font-bold text-gray-900">
                   About {productData.name}
                 </h3>
@@ -1346,7 +1346,7 @@ const Product = () => {
             }
 
             return (
-              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+              <div className="min-w-0 break-words bg-white border border-t-0 border-stone-200 p-4 sm:p-10 rounded-b-3xl space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="space-y-2">
                     <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
@@ -1382,7 +1382,7 @@ const Product = () => {
           })()
         )}
         {activeTab === "reviews" && (
-          <div className="bg-white border border-t-0 border-stone-200 p-4 sm:p-8 rounded-b-3xl">
+          <div className="min-w-0 bg-white border border-t-0 border-stone-200 p-4 sm:p-8 rounded-b-3xl">
             <ReviewSection
               productId={productData._id || productData.id}
               productName={productData.name}

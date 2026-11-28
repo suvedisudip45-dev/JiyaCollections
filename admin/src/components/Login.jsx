@@ -130,7 +130,7 @@ const Login = ({ setToken }) => {
             AC
           </div>
           <h1 className="text-2xl font-bold text-slate-900">Admin Panel</h1>
-          <p className="text-sm text-slate-500 mt-1">Aama Clothings Management Console</p>
+          <p className="text-sm text-slate-500 mt-1">Aashrit Corner Management Console</p>
         </div>
 
         {step === "credentials" && (

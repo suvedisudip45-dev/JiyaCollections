@@ -74,10 +74,10 @@ const Navbar = ({ setToken, onToggleSidebar }) => {
           >
             <Menu className="h-4 w-4" aria-hidden="true" />
           </button>
-          <img className="h-9 w-auto object-contain" src={assets.logo} alt="Aama Clothings" />
+          <img className="h-8 w-36 object-contain" src={assets.logo} alt="Aashrit Corner" />
           <div className="hidden border-l border-border-light pl-3 sm:block">
             <h1 className="text-sm font-bold leading-none tracking-tight text-ink-primary">
-              Aama Clothings
+              Aashrit Corner
             </h1>
             <p className="mt-1 text-[11px] font-medium text-ink-muted">
               Admin Management Console

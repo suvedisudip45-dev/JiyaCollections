@@ -577,7 +577,7 @@ const Login = () => {
                 <div>
                   <h2 className="text-2xl font-black text-white tracking-tight">Register as Manufacturer</h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Join Aama Clothings distributed apparel fulfillment network
+                    Join Aashrit Corner's distributed apparel fulfillment network
                   </p>
                 </div>
               </div>
@@ -1101,7 +1101,7 @@ const Login = () => {
 
           {loginPortal !== "DRIVER" && (
             <div className="mt-6 pt-6 border-t border-slate-800 text-center">
-              <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aama Clothings</p>
+              <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aashrit Corner</p>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
                 <button
                   type="button"

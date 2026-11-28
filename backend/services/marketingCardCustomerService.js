@@ -98,7 +98,7 @@ export const isCustomerCardRewardRevealed = (link, events = []) => (
 const partnerForCard = (card) => card.assignedPartner || card.partner || card.campaign?.marketingPartner || null;
 
 const organizationForCard = (card) => (
-  String(card.isPublic ? "Everyone" : card.assignedOrganization || partnerForCard(card)?.name || "Aama Own Store").trim()
+  String(card.isPublic ? "Everyone" : card.assignedOrganization || partnerForCard(card)?.name || "Aashrit Corner").trim()
 );
 
 const NEPAL_OFFSET_MS = 345 * 60 * 1000;
@@ -249,7 +249,7 @@ const safeCard = (linkOrWrapper) => {
     isCardExpired: card.campaign?.cardExpiresAt ? new Date() > new Date(card.campaign.cardExpiresAt) : false,
     partner: partnerForCard(card)
       ? { id: partnerForCard(card).id, name: partnerForCard(card).name, code: partnerForCard(card).code }
-      : { id: null, name: card.assignedOrganization || "Aama Own Store", code: "OWN" },
+      : { id: null, name: card.assignedOrganization || "Aashrit Corner", code: "OWN" },
     campaign: {
       id: card.campaign.id,
       name: card.campaign.name,
@@ -533,7 +533,7 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
     ad: card.campaign.adMediaType && card.campaign.adMediaType !== "NONE" && card.campaign.adMediaUrl ? {
       mediaType: card.campaign.adMediaType,
       mediaUrl: card.campaign.adMediaUrl,
-      headline: card.campaign.adHeadline || `${partnerForCard(card)?.name || "Aama Own Store"} Special Offer`,
+      headline: card.campaign.adHeadline || `${partnerForCard(card)?.name || "Aashrit Corner"} Special Offer`,
       description: card.campaign.adDescription || "",
       externalLink: card.campaign.adExternalLink || "",
     } : null,
@@ -759,7 +759,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
     ad: card.campaign.adMediaType && card.campaign.adMediaType !== "NONE" && card.campaign.adMediaUrl ? {
       mediaType: card.campaign.adMediaType,
       mediaUrl: card.campaign.adMediaUrl,
-      headline: card.campaign.adHeadline || `${partnerForCard(card)?.name || "Aama Own Store"} Special Offer`,
+      headline: card.campaign.adHeadline || `${partnerForCard(card)?.name || "Aashrit Corner"} Special Offer`,
       description: card.campaign.adDescription || "",
       externalLink: card.campaign.adExternalLink || "",
     } : null,
@@ -891,7 +891,7 @@ export const activateCustomerCard = async ({ customerId, cardId }) => prisma.$tr
     metadata: {
       hasBenefit: card.hasBenefit,
       benefitName: card.benefit?.name || null,
-      partnerName: partnerForCard(card)?.name || card.assignedOrganization || "Aama Own Store",
+      partnerName: partnerForCard(card)?.name || card.assignedOrganization || "Aashrit Corner",
     },
   });
 

@@ -975,7 +975,7 @@ const OrderDetail = () => {
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Personalized, handwritten note on Aama brand paper enclosed inside the package.
+                      Personalized, handwritten note on Aashrit Corner brand paper enclosed inside the package.
                     </p>
                   </div>
                 </div>
@@ -1256,7 +1256,7 @@ const OrderDetail = () => {
               </label>
               <textarea
                 rows={3}
-                placeholder="e.g. Ironed, tagged with Aama hologram, wrapped in waterproof polybag."
+                placeholder="e.g. Ironed, tagged with Aashrit Corner hologram, wrapped in waterproof polybag."
                 value={packagingNotes}
                 disabled={isDispatchLocked}
                 onChange={(e) => setPackagingNotes(e.target.value)}

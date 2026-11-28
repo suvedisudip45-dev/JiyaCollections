@@ -1,6 +1,6 @@
 <div align="center">
 
-# Aama Clothings — Multi-Portal Commerce Repository
+# Aashrit Corner — Multi-Portal Commerce Repository
 
 ### Customer storefront, business operations, manufacturer/distributor workspaces, and marketing portal
 
@@ -106,4 +106,4 @@ On Windows, stop the running backend before `prisma generate` if its native quer
 
 ## 📄 License
 
-Released under the [MIT License](./LICENSE). Built for the Aama Clothings Distributed Ecosystem.
+Released under the [MIT License](./LICENSE). Built for the Aashrit Corner distributed commerce ecosystem.

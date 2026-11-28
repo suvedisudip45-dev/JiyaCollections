@@ -15,6 +15,7 @@ import {
   adminGetMarketingPartnerDetail,
   adminGenerateBatch,
   adminListCards,
+  adminReissueCardQrTokens,
   adminCardMetrics,
   adminCardStats,
   adminInvalidate,
@@ -92,6 +93,7 @@ marketingCardRouter.post("/admin/batches", authenticate, authorize("marketing_ca
 marketingCardRouter.post("/admin/assignments", authenticate, authorize("marketing_card:admin_manage"), adminAssignCards);
 marketingCardRouter.post("/admin/own-store/assignments", authenticate, authorize("marketing_card:custom_assign"), adminAssignCardsToOrganization);
 marketingCardRouter.get("/admin/cards", authenticate, authorize("marketing_card:admin_manage"), adminListCards);
+marketingCardRouter.post("/admin/cards/qr-tokens/reissue", authenticate, authorize("marketing_card:admin_manage"), adminReissueCardQrTokens);
 marketingCardRouter.post("/admin/cards/invalidate", authenticate, authorize("marketing_card:admin_manage"), adminInvalidate);
 marketingCardRouter.get("/admin/metrics", authenticate, authorize("marketing_card:admin_manage"), adminCardMetrics);
 marketingCardRouter.get("/admin/stats", authenticate, authorize("marketing_card:admin_manage"), adminCardStats);

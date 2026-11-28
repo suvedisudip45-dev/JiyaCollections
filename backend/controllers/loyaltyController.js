@@ -22,7 +22,7 @@ const DEFAULT_LEVELS = [
     rewardType: "NONE",
     rewardValue: 0,
     rewardTitle: "Entry Level (No Perks)",
-    rewardDescription: "Welcome to Aama Clothings! Place orders to level up and unlock exclusive discounts.",
+    rewardDescription: "Welcome to Aashrit Corner! Place orders to level up and unlock exclusive discounts.",
     rewardOrderLimit: 1,
     freeShipping: false,
     discountAmount: 0,

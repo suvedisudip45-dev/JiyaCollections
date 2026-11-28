@@ -278,7 +278,7 @@ export const requestPasswordResetOtp = async ({
       idempotencyKey: `password-reset:${challengeId}`,
       payload: {
         secureContent: encryptNotificationText(
-          `Your Aama Clothings password reset code is ${otp}. It expires in ${expiryMinutes} minutes. Do not share this code.`,
+          `Your Aashrit Corner password reset code is ${otp}. It expires in ${expiryMinutes} minutes. Do not share this code.`,
           secret,
         ),
       },
@@ -442,7 +442,7 @@ export const resendPasswordResetOtp = async ({
       idempotencyKey: `password-reset:${challenge.id}:resend:${nextResendCount}`,
       payload: {
         secureContent: encryptNotificationText(
-          `Your Aama Clothings password reset code is ${otp}. It expires in ${expiryMinutes} minutes. Do not share this code.`,
+          `Your Aashrit Corner password reset code is ${otp}. It expires in ${expiryMinutes} minutes. Do not share this code.`,
           secret,
         ),
       },

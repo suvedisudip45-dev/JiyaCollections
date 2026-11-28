@@ -125,7 +125,7 @@ const LoginPage = () => {
                 <BadgeCheck size={28} className="text-white" strokeWidth={2} />
               </div>
               <h1 className="text-2xl font-bold text-[var(--mp-ink)]">Marketing Portal</h1>
-              <p className="text-sm text-[var(--mp-muted)] mt-1">Aama Clothings Partner Access</p>
+              <p className="text-sm text-[var(--mp-muted)] mt-1">Aashrit Corner Partner Access</p>
             </div>
 
             {/* Error */}
@@ -285,7 +285,7 @@ const LoginPage = () => {
         </div>
 
         <p className="text-center text-xs text-brand-200/70 mt-6">
-          Marketing Partner Portal · Aama Clothings
+          Marketing Partner Portal · Aashrit Corner
         </p>
       </div>
     </div>

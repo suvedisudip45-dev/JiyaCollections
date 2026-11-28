@@ -170,7 +170,7 @@ export const DigitalScratchCard = ({
               Better Luck Next Time!
             </h3>
             <p className="text-xs text-slate-500 max-w-[240px]">
-              Thank you for shopping with Aama Clothings. Look out for rewards in future orders!
+              Thank you for shopping with Aashrit Corner. Look out for rewards in future orders!
             </p>
           </div>
         )}

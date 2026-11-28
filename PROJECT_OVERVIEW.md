@@ -1,4 +1,4 @@
-# Aama Clothings — Distributed E-Commerce Ecosystem
+# Aashrit Corner — Distributed E-Commerce Ecosystem
 
 ## Request signing and HMAC compatibility
 
@@ -8,7 +8,7 @@ The backend secret is `HMAC_SECRET`; portal builds use a matching `VITE_HMAC_SEC
 
 ## 1. Project Summary
 
-Aama Clothings is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, distributor hub operations, a restricted delivery-driver workspace, marketing partner campaigns, and delivery/NCM fulfillment workflows.
+Aashrit Corner is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, distributor hub operations, a restricted delivery-driver workspace, marketing partner campaigns, and delivery/NCM fulfillment workflows.
 
 The repository separates factory production and replenishment from customer-facing distributor hub fulfillment. Production completion creates factory inventory only; storefront product availability is projected exclusively from unreserved stock in active distributor ledgers, and transfer stock is not sellable until the distributor records receipt. Customer checkout prefers one active distributor with stock for the full cart; when no single hub can fulfill it but multiple hubs collectively can, it creates product-specific orders and separate deliveries under a shared checkout group, using the admin-configured flat split-shipment fee once. Active distributors with exact delivery-area coverage receive priority, including when a business account also has a manufacturer profile. The manufacturer portal dashboard distinguishes factory stock, produced good units, and damaged units.
 

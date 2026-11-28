@@ -54,7 +54,7 @@ import p_img50 from "./p_img50.png";
 import p_img51 from "./p_img51.png";
 import p_img52 from "./p_img52.png";
 
-import logo from "./aama_logo.png";
+import logo from "./aashrit-corner.svg";
 import hero_img from "./p_img11.png";
 import cart_icon from "./cart_icon.png";
 import bin_icon from "./bin_icon.png";

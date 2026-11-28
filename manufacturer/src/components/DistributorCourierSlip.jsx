@@ -69,7 +69,7 @@ const DistributorCourierSlip = ({ orders, onClose }) => {
             return (
               <article className="courier-slip" key={record.assignmentId || orderId}>
                 <div className="courier-slip-brand">
-                  <strong>AAMA CLOTHINGS</strong>
+                  <strong>AASHRIT CORNER</strong>
                   <span>PARCEL SLIP · PLACE OUTSIDE PACKAGE</span>
                 </div>
 
@@ -147,7 +147,7 @@ const DistributorCourierSlip = ({ orders, onClose }) => {
                   {[senderAddress, sender.city].filter(Boolean).length > 0 && (
                     <span>{[senderAddress, sender.city].filter(Boolean).join(" · ")}</span>
                   )}
-                  <b>Company: Aama Clothings</b>
+                  <b>Company: Aashrit Corner</b>
                   {(companyContact?.email || companyContact?.phone) && (
                     <span>Contact: {[companyContact.email, companyContact.phone].filter(Boolean).join(" · ")}</span>
                   )}

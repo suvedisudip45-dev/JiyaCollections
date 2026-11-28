@@ -53,7 +53,7 @@ const SignupPage = () => {
                 <BadgeCheck size={26} className="text-white" />
               </div>
               <h1 className="text-2xl font-bold text-[var(--mp-ink)]">Create Partner Account</h1>
-              <p className="text-sm text-[var(--mp-muted)] mt-1 text-center">Submit your business details for Aama Clothings verification</p>
+              <p className="text-sm text-[var(--mp-muted)] mt-1 text-center">Submit your business details for Aashrit Corner verification</p>
             </div>
 
             {error && <div role="alert" className="flex items-start gap-2.5 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 mb-5 text-sm"><AlertCircle size={16} className="mt-0.5 flex-shrink-0" /><span>{error}</span></div>}

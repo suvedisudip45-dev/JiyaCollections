@@ -19,7 +19,10 @@ store operation was inspected.
   stored as a unique hash. Raw QR tokens are not stored in card lifecycle
   records. Printed card QR codes encode the raw QR token so the customer
   scanner can validate it; a public card code or marketing-page URL is not a
-  valid substitute.
+  valid substitute. Admin reprints for existing cards issue a new QR token and
+  invalidate older prints; scanned, reserved, cancelled, and order-attached
+  cards cannot have their tokens reissued. Raw tokens are returned only for
+  the authorized print operation.
 - Cards can be assigned to a partner or distributor, received into inventory,
   reserved, attached to an order, and cancelled. Assignment, attachment, and
   customer-link uniqueness are enforced by database constraints and service

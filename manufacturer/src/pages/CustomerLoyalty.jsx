@@ -617,7 +617,7 @@ const CustomerLoyalty = () => {
               <Crown className="w-12 h-12 mx-auto text-slate-200 mb-3" />
               <p className="font-semibold text-slate-500 text-sm">Enter a phone number above to check loyalty status</p>
               <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
-                Works for customers who have registered on the Aama Clothings website using that phone number.
+                Works for customers who have registered on the Aashrit Corner website using that phone number.
               </p>
             </div>
           )}

@@ -25,7 +25,7 @@ const Contact = () => {
             Email: admin@aamacollections.com
           </p>
           <p className="font-semibold text-xl text-gray-600">
-            Careers at Aama Collections
+            Careers at Aashrit Corner
           </p>
           <p className="text-gray-500">
             Learn more about our teams and job openings.

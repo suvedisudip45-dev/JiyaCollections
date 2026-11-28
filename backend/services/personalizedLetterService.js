@@ -251,7 +251,7 @@ export const buildRenderedTemplate = (templateBody, context) => {
     context.closing || `तपाईंले ${productColor} ${productName} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ। यो सामान तपाईको दैनिक जीवनमा सहजता, आत्मविश्वास र सन्तोष थप्नेछ।`,
     `तपाईंले ${productColor} ${productName} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ। यो सामान तपाईको दैनिक जीवनमा सहजता, आत्मविश्वास र सन्तोष थप्नेछ।`
   );
-  const signature = normalizeText(context.signature || "प्रेम सहित,\nThe Aama Story Team", "प्रेम सहित,\nThe Aama Story Team");
+  const signature = normalizeText(context.signature || "प्रेम सहित,\nThe Aashrit Corner Story Team", "प्रेम सहित,\nThe Aashrit Corner Story Team");
 
   let output = templateBody;
   const replacements = {
@@ -774,7 +774,7 @@ export const printPersonalizedLetter = async (orderId, manufacturerId = null, id
         continuity: previousDelivery ? "अघिल्लो पटक कथाले शान्त विश्वास र आशाको साथरहेर अगाडि बढ्यो।" : "कथाको यो नयाँ अध्याय सुरु हुन्छ।",
         story_content: nextLetter.content,
         closing: `तपाईंले ${productDisplayName}${variantDisplayName ? ` ${variantDisplayName}` : ""} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ।`,
-        signature: "प्रेम सहित,\nThe Aama Story Team",
+        signature: "प्रेम सहित,\nThe Aashrit Corner Story Team",
       }),
       flags: {
         isFirstLetterOfStory: assignment.nextSequenceNumber === 1,

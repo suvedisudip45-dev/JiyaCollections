@@ -14,7 +14,7 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
   const [previewIndex, setPreviewIndex] = useState(0);
 
   const senderInfo = {
-    name: manufacturer?.name || "Aama Clothing Hub",
+    name: manufacturer?.name || "Aashrit Corner Hub",
     phone: manufacturer?.phone || "+977-9801234567",
     street: manufacturer?.address || "Hub Operations Facility",
     city: manufacturer?.city || "Kathmandu",
@@ -87,7 +87,7 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
           <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3">
             <div>
               <span className="text-xl font-black tracking-tight text-slate-900 block">
-                AAMA CLOTHINGS
+                AASHRIT CORNER
               </span>
               <span className="text-[10px] font-bold tracking-wider uppercase">
                 Regional Hub: {senderInfo.city}

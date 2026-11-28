@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { prisma } from "../config/db.js";
 import {
   campaignMatchesOrder,
   cardTokenHash,
+  assertMarketingCardQrReissuable,
   isCardOrderAssignmentOwner,
   normalizeMaxScansPerCustomer,
+  regenerateMarketingCardQrTokens,
 } from "../services/marketingCardService.js";
 import {
   assertCardOrderEligibility,
@@ -47,6 +50,74 @@ test("card token hashing is deterministic and one-way shaped", () => {
   assert.equal(hash, cardTokenHash(token));
   assert.match(hash, /^[a-f0-9]{64}$/);
   assert.notEqual(hash, token);
+});
+
+test("QR token reissue is limited to unused, unreserved cards", () => {
+  assert.doesNotThrow(() => assertMarketingCardQrReissuable({
+    physicalStatus: "GENERATED",
+    customerLinks: [],
+    orderLink: null,
+    exchangeLockRequestId: null,
+  }));
+  for (const card of [
+    { physicalStatus: "CANCELLED" },
+    { physicalStatus: "RESERVED" },
+    { physicalStatus: "ATTACHED" },
+    { physicalStatus: "GENERATED", customerLinks: [{ id: "link-1" }] },
+    { physicalStatus: "GENERATED", orderLink: { id: "order-link-1" } },
+    { physicalStatus: "GENERATED", exchangeLockRequestId: "exchange-1" },
+  ]) {
+    assert.throws(() => assertMarketingCardQrReissuable(card), {
+      code: "MARKETING_CARD_NOT_ELIGIBLE",
+    });
+  }
+});
+
+test("QR token reissue stores only the token hash and returns the raw token for printing", async () => {
+  const originalTransaction = prisma.$transaction;
+  const card = {
+    id: "card-1",
+    cardCode: "AAMA-TEST-1",
+    qrTokenHash: cardTokenHash("old-token"),
+    physicalStatus: "GENERATED",
+    exchangeLockRequestId: null,
+    customerLinks: [],
+    orderLink: null,
+  };
+  const events = [];
+  const tx = {
+    marketingCard: {
+      findMany: async () => [card],
+      updateMany: async ({ where, data }) => {
+        assert.deepEqual(where.customerLinks, { none: {} });
+        assert.equal(where.orderLink, null);
+        card.qrTokenHash = data.qrTokenHash;
+        return { count: 1 };
+      },
+    },
+    marketingCardEvent: {
+      create: async ({ data }) => { events.push(data); },
+    },
+  };
+
+  prisma.$transaction = async (operation, options) => {
+    assert.deepEqual(options, { isolationLevel: "Serializable" });
+    return operation(tx);
+  };
+  try {
+    const result = await regenerateMarketingCardQrTokens({
+      cardIds: [card.id],
+      actorId: "admin-1",
+    });
+    const rawToken = result.cards[0].qrToken;
+    assert.match(rawToken, /^[a-f0-9]{64}$/);
+    assert.equal(card.qrTokenHash, cardTokenHash(rawToken));
+    assert.equal(events[0].eventType, "CARD_QR_TOKEN_REISSUED");
+    assert.equal(events[0].actorId, "admin-1");
+    assert.equal("qrToken" in events[0].metadata, false);
+  } finally {
+    prisma.$transaction = originalTransaction;
+  }
 });
 
 test("distributor card attachment accepts auto-allocated orders owned by their assignment", () => {

@@ -18,6 +18,7 @@ import {
   getDistributorInventory,
   receiveCardAsDistributor,
   bulkUpdateDistributorCards,
+  regenerateMarketingCardQrTokens,
 } from "../services/marketingCardService.js";
 import { getAdminMarketingPartnerDetail } from "../services/marketingPartnerService.js";
 import {
@@ -157,6 +158,20 @@ export const adminListCards = async (req, res) => {
     const { partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search } = req.query;
     const result = await listAdminCards({ partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search });
     return res.json({ success: true, ...result });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminReissueCardQrTokens = async (req, res) => {
+  try {
+    const result = await regenerateMarketingCardQrTokens({
+      cardIds: req.body.cardIds,
+      actorId: req.adminId,
+    });
+    return res.json({
+      success: true,
+      ...result,
+      message: "QR tokens reissued. Any previous QR prints for these cards are now invalid.",
+    });
   } catch (error) { return sendError(res, error); }
 };
 

@@ -70,7 +70,7 @@ const StoryLetterLibrary = ({ token }) => {
       .replace(/{{story_content}}/g, "A simple letter arrives carrying a warm new chapter of hope and joy.")
       .replace(/{{continuity}}/g, "The journey continues with gentle wind, trust, and the glow of a bright tomorrow.")
       .replace(/{{closing}}/g, "For now, this special letter brings warmth and comfort to your heart.")
-      .replace(/{{signature}}/g, "With love,\nThe Aama Story Team");
+      .replace(/{{signature}}/g, "With love,\nThe Aashrit Corner Story Team");
   }, [templateForm.body]);
 
   const fetchLibrary = async () => {

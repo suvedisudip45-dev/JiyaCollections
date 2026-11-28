@@ -96,6 +96,7 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 | `/verify` | Verification flow |
 
 Product-detail breadcrumbs follow actual storefront routes (`Home > Shop > product name`). Product category and subcategory are classification/filter fields, not separate breadcrumb pages.
+Product-detail tabs stack as full-width controls below the medium breakpoint to keep long labels accessible on narrow screens; they return to a horizontal row on wider screens. Product titles and tab-panel content wrap within the available viewport width.
 
 Customer, manufacturer, distributor, and driver login screens expose a **Forgot password?** flow. Recovery collects the account email and phone number, which must both match the active account for the selected portal; driver recovery also requires an active linked driver and distributor. It shows the masked SMS destination returned by the API, verifies the SMS code, requires matching new-password and confirmation fields, and returns the user to normal sign-in. It does not offer email recovery or automatically log the user in. Driver recovery and provisioning remain restricted outside development and test until production SMS delivery, shared rate limiting, staging verification, and the operational recovery procedure are complete.
 

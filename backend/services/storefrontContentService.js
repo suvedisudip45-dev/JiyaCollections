@@ -5,15 +5,15 @@ export const DEFAULT_STOREFRONT_CONTENT = Object.freeze({
   announcementPrimary: "Free shipping on orders over Rs 3,000",
   announcementSecondary: "Made for everyday movement",
   logoImage: "",
-  footerDescription: "At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.",
+  footerDescription: "At Aashrit Corner, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.",
   contactPhone: "+1-8515-56789",
   contactEmail: "contact@aamacollections.com",
   aboutPage: {
     image: "",
     title: "About Us",
-    description: "Aama Collections was born out of a passion for innovation and a desire to revolutionize the way people shop online. Our journey began with a simple idea: to provide a platform where customers can easily discover, explore, and purchase a wide range of products from the comfort of their homes.\n\nSince our inception, we've worked tirelessly to curate a diverse selection of high-quality products that cater to every taste and preference. From fashion and beauty to home essentials, we offer an extensive collection sourced from trusted brands and suppliers.",
+    description: "Aashrit Corner was born out of a passion for innovation and a desire to revolutionize the way people shop online. Our journey began with a simple idea: to provide a platform where customers can easily discover, explore, and purchase a wide range of products from the comfort of their homes.\n\nSince our inception, we've worked tirelessly to curate a diverse selection of high-quality products that cater to every taste and preference. From fashion and beauty to home essentials, we offer an extensive collection sourced from trusted brands and suppliers.",
     missionTitle: "Our Mission",
-    missionDescription: "Our mission at Aama Collections is to empower customers with choice, convenience, and confidence. We're dedicated to providing a seamless shopping experience that exceeds expectations, from browsing and ordering to delivery and beyond.",
+    missionDescription: "Our mission at Aashrit Corner is to empower customers with choice, convenience, and confidence. We're dedicated to providing a seamless shopping experience that exceeds expectations, from browsing and ordering to delivery and beyond.",
     whyTitle: "Why Choose Us",
     whyCards: [
       {
@@ -32,8 +32,8 @@ export const DEFAULT_STOREFRONT_CONTENT = Object.freeze({
   },
   termsAndConditions: {
     title: "Terms & Conditions",
-    subtitle: "Aama Clothings — Customer Agreement & Policies",
-    notice: "By creating an account, browsing our store, or placing an order on Aama Clothings, you agree to be bound by the terms, conditions, and policies set forth below.",
+    subtitle: "Aashrit Corner — Customer Agreement & Policies",
+    notice: "By creating an account, browsing our store, or placing an order on Aashrit Corner, you agree to be bound by the terms, conditions, and policies set forth below.",
     conditions: [
       {
         title: "Account Registration & User Security",

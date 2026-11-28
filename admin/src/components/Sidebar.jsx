@@ -359,7 +359,7 @@ const Sidebar = ({ isOpen = false, onClose }) => {
             {Icon.catalog}
           </div>
           <div className="min-w-0 text-[11px] leading-tight">
-            <p className="truncate font-semibold text-ink-primary">Aama Clothings</p>
+            <p className="truncate font-semibold text-ink-primary">Aashrit Corner</p>
             <p className="text-[10px] text-ink-muted">Admin workspace</p>
           </div>
         </div>

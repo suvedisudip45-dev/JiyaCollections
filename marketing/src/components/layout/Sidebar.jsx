@@ -58,7 +58,7 @@ const SidebarContent = ({ onNavClick }) => {
           </div>
           <div>
             <p className="text-xs font-bold uppercase tracking-widest text-brand-600">Marketing</p>
-            <p className="text-[10px] text-[var(--mp-muted)] -mt-0.5">Aama Clothings</p>
+            <p className="text-[10px] text-[var(--mp-muted)] -mt-0.5">Aashrit Corner</p>
           </div>
         </div>
       </div>

@@ -1068,7 +1068,7 @@ const DirectOrders = () => {
             {/* Receipt Printable Canvas */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 font-mono text-xs">
               <div className="text-center border-b border-dashed border-slate-300 pb-2">
-                <p className="font-bold text-sm text-slate-900">{distributor?.name || "Aama Clothing Hub"}</p>
+                <p className="font-bold text-sm text-slate-900">{distributor?.name || "Aashrit Corner Hub"}</p>
                 <p className="text-[10px] text-slate-500">{distributor?.city}, Nepal • Phone: {distributor?.phone}</p>
                 <p className="text-[10px] text-slate-400 mt-1">
                   Receipt: #{activeReceiptOrder.id?.slice(-8).toUpperCase()} •{" "}
@@ -1107,7 +1107,7 @@ const DirectOrders = () => {
                 <span>{currency}{activeReceiptOrder.amount}</span>
               </div>
               <p className="text-[10px] text-center text-slate-400 italic">
-                Thank you for choosing Aama Clothings!
+                Thank you for choosing Aashrit Corner!
               </p>
             </div>
 

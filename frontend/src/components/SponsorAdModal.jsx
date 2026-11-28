@@ -37,7 +37,7 @@ export const SponsorAdModal = ({
                 Exclusive Partner Spotlight
               </p>
               <h3 className="text-sm font-black tracking-wide">
-                {partner.name || "Brand Partner"} × Aama Clothings
+                {partner.name || "Brand Partner"} × Aashrit Corner
               </h3>
             </div>
           </div>

@@ -267,11 +267,12 @@ async function main() {
     where: { email: partnerEmail },
     update: {
       accountId: partnerAccount.id,
+      name: "Aashrit Corner Marketing Partner",
     },
     create: {
       accountId: partnerAccount.id,
       code: "DEMO_PARTNER",
-      name: "Aama Marketing Partner",
+      name: "Aashrit Corner Marketing Partner",
       email: partnerEmail,
       passwordHash: hashedPartnerPassword,
       status: "ACTIVE",

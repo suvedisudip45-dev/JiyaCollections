@@ -348,6 +348,62 @@ const MarketingCards = ({ token }) => {
     REDEEMED: metrics?.redeemed || 0,
   };
 
+  const openCardPrintSheet = async (selectedCards) => {
+    if (!selectedCards.length) {
+      toast.info("No cards to print.");
+      return;
+    }
+
+    const cardsWithoutTokens = selectedCards.filter((card) => !card.qrToken);
+    let printableCards = selectedCards;
+    if (cardsWithoutTokens.length) {
+      const confirmed = window.confirm(
+        `QR tokens are not available for ${cardsWithoutTokens.length} selected card(s). Reissuing them will invalidate any previous QR prints. Scanned, reserved, and order-attached cards cannot be reissued. Continue?`
+      );
+      if (!confirmed) return;
+
+      setWorking(true);
+      try {
+        const response = await axios.post(
+          `${backendUrl}/api/marketing-cards/admin/cards/qr-tokens/reissue`,
+          { cardIds: cardsWithoutTokens.map((card) => card.id) },
+          { headers: { token } }
+        );
+        if (!response.data.success) throw new Error(response.data.message || "Unable to prepare QR codes.");
+
+        const tokensById = new Map((response.data.cards || []).map((card) => [card.id, card.qrToken]));
+        printableCards = selectedCards.map((card) => ({
+          ...card,
+          qrToken: card.qrToken || tokensById.get(card.id),
+        }));
+        if (printableCards.some((card) => !card.qrToken)) {
+          throw new Error("The server did not return a QR token for every selected card. Refresh and try again.");
+        }
+
+        setCards((currentCards) => currentCards.map((card) => (
+          tokensById.has(card.id) ? { ...card, qrToken: tokensById.get(card.id) } : card
+        )));
+        toast.success(response.data.message || "QR tokens prepared for printing.");
+      } catch (error) {
+        toast.error(error.response?.data?.message || error.message || "Unable to prepare QR codes.");
+        return;
+      } finally {
+        setWorking(false);
+      }
+    }
+
+    const firstCard = printableCards[0];
+    setPrintModalData({
+      isOpen: true,
+      batchCode: firstCard?.batch?.batchCode || "BATCH",
+      partnerName: firstCard?.campaign?.marketingPartner?.name || "Brand Partner",
+      campaignName: firstCard?.campaign?.name || "Campaign Cards",
+      campaignScope: firstCard?.campaign?.targetScopeType || "Nationwide",
+      cardExpiresAt: firstCard?.campaign?.cardExpiresAt || null,
+      cards: printableCards,
+    });
+  };
+
   // ── Tracker helpers ───────────────────────────────────────────────────────
   const selectableIds = cards.filter((c) => c.physicalStatus !== "CANCELLED").map((c) => c.id);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
@@ -624,23 +680,14 @@ const MarketingCards = ({ token }) => {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={working}
                 onClick={() => {
                   const toPrint = selected.size > 0 ? cards.filter((c) => selected.has(c.id)) : cards;
-                  if (!toPrint.length) return toast.info("No cards to print.");
-                  const fCard = toPrint[0];
-                  setPrintModalData({
-                    isOpen: true,
-                    batchCode: fCard?.batch?.batchCode || "BATCH",
-                    partnerName: fCard?.campaign?.marketingPartner?.name || "Brand Partner",
-                    campaignName: fCard?.campaign?.name || "Campaign Cards",
-                    campaignScope: fCard?.campaign?.targetScopeType || "Nationwide",
-                    cardExpiresAt: fCard?.campaign?.cardExpiresAt || null,
-                    cards: toPrint,
-                  });
+                  openCardPrintSheet(toPrint);
                 }}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 flex items-center gap-1.5 shadow-sm"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 flex items-center gap-1.5 shadow-sm disabled:opacity-50"
               >
-                🖨️ Print Sheet ({selected.size > 0 ? `${selected.size} Selected` : `${cards.length} Cards`})
+                🖨️ {working ? "Preparing QR Codes..." : `Print Sheet (${selected.size > 0 ? `${selected.size} Selected` : `${cards.length} Cards`})`}
               </button>
               {selected.size > 0 && (
                 <button
@@ -779,7 +826,7 @@ const MarketingCards = ({ token }) => {
                     <label className="text-[11px] font-bold uppercase text-slate-500">Select Campaign</label>
                     <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}>
                       <option value="">-- Choose Campaign --</option>
-                      {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Aama Own Store"})</option>)}
+                      {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Aashrit Corner"})</option>)}
                     </select>
                   </div>
                   {campaigns.length === 0 && (
@@ -816,7 +863,7 @@ const MarketingCards = ({ token }) => {
                       setPrintModalData({
                         isOpen: true,
                         batchCode: r.batch.batchCode,
-                        partnerName: selCampaign?.marketingPartner?.name || "Aama Own Store",
+                        partnerName: selCampaign?.marketingPartner?.name || "Aashrit Corner",
                         campaignName: selCampaign?.name || "Marketing Campaign",
                         campaignScope: selCampaign?.targetScopeType || "Nationwide",
                         cardExpiresAt: selCampaign?.cardExpiresAt || null,

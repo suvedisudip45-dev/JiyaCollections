@@ -156,7 +156,7 @@ const Performance = () => {
             </a>
           ) : (
             <div className="p-3 bg-slate-50 rounded-xl text-center text-xs text-slate-400">
-              Contract document on digital file with Aama Head Office
+              Contract document on digital file with Aashrit Corner Head Office
             </div>
           )}
         </div>
@@ -166,7 +166,7 @@ const Performance = () => {
       <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4">
         <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          Aama Clothings Brand Quality Standards
+          Aashrit Corner Brand Quality Standards
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
@@ -195,7 +195,7 @@ const Performance = () => {
             <div>
               <p className="font-bold text-slate-900">Brand Tagging &amp; Hologram</p>
               <p className="text-slate-500 text-[11px] mt-0.5">
-                Attach official Aama woven labels and authenticity swing tags prior to sealing the parcel.
+                Attach official Aashrit Corner woven labels and authenticity swing tags prior to sealing the parcel.
               </p>
             </div>
           </div>

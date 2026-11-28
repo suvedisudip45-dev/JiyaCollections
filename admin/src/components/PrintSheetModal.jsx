@@ -18,6 +18,7 @@ export const PrintSheetModal = ({
   const [layout, setLayout] = useState("GIFT_CARDS"); // GIFT_CARDS | STICKER_LABELS | SINGLE_PROOF
   const [inkSaver, setInkSaver] = useState(false);
   const [qrMap, setQrMap] = useState({});
+  const [qrError, setQrError] = useState("");
   const [generatingQr, setGeneratingQr] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -26,15 +27,21 @@ export const PrintSheetModal = ({
     if (!isOpen || !cards.length) return;
     let active = true;
     setGeneratingQr(true);
+    setQrError("");
 
     const generateQrs = async () => {
       const entries = {};
+      const missingCodes = [];
       for (const card of cards) {
         if (!active) break;
-        const payload = card.qrToken || "";
+        const key = card.id || card.cardCode || card.code || "";
+        if (!card.qrToken) {
+          missingCodes.push(card.cardCode || key);
+          continue;
+        }
 
         try {
-          const dataUrl = await QRCode.toDataURL(payload, {
+          const dataUrl = await QRCode.toDataURL(card.qrToken, {
             errorCorrectionLevel: "M",
             margin: 1,
             width: 250,
@@ -43,14 +50,20 @@ export const PrintSheetModal = ({
               light: "#ffffff",
             },
           });
-          entries[card.id || card.cardCode || card.code || ""] = dataUrl;
-        } catch {
-          entries[card.id || card.cardCode || card.code || ""] = "";
+          entries[key] = dataUrl;
+        } catch (error) {
+          console.error(`Unable to generate QR code for card ${card.cardCode || key}:`, error);
+          missingCodes.push(card.cardCode || key);
         }
       }
 
       if (active) {
         setQrMap(entries);
+        const codeSummary = missingCodes.slice(0, 5).join(", ");
+        const remainingCount = missingCodes.length - 5;
+        setQrError(missingCodes.length
+          ? `QR codes could not be generated for ${missingCodes.length} card(s): ${codeSummary}${remainingCount > 0 ? ` and ${remainingCount} more` : ""}. Reopen the print sheet to issue fresh tokens.`
+          : "");
         setGeneratingQr(false);
       }
     };
@@ -101,7 +114,7 @@ export const PrintSheetModal = ({
       pdf.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "S");
       pdf.setFont("helvetica", "bold");
       pdf.setFontSize(layout === "STICKER_LABELS" ? 7 : 8);
-      pdf.text("AAMA CLOTHINGS", x + cardWidth / 2, y + 6, { align: "center" });
+      pdf.text("AASHRIT CORNER", x + cardWidth / 2, y + 6, { align: "center" });
 
       if (qrData) {
         pdf.addImage(qrData, "PNG", x + (cardWidth - qrSize) / 2, y + 9, qrSize, qrSize);
@@ -115,7 +128,7 @@ export const PrintSheetModal = ({
       pdf.text(String(partnerName || ""), x + cardWidth / 2, y + cardHeight - 6, { align: "center", maxWidth: cardWidth - 6 });
     });
 
-    pdf.save(`Aama-Marketing-Cards-${batchCode}-${layout}.pdf`);
+    pdf.save(`Aashrit-Corner-Marketing-Cards-${batchCode}-${layout}.pdf`);
   };
 
   const handleDownloadExcel = () => {
@@ -155,7 +168,7 @@ export const PrintSheetModal = ({
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Marketing Cards");
-    XLSX.writeFile(workbook, `Aama-Marketing-Cards-${batchCode}.xlsx`);
+    XLSX.writeFile(workbook, `Aashrit-Corner-Marketing-Cards-${batchCode}.xlsx`);
   };
 
   return (
@@ -282,7 +295,7 @@ export const PrintSheetModal = ({
             <button
               type="button"
               onClick={handleDownloadPdf}
-              disabled={generatingQr}
+              disabled={generatingQr || Boolean(qrError)}
               className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
               title="Download an A4 PDF ready for printing"
             >
@@ -292,7 +305,7 @@ export const PrintSheetModal = ({
             <button
               type="button"
               onClick={handleDownloadExcel}
-              disabled={!filteredCards.length}
+              disabled={!filteredCards.length || Boolean(qrError)}
               className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
               title="Download card codes and metadata as an Excel file"
             >
@@ -388,6 +401,11 @@ export const PrintSheetModal = ({
               id="printable-card-sheet"
               className="mx-auto bg-white p-6 shadow-md rounded-xl border border-slate-200 max-w-[210mm] transition-all"
             >
+              {qrError && (
+                <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">
+                  {qrError}
+                </p>
+              )}
               {layout === "GIFT_CARDS" && (
                 <div className="grid grid-cols-2 gap-4">
                   {filteredCards.map((card) => {
@@ -406,7 +424,7 @@ export const PrintSheetModal = ({
                         <div>
                           <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                             <span className="text-[10px] font-black tracking-wider text-slate-900">
-                              AAMA CLOTHINGS
+                              AASHRIT CORNER
                             </span>
                             <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
                               × {partnerName}
@@ -427,7 +445,7 @@ export const PrintSheetModal = ({
                             />
                           ) : (
                             <div className="h-28 w-28 rounded-lg bg-slate-100 flex items-center justify-center text-xs text-slate-400">
-                              QR
+                              QR unavailable
                             </div>
                           )}
                         </div>
@@ -435,7 +453,7 @@ export const PrintSheetModal = ({
                         {/* Scratch-Off / Reveal Guide Box */}
                         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/80 px-2 py-1.5 text-center">
                           <p className="text-[8px] font-bold uppercase tracking-wider text-slate-500">
-                            Scan QR or Enter Code on Portal
+                            Scan QR on the Marketing Cards page
                           </p>
                           <p className="mt-0.5 font-mono text-xs font-black tracking-wider text-slate-900">
                             {card.cardCode}
@@ -501,7 +519,7 @@ export const PrintSheetModal = ({
                   <div className="flex items-center justify-between border-b border-slate-200 pb-3">
                     <div>
                       <h3 className="text-xs font-black tracking-wider text-slate-900 uppercase">
-                        Aama Clothings Customer Reward
+                        Aashrit Corner Customer Reward
                       </h3>
                       <p className="text-xs text-amber-700 font-bold mt-0.5">
                         Brand Partner: {partnerName}

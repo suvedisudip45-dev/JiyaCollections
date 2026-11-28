@@ -462,6 +462,93 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
   return created;
 };
 
+export const assertMarketingCardQrReissuable = (card) => {
+  if (!card || card.physicalStatus === "CANCELLED") {
+    const error = new Error("Cancelled cards cannot have their QR token reissued.");
+    error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+    throw error;
+  }
+  if (
+    ["RESERVED", "ATTACHED"].includes(card.physicalStatus) ||
+    card.exchangeLockRequestId ||
+    card.orderLink ||
+    card.customerLinks?.length
+  ) {
+    const error = new Error("This card has been scanned, reserved, or attached to an order and its QR token cannot be reissued.");
+    error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+    throw error;
+  }
+};
+
+export const regenerateMarketingCardQrTokens = async ({ cardIds, actorId }) => {
+  if (!Array.isArray(cardIds) || cardIds.length === 0) {
+    throw new Error("At least one card ID is required.");
+  }
+  if (cardIds.length > 500) {
+    throw new Error("Cannot reissue QR tokens for more than 500 cards at once.");
+  }
+  if (cardIds.some((cardId) => typeof cardId !== "string" || !cardId.trim())) {
+    throw new Error("Every card ID must be a non-empty string.");
+  }
+  const uniqueCardIds = [...new Set(cardIds)];
+  if (uniqueCardIds.length !== cardIds.length) {
+    throw new Error("Duplicate card IDs are not allowed.");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const cards = await tx.marketingCard.findMany({
+      where: { id: { in: uniqueCardIds } },
+      select: {
+        id: true,
+        cardCode: true,
+        qrTokenHash: true,
+        physicalStatus: true,
+        exchangeLockRequestId: true,
+        customerLinks: { take: 1, select: { id: true } },
+        orderLink: { select: { id: true } },
+      },
+    });
+    if (cards.length !== uniqueCardIds.length) {
+      throw new Error("One or more selected cards could not be found.");
+    }
+
+    const printableCards = [];
+    for (const card of cards) {
+      assertMarketingCardQrReissuable(card);
+      const qrToken = secureToken();
+      const updated = await tx.marketingCard.updateMany({
+        where: {
+          id: card.id,
+          qrTokenHash: card.qrTokenHash,
+          physicalStatus: card.physicalStatus,
+          exchangeLockRequestId: null,
+          customerLinks: { none: {} },
+          orderLink: null,
+        },
+        data: { qrTokenHash: hashToken(qrToken) },
+      });
+      if (updated.count !== 1) {
+        const error = new Error("Card state changed while preparing QR codes. Refresh the card list and try again.");
+        error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+        throw error;
+      }
+
+      await addEvent(tx, {
+        cardId: card.id,
+        eventType: "CARD_QR_TOKEN_REISSUED",
+        actorId,
+        actorRole: "ADMIN",
+        fromStatus: card.physicalStatus,
+        toStatus: card.physicalStatus,
+        metadata: { reason: "ADMIN_PRINT_REISSUE" },
+      });
+      printableCards.push({ id: card.id, cardCode: card.cardCode, qrToken });
+    }
+
+    return { cards: printableCards };
+  }, { isolationLevel: "Serializable" });
+};
+
 export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, distributorId, status, page = 1, pageSize = 50, search } = {}) => {
   await expireCampaignCards();
   const where = {

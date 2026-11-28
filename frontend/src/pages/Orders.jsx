@@ -1560,7 +1560,7 @@ const Orders = () => {
               {/* Brand & Invoice Details */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200">
                 <div>
-                  <h2 className="text-2xl font-black tracking-tight text-slate-900">Aama Clothings</h2>
+                  <h2 className="text-2xl font-black tracking-tight text-slate-900">Aashrit Corner</h2>
                   <p className="text-xs text-slate-500">Premium Apparel & Sustainable Nepalese Fashion</p>
                   <p className="text-[11px] text-slate-400 mt-1">Kathmandu, Nepal | support@aamaclothings.com</p>
                 </div>
@@ -1653,7 +1653,7 @@ const Orders = () => {
               {/* Financial Calculation */}
               <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div className="text-[11px] text-slate-500 max-w-xs">
-                  <p>Thank you for choosing Aama Clothings.</p>
+                  <p>Thank you for choosing Aashrit Corner.</p>
                   <p>All items covered under our 7-day hassle-free return and exchange policy.</p>
                 </div>
 
