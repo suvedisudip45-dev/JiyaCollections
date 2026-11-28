@@ -4,7 +4,6 @@ import { toast } from "react-toastify";
 import {
   CreditCard,
   Gift,
-  LockKeyhole,
   RefreshCw,
   Camera,
   CameraOff,
@@ -32,7 +31,6 @@ const MarketingCards = () => {
 
   // Verification step state
   const [step, setStep] = useState(1); // 1: Scan QR, 2: Reveal offer
-  const [qrToken, setQrToken] = useState("");
   const [scannedOfferResult, setScannedOfferResult] = useState(null); // { hasBenefit, benefit, partner, message }
   const canClaimScannedReward = Boolean(
     scannedOfferResult?.campaign?.isOwnStore &&
@@ -91,7 +89,6 @@ const MarketingCards = () => {
         setIsScratchRevealed(false);
         setStep(2);
         setScannerOpen(false);
-        setQrToken("");
         setScannerError("");
         if (result.ad) setSponsorAdOpen(true);
         toast.success(result.message || "Card validated. Scratch to reveal your reward.");
@@ -129,11 +126,6 @@ const MarketingCards = () => {
     }
   };
 
-  const handleManualQrSubmit = (event) => {
-    event.preventDefault();
-    submitQrToken(qrToken);
-  };
-
   // Step 3: Activate Card (Customer cannot self-redeem, they activate to claim at store)
   const handleActivateCard = async () => {
     if (!scannedOfferResult?.cardId) return;
@@ -149,7 +141,6 @@ const MarketingCards = () => {
       toast.success("Card activated! Bring your physical card to the partner store to claim.");
       // Reset form & reload cards
       setStep(1);
-      setQrToken("");
       setScannedOfferResult(null);
       await loadCards();
     } catch (error) {
@@ -180,7 +171,6 @@ const MarketingCards = () => {
 
   const handleResetVerification = () => {
     setStep(1);
-    setQrToken("");
     setScannedOfferResult(null);
     setScannerOpen(false);
     setScannerError("");
@@ -196,7 +186,7 @@ const MarketingCards = () => {
 
     const startScanner = async () => {
       if (!navigator.mediaDevices?.getUserMedia || !("BarcodeDetector" in window)) {
-        setScannerError("Camera QR scanning is not supported in this browser. Paste the QR token below instead.");
+        setScannerError("QR scanning is not supported in this browser. Try a current browser with camera scanning enabled.");
         return;
       }
       try {
@@ -220,7 +210,6 @@ const MarketingCards = () => {
             const results = await detector.detect(videoElement);
             const value = results.find((result) => result.rawValue)?.rawValue;
             if (value) {
-              setQrToken(value);
               await submitQrToken(value);
               return;
             }
@@ -231,7 +220,7 @@ const MarketingCards = () => {
         };
         scan();
       } catch {
-        setScannerError("Camera access was unavailable. Allow camera permissions or paste the QR token below.");
+        setScannerError("Camera access was unavailable. Allow camera permission and try again.");
       }
     };
 
@@ -320,8 +309,8 @@ const MarketingCards = () => {
                 </p>
               </div>
             </div>
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[var(--line)] bg-white p-6 text-center">
+            <div className="grid gap-6">
+              <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[var(--line)] bg-white p-6 text-center">
                 {scannerOpen ? (
                   <div className="w-full space-y-3">
                     <div className="relative aspect-video max-h-52 w-full overflow-hidden rounded-xl bg-black border-2 border-slate-800">
@@ -366,36 +355,6 @@ const MarketingCards = () => {
                 )}
               </div>
 
-              {/* Manual QR Token Form */}
-              <form onSubmit={handleManualQrSubmit} className="flex flex-col justify-between rounded-2xl border border-[var(--line)] bg-white p-6 space-y-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <LockKeyhole size={18} className="text-slate-700" />
-                    <h4 className="text-sm font-bold text-[var(--ink)]">Manual QR Token Entry</h4>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    If camera scanning is unavailable, paste the token encoded in the card QR code.
-                  </p>
-                </div>
-
-                <div className="space-y-3">
-                  <input
-                    value={qrToken}
-                    onChange={(event) => setQrToken(event.target.value)}
-                    placeholder="Paste 64-char QR token"
-                    className="w-full rounded-xl border border-[var(--line)] bg-slate-50 px-4 py-3 font-mono text-xs outline-none focus:border-[var(--ink)] focus:bg-white"
-                    maxLength={64}
-                    required
-                  />
-                  <button
-                    type="submit"
-                    disabled={working || !qrToken.trim()}
-                    className="w-full rounded-xl border border-[var(--ink)] py-3 text-xs font-bold uppercase tracking-wider text-[var(--ink)] hover:bg-slate-50 disabled:opacity-50 transition"
-                  >
-                    {working ? "Checking card..." : "Check QR Code"}
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         )}

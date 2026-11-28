@@ -14,11 +14,9 @@ export const PrintSheetModal = ({
   campaignScope = "Nationwide",
   cardExpiresAt = null,
   cards = [],
-  frontendUrl = window.location.origin.replace(":5174", ":5173"),
 }) => {
   const [layout, setLayout] = useState("GIFT_CARDS"); // GIFT_CARDS | STICKER_LABELS | SINGLE_PROOF
   const [inkSaver, setInkSaver] = useState(false);
-  const [qrPayloadType] = useState("URL"); // URL | CODE | TOKEN
   const [qrMap, setQrMap] = useState({});
   const [generatingQr, setGeneratingQr] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -33,15 +31,7 @@ export const PrintSheetModal = ({
       const entries = {};
       for (const card of cards) {
         if (!active) break;
-        const code = card.cardCode || card.code || "";
-        const token = card.qrToken || code;
-        
-        let payload = code;
-        if (qrPayloadType === "URL") {
-          payload = `${frontendUrl}/marketing-cards?code=${encodeURIComponent(code)}`;
-        } else if (qrPayloadType === "TOKEN") {
-          payload = token;
-        }
+        const payload = card.qrToken || "";
 
         try {
           const dataUrl = await QRCode.toDataURL(payload, {
@@ -53,9 +43,9 @@ export const PrintSheetModal = ({
               light: "#ffffff",
             },
           });
-          entries[card.id || code] = dataUrl;
+          entries[card.id || card.cardCode || card.code || ""] = dataUrl;
         } catch {
-          entries[card.id || code] = "";
+          entries[card.id || card.cardCode || card.code || ""] = "";
         }
       }
 
@@ -69,7 +59,7 @@ export const PrintSheetModal = ({
     return () => {
       active = false;
     };
-  }, [isOpen, cards, qrPayloadType, frontendUrl]);
+  }, [isOpen, cards]);
 
   const filteredCards = useMemo(() => {
     if (!searchTerm.trim()) return cards;
@@ -131,18 +121,13 @@ export const PrintSheetModal = ({
   const handleDownloadExcel = () => {
     const rows = filteredCards.map((card, index) => {
       const code = card.cardCode || card.code || "";
-      const token = card.qrToken || code;
-      const qrPayload = qrPayloadType === "URL"
-        ? `${frontendUrl}/marketing-cards?code=${encodeURIComponent(code)}`
-        : qrPayloadType === "TOKEN"
-          ? token
-          : code;
+      const token = card.qrToken || "";
 
       return {
         "S.N.": index + 1,
         "Card Code": code,
         "QR Token": token,
-        "QR Payload": qrPayload,
+        "QR Payload": token,
         "Card ID": card.id || "",
         "Batch Code": batchCode,
         "Partner": partnerName,

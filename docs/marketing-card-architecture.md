@@ -17,7 +17,9 @@ store operation was inspected.
   through the backend marketing-card routes and the Admin/marketing portals.
 - A card has a unique internal ID and unique visible `cardCode`; its QR token is
   stored as a unique hash. Raw QR tokens are not stored in card lifecycle
-  records.
+  records. Printed card QR codes encode the raw QR token so the customer
+  scanner can validate it; a public card code or marketing-page URL is not a
+  valid substitute.
 - Cards can be assigned to a partner or distributor, received into inventory,
   reserved, attached to an order, and cancelled. Assignment, attachment, and
   customer-link uniqueness are enforced by database constraints and service

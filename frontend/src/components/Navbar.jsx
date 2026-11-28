@@ -211,6 +211,11 @@ const Navbar = () => {
           <Link onClick={() => setVisible(false)} to="/wishlist" className="min-h-14 border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
             Wishlist
           </Link>
+          {token && platformFeatures?.marketingCardsEnabled && (
+            <Link onClick={() => setVisible(false)} to="/marketing-cards" className="min-h-14 border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+              Marketing Cards
+            </Link>
+          )}
         </div>
 
         <Link onClick={() => setVisible(false)} to="/shop" className="group relative block aspect-[4/5] overflow-hidden bg-[var(--stone)]">
