@@ -26,6 +26,7 @@ export const serializeSessionProfile = (account, activeRole = account.role) => {
     availableWorkspaces: account.availableWorkspaces || [],
     status: account.status,
     mustChangePassword: Boolean(account.mustChangePassword),
+    profileImageUrl: account.profileImageUrl || null,
   };
   const sourceProfile = activeRole === "ADMIN"
     ? account.adminProfile

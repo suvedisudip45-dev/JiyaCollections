@@ -25,7 +25,7 @@ The planned first release is basic website and manually entered social-media cus
 | Frontend | React 18.3.1 + Vite 5, React Router 6/7, Tailwind CSS 3 |
 | Manufacturer portal | React 19.2.8 + Vite 8 + Tailwind |
 | API auth | JWT access/refresh tokens; custom RBAC enforcement; privileged-portal MFA controlled by backend `MFA_ENABLED` (enabled by default) |
-| Storage | Cloudinary integration for product/media/contract uploads |
+| Storage | Cloudinary integration for product/media/contract uploads and account profile images |
 | Payments | First production release is COD only. No bank/debit/credit-card gateway, processor, card-token, PCI-processing, or payment-provider callback path is included |
 | Email / SMS / notifications | SMTP + Sparrow SMS primitives and a notification worker, but production enablement is still gated |
 | Delivery integration | Nepal Can Move APIs and webhook handlers |
@@ -40,6 +40,7 @@ The planned first release is basic website and manually entered social-media cus
 - Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
 - Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shared shipment-rate tiers with optional corridor overrides, access control, and exchange/return reconciliation.
 - Admin, Manufacturer, and Distributor portals have a separate account- and active-workspace-scoped notification inbox for operational requests and updates; Marketing Partner notifications are not included.
+- Admin, Manufacturer, and Distributor navigation includes a top-right account menu with shared profile-image upload; Manufacturer and Distributor users can access Pickup setup and switch available workspaces from that menu.
 - Admin manufacturer management includes a dedicated, permission-scoped detail page for profile, factory ledger inventory, production costs/QA, distributor transfers, finance, journal transactions, and payable requests, while reusing existing paginated operational APIs where possible.
 - Admin-only Platform Feature Settings control customer loyalty, marketing cards, and letters across the storefront, partner, and distributor workflows. Newly initialized databases seed these optional features as disabled; admins can enable them without deleting existing loyalty or letter progress.
 - Admins with `platform:features_manage` can edit the customer storefront announcement bar, shared header/footer logo, policy/benefit cards and images, footer description/contact details, the About page, and the ordered Terms & Conditions shown during sign-up. Customer sign-up and social-profile activation persist an immutable acceptance event with the exact terms snapshot, SHA-256 version, server timestamp, source, IP, and user agent.

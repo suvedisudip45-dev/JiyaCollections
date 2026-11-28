@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
@@ -23,11 +23,19 @@ import {
 } from "lucide-react";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 
-const Sidebar = () => {
+const Sidebar = ({ isOpen = false, onClose }) => {
   const { stats, availableWorkspaces, manufacturer, distributor, driver, activeWorkspace, token, platformFeatures } = useManufacturer();
+  const location = useLocation();
   const [applying, setApplying] = useState(false);
   const [pendingPreparationCount, setPendingPreparationCount] = useState(0);
   const previousPreparationCount = useRef(null);
+  const sidebarClassName = `fixed left-0 top-[65px] z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col border-r border-[#dedbd3] bg-white shadow-xl transition-transform duration-200 lg:sticky lg:top-[65px] lg:z-auto lg:w-64 lg:max-w-none lg:translate-x-0 lg:shadow-none ${
+    isOpen ? "translate-x-0" : "-translate-x-full"
+  }`;
+
+  useEffect(() => {
+    onClose?.();
+  }, [location.pathname, onClose]);
 
   useEffect(() => {
     if (activeWorkspace !== "MANUFACTURER" || !token) {
@@ -93,7 +101,7 @@ const Sidebar = () => {
   };
 
   const navLinkStyle = ({ isActive }) =>
-    `flex w-max shrink-0 items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-medium transition-all lg:w-full lg:shrink ${
+    `flex w-full items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-medium transition-all ${
       isActive
         ? "bg-[#171717] text-white shadow-xs font-semibold"
         : "text-[#575757] hover:text-[#171717] hover:bg-[#f8f7f4]"
@@ -103,25 +111,44 @@ const Sidebar = () => {
 
   if (activeWorkspace === "DRIVER") {
     return (
-      <aside className="w-full shrink-0 border-b border-[#dedbd3] bg-white p-2 lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
-        <p className="mb-2 hidden px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757] lg:block">Driver Workspace</p>
-        <nav aria-label="Driver navigation" className="flex min-w-0 gap-1.5 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible">
-          <NavLink to="/driver" className={navLinkStyle} end>
-            <span className="flex items-center gap-3"><ClipboardCheck className="h-4 w-4 text-emerald-600" />Assigned Deliveries</span>
-          </NavLink>
-        </nav>
-        <p className="mt-4 hidden truncate border-t border-[#dedbd3] px-3 pt-3 text-xs text-[#575757] lg:block">{driver?.name || "Driver"}</p>
-      </aside>
+      <>
+        {isOpen && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close navigation menu"
+            className="fixed inset-x-0 bottom-0 top-[65px] z-40 bg-slate-950/30 lg:hidden"
+          />
+        )}
+        <aside className={`${sidebarClassName} h-[calc(100vh-65px)] p-2 lg:p-4`} aria-label="Driver navigation">
+          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757]">Driver Workspace</p>
+          <nav className="min-w-0 space-y-1" onClick={onClose}>
+            <NavLink to="/driver" className={navLinkStyle} end>
+              <span className="flex items-center gap-3"><ClipboardCheck className="h-4 w-4 text-emerald-600" />Assigned Deliveries</span>
+            </NavLink>
+          </nav>
+          <p className="mt-4 truncate border-t border-[#dedbd3] px-3 pt-3 text-xs text-[#575757]">{driver?.name || "Driver"}</p>
+        </aside>
+      </>
     );
   }
 
   // ── DISTRIBUTOR VIEW ─────────────────────────────────────────
   if (activeWorkspace === "DISTRIBUTOR") {
     return (
-      <aside className="flex w-full shrink-0 flex-col justify-between border-b border-[#dedbd3] bg-white p-2 select-none lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
-        <div className="min-w-0 lg:max-h-[calc(100vh-140px)] lg:space-y-6 lg:overflow-y-auto lg:pr-1">
+      <>
+        {isOpen && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close navigation menu"
+            className="fixed inset-x-0 bottom-0 top-[65px] z-40 bg-slate-950/30 lg:hidden"
+          />
+        )}
+        <aside className={`${sidebarClassName} h-[calc(100vh-65px)] justify-between p-2 select-none lg:p-4`} aria-label="Distributor navigation">
+        <div className="min-w-0 max-h-[calc(100vh-140px)] space-y-6 overflow-y-auto pr-1">
           <div>
-            <div className="mb-1 hidden items-center justify-between px-3 lg:flex">
+            <div className="mb-1 flex items-center justify-between px-3">
               <p className="text-[10px] font-bold uppercase tracking-wider text-[#171717]">
                 Distributor Hub
               </p>
@@ -129,7 +156,7 @@ const Sidebar = () => {
                 ACTIVE
               </span>
             </div>
-            <nav aria-label="Distributor navigation" className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 lg:block lg:space-y-1 lg:overflow-visible">
+            <nav className="min-w-0 space-y-1" onClick={onClose}>
               <NavLink to="/distributor" className={navLinkStyle} end>
                 <div className="flex items-center gap-3">
                   <Building className="w-4 h-4 text-emerald-600" />
@@ -226,13 +253,6 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
-              <NavLink to="/pickup-profile" className={navLinkStyle}>
-                <div className="flex items-center gap-3">
-                  <MapPin className="w-4 h-4 text-emerald-600" />
-                  <span>Pickup Setup</span>
-                </div>
-              </NavLink>
-
               {platformFeatures?.marketingCardsEnabled && <NavLink to="/marketing-cards" className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <CreditCard className="w-4 h-4 text-emerald-600" />
@@ -271,19 +291,29 @@ const Sidebar = () => {
             </div>
           </div>
         </div>
-      </aside>
+        </aside>
+      </>
     );
   }
 
   // ── MANUFACTURER VIEW ────────────────────────────────────────
   return (
-    <aside className="flex w-full shrink-0 flex-col justify-between border-b border-[#dedbd3] bg-white p-2 select-none lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
-      <div className="min-w-0 lg:max-h-[calc(100vh-140px)] lg:space-y-6 lg:overflow-y-auto lg:pr-1">
+    <>
+      {isOpen && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close navigation menu"
+          className="fixed inset-x-0 bottom-0 top-[65px] z-40 bg-slate-950/30 lg:hidden"
+        />
+      )}
+      <aside className={`${sidebarClassName} h-[calc(100vh-65px)] justify-between p-2 select-none lg:p-4`} aria-label="Manufacturer navigation">
+      <div className="min-w-0 max-h-[calc(100vh-140px)] space-y-6 overflow-y-auto pr-1">
         <div>
-          <p className="mb-2 hidden px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757] lg:block">
+          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757]">
             Manufacturer Portal (Factory)
           </p>
-          <nav aria-label="Manufacturer navigation" className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 lg:block lg:space-y-1 lg:overflow-visible">
+          <nav className="min-w-0 space-y-1" onClick={onClose}>
             <NavLink to="/" className={navLinkStyle} end>
               <div className="flex items-center gap-3">
                 <LayoutDashboard className="w-4 h-4" />
@@ -308,13 +338,6 @@ const Sidebar = () => {
                   {pendingPreparationCount}
                 </span>
               )}
-            </NavLink>
-
-            <NavLink to="/pickup-profile" className={navLinkStyle}>
-              <div className="flex items-center gap-3">
-                <MapPin className="w-4 h-4" />
-                <span>Pickup Setup</span>
-              </div>
             </NavLink>
 
             <NavLink to="/performance" className={navLinkStyle}>
@@ -365,7 +388,8 @@ const Sidebar = () => {
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
 

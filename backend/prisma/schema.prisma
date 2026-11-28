@@ -24,9 +24,11 @@ model AuthAccount {
   lastLoginAt                  DateTime?
   lastLoginIp                  String?   @db.VarChar(64)
 
-  isEmailVerified    Boolean @default(false)
-  isPhoneVerified    Boolean @default(false)
-  mustChangePassword Boolean @default(false)
+  isEmailVerified      Boolean @default(false)
+  isPhoneVerified      Boolean @default(false)
+  mustChangePassword   Boolean @default(false)
+  profileImageUrl      String?  @db.VarChar(512)
+  profileImagePublicId String? @db.VarChar(255)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

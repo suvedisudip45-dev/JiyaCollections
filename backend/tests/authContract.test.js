@@ -205,6 +205,7 @@ test("session profile serialization excludes password hashes and unrelated porta
     phone: "9800000000",
     role: "ADMIN",
     status: "ACTIVE",
+    profileImageUrl: "https://images.example/admin.webp",
     passwordHash: "account-hash",
     adminProfile: { id: "admin-1", email: "admin@example.com", phone: "9800000000", password: "legacy-hash" },
     customerProfile: { id: "customer-1", password: "unrelated-hash" },
@@ -213,6 +214,7 @@ test("session profile serialization excludes password hashes and unrelated porta
   });
   const serialized = JSON.stringify(adminResponse);
   assert.equal(serialized.includes("hash"), false);
+  assert.equal(adminResponse.account.profileImageUrl, "https://images.example/admin.webp");
   assert.equal(Object.hasOwn(adminResponse, "user"), false);
   assert.equal(Object.hasOwn(adminResponse, "manufacturer"), false);
   assert.equal(Object.hasOwn(adminResponse, "partner"), false);

@@ -18,7 +18,12 @@ import {
   verifyPasswordResetOtp,
   resetPasswordWithTfaToken,
 } from "../controllers/authController.js";
+import {
+  requireProfileImageWorkspace,
+  updateAccountProfileImage,
+} from "../controllers/accountProfileController.js";
 import { authenticate } from "../middleware/unifiedAuth.js";
+import { secureProfileImageUpload } from "../middleware/secureUpload.js";
 import {
   loginRateLimit,
   resetLoginRateLimitOnSuccess,
@@ -50,6 +55,13 @@ authRouter.post("/otp/verify", verifyOtp);
 
 // Authenticated Account Endpoints
 authRouter.get("/me", authenticate, getMe);
+authRouter.post(
+  "/profile-image",
+  authenticate,
+  requireProfileImageWorkspace,
+  ...secureProfileImageUpload,
+  updateAccountProfileImage,
+);
 authRouter.post("/change-password", authenticate, changePassword);
 
 export default authRouter;

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -46,6 +46,8 @@ const PortalLoader = () => (
 
 const MainLayout = () => {
   const { token, loading, manufacturer, distributor, driver, activeWorkspace, platformFeatures } = useManufacturer();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   if (loading) {
     return <PortalLoader />;
@@ -62,9 +64,9 @@ const MainLayout = () => {
 
   return (
     <div className="min-h-screen bg-[#f8f7f4] flex flex-col font-sans">
-      <Navbar />
+      <Navbar onToggleSidebar={() => setSidebarOpen((open) => !open)} />
       <div className="flex min-w-0 flex-1 flex-col lg:flex-row">
-        <Sidebar />
+        <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
         <main className="w-full min-w-0 flex-1 overflow-x-hidden p-3 sm:p-5 lg:p-8">
           <div className="mx-auto w-full max-w-7xl">
             <Breadcrumbs />

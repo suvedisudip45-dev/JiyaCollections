@@ -154,7 +154,10 @@ const App = () => {
         }
         if (active) {
           sessionValidated.current = true;
-          setSessionAccount(response.data.account);
+          setSessionAccount({
+            ...response.data.account,
+            profile: response.data.profile || null,
+          });
           setPermissions(response.data.account.permissions || []);
           setPasswordChangeRequired(Boolean(response.data.account.mustChangePassword));
         }
@@ -189,7 +192,14 @@ const App = () => {
       <Login setToken={setToken} />
     ) : (
       <PermissionsProvider account={sessionAccount} permissions={permissions}>
-        <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
+        <Navbar
+          token={token}
+          setToken={setToken}
+          onProfileImageUpdated={(profileImageUrl) => {
+            setSessionAccount((account) => account ? { ...account, profileImageUrl } : account);
+          }}
+          onToggleSidebar={() => setSidebarOpen((open) => !open)}
+        />
         {passwordChangeRequired ? (
           <main className="min-h-[calc(100vh-65px)] p-4 sm:p-6 lg:p-8">
             <div className="max-w-7xl mx-auto">

@@ -24,6 +24,7 @@ export const ManufacturerProvider = ({ children }) => {
   const [token, setToken] = useState(() => getAccessToken());
   const [platformFeatures, setPlatformFeatures] = useState(null);
   const [companyContact, setCompanyContact] = useState({ email: "", phone: "" });
+  const [account, setAccount] = useState(null);
   const [manufacturer, setManufacturer] = useState(null);    // active manufacturer profile (null if distributor-only view)
   const [distributor, setDistributor] = useState(null);      // active distributor profile (null if manufacturer-only view)
   const [driver, setDriver] = useState(null);
@@ -72,6 +73,7 @@ export const ManufacturerProvider = ({ children }) => {
   const logout = async () => {
     await revokeAuthSession(backendUrl);
     setToken("");
+    setAccount(null);
     setManufacturer(null);
     setDistributor(null);
     setDriver(null);
@@ -86,6 +88,7 @@ export const ManufacturerProvider = ({ children }) => {
 
   const fetchProfile = useCallback(async () => {
     if (!token) {
+      setAccount(null);
       setLoading(false);
       return;
     }
@@ -97,6 +100,10 @@ export const ManufacturerProvider = ({ children }) => {
       if (!sessionResponse.data?.success || !["MANUFACTURER", "DISTRIBUTOR", "DRIVER"].includes(role)) {
         throw new Error("An active manufacturer, distributor, or driver workspace is required.");
       }
+      setAccount({
+        ...sessionResponse.data.account,
+        profile: sessionResponse.data.profile || null,
+      });
       setActiveWorkspace(role);
       const allRoles = sessionResponse.data.account.roles || [];
       setAvailableWorkspaces(allRoles);
@@ -167,6 +174,7 @@ export const ManufacturerProvider = ({ children }) => {
       }
       clearAuthTokens();
       setToken("");
+      setAccount(null);
       setManufacturer(null);
       setDistributor(null);
       setDriver(null);
@@ -186,8 +194,10 @@ export const ManufacturerProvider = ({ children }) => {
       storeAuthTokens(response.data);
       setActiveWorkspace(targetRole);
       toast.success(`Switched to ${targetRole === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} view.`);
+      return true;
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "Workspace could not be changed.");
+      return false;
     }
   }, [activeWorkspace, setActiveWorkspace]);
 
@@ -235,6 +245,7 @@ export const ManufacturerProvider = ({ children }) => {
       fetchProfile();
     } else {
       clearAuthTokens();
+      setAccount(null);
       setLoading(false);
     }
   }, [token, fetchProfile]);
@@ -251,6 +262,8 @@ export const ManufacturerProvider = ({ children }) => {
       value={{
         token,
         setToken,
+        account,
+        setAccount,
         manufacturer,
         setManufacturer,
         distributor,

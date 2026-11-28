@@ -90,6 +90,13 @@ Admin fan-out resolves active Admin role mappings server-side. The inbox does
 not reuse outbound SMS/email notification payloads and does not expose
 notification content through the customer or Marketing Partner portals.
 
+`POST /api/auth/profile-image` authenticates first, allows only active Admin,
+Manufacturer, or Distributor workspaces, and always updates the account in
+`req.auth`; clients cannot select another account. A single JPEG, PNG, or WebP
+upload is limited to 10 MB and checked by MIME type and image signature before
+Cloudinary storage. The database retains the URL and Cloudinary asset ID; failed
+database writes trigger cleanup of the newly uploaded asset.
+
 The `all:function` permission is a server-side authorization bypass and must remain excluded from ordinary Admin roles. Generic journal reversal is limited to reasoned, authenticated reversals of `MANUAL_JOURNAL` entries, with the reversal posting, original status update, and audit-outbox event in one transaction. Source-backed payment/accounting journals must be corrected by their originating business workflow so operational cash, Treasury, settlement, and subledger records are not left out of sync.
 
 Payable/receivable corrections and NCM remittance-batch corrections are source-aware workflows, not generic journal edits. They require an authenticated Admin, a correction mode, a reason, and an external evidence reference; their source balances, treasury movements, journals, linked accounting-document allocations, and audit records are updated atomically. Marketing CPA payout correction is restricted to the selected settled payout with verified returned-funds evidence; it restores the bill and Treasury, records a reversal allocation, reverses the payout journal, and marks the payout reversed. It cannot void a confirmed transfer or proceed while another CPA payout is initiated. NCM corrections also restore captured delivery settlement states, cancel the batch-only fee/suspense documents, retain reversed resolution history, and allow a corrected delivery to be settled again. Historical NCM batches without a captured prior delivery state fail closed for manual reconciliation.

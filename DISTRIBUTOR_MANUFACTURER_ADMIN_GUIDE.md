@@ -1142,6 +1142,7 @@ story/template delivery records.
 - Admin, Manufacturer, and Distributor users see a bell in the top navigation with a periodically refreshed unread count.
 - Notifications are scoped by authenticated account and active workspace role. The inbox loads newest-first in batches of ten while scrolling, uses a light-blue background for unread entries, and marks an entry read when opened.
 - Supported events include customer order assignments/cancellations, return and exchange requests, stock-transfer requests/reviews/receipts, manufacturer production requests/reviews, onboarding decisions, and manufacturer/distributor settlement updates. Marketing Partner and Driver inboxes are not included.
+- Manufacturer and Distributor users can open the account menu beside the notification bell to update their shared account avatar, open Pickup setup, switch available workspaces, and log out.
 
 ### Dynamic Navigation & Role Switcher
 - **Single-Dashboard Dual-Role Switcher (`manufacturer/src/components/Sidebar.jsx` & `Navbar.jsx`)**:

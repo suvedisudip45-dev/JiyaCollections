@@ -45,7 +45,7 @@ The Admin Customers screen shows aggregate customer analytics without loading cu
 
 All four portals use a bounded in-memory cache for JSON GET responses only (10-second TTL, 100 entries maximum). Keys are scoped by request URL, query parameters, access token and, in the manufacturer portal, active workspace. Successful mutations and auth token changes clear cached responses. Binary downloads bypass this cache. It is browser-memory only, is not shared across tabs/devices, and is intentionally short-lived.
 
-The Manufacturer/Distributor portal uses a desktop side navigation and a horizontally scrollable navigation strip on mobile and tablet widths. Operational tables remain horizontally scrollable where their columns cannot safely collapse, with touch scrolling enabled. Sign-in MFA, password-recovery, and distributor COD-delivery codes use individual digit boxes while retaining a single accessible numeric input for typing, paste, and operating-system one-time-code autofill. Manufacturer and distributor route screens load on demand to keep the initial mobile download smaller; their JSON GET cache remains short-lived and browser-memory-only.
+The Manufacturer/Distributor portal uses a desktop side navigation and an Admin-style slide-out navigation drawer on mobile and tablet widths. Pickup setup is available from the account profile menu rather than duplicated in the sidebar. Operational tables remain horizontally scrollable where their columns cannot safely collapse, with touch scrolling enabled. Sign-in MFA, password-recovery, and distributor COD-delivery codes use individual digit boxes while retaining a single accessible numeric input for typing, paste, and operating-system one-time-code autofill. Manufacturer and distributor route screens load on demand to keep the initial mobile download smaller; their JSON GET cache remains short-lived and browser-memory-only.
 
 Location-entry forms across the storefront, Admin, and Manufacturer/Distributor portals load province and district choices from `GET /api/lookups/nepal`; active NCM branches and covered areas are also database-backed for workflows that need carrier coverage selection. The API and each portal reuse successful lookup responses for ten minutes. Customer checkout and Admin direct/social order creation use a required free-text street/neighborhood field with a separate NCM branch selector; manufacturer/distributor workflows retain covered-area selectors where operationally required. Lookup failures are shown in affected location selectors rather than silently allowing stale or empty options to appear valid.
 
@@ -243,6 +243,9 @@ The top navigation includes a notification bell backed by `/api/portal-notificat
 It polls the unread count, loads newest-first batches of ten as the user scrolls,
 and marks a notification read when opened. Admin inbox entries are account-scoped;
 the notification service fans Admin events out only to active Admin accounts.
+The top-right account menu shows the signed-in Admin and profile image, supports
+image updates, and contains logout; the notification bell sits immediately to
+its left.
 
 ### Admin routes and modules
 
@@ -362,6 +365,10 @@ loads newest-first batches of ten on scroll; clicking an item marks it read.
 Switching workspaces clears and reloads the inbox so notifications remain
 separated by account and active role. The restricted Driver workspace and
 Marketing Partner portal do not use this inbox.
+The account avatar menu is aligned at the top-right with the bell immediately
+to its left. Manufacturer and Distributor users can update the account image,
+open Pickup setup, switch between available workspaces, request Distributor
+access when eligible, or log out from this menu.
 
 | Route | Purpose |
 | --- | --- |

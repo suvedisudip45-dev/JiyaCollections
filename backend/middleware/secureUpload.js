@@ -281,9 +281,33 @@ const secureEvidenceUpload = (fieldName = "evidence") => [
   verifyMagicBytes,
 ];
 
+const secureProfileImageUpload = [
+  (req, res, next) => {
+    multerUpload.single("image")(req, res, (error) => {
+      if (!error) return next();
+      if (error.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          success: false,
+          message: "Profile images must be 10 MB or smaller.",
+          code: "PROFILE_IMAGE_TOO_LARGE",
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: error.code === "INVALID_FILE_TYPE"
+          ? error.message
+          : "Profile image upload failed.",
+        code: "INVALID_PROFILE_IMAGE",
+      });
+    });
+  },
+  verifyMagicBytes,
+];
+
 export {
   secureProductUpload,
   secureEvidenceUpload,
+  secureProfileImageUpload,
   verifyMagicBytes,
   sanitizeFilename,
   ALLOWED_MIME_TYPES,

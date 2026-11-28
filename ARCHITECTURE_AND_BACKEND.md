@@ -75,7 +75,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 
 | Prefix | Domain |
 | --- | --- |
-| `/api/auth` | Login, refresh, MFA, OTP, password recovery, logout |
+| `/api/auth` | Login, refresh, MFA, OTP, password recovery, logout, authenticated profile-image upload |
 | `/api/admin/access` | Access management and RBAC control |
 | `/api/admin/accounting` | Permission-protected stock-transfer reconciliation JSON/CSV reader; bounded page, read-only source snapshot |
 | `/api/admin/inventory-ledger` | Admin inventory-ledger reads and reconciliation |
@@ -117,6 +117,12 @@ authenticated evidence upload/retrieval endpoints. Peer stock transfer approval,
 dispatch, receipt, discrepancy, dispute, cancellation, and custody operations
 remain ledger-backed and tenant-scoped; the UI must not create inventory
 movements directly.
+
+`POST /api/auth/profile-image` accepts one JPEG, PNG, or WebP image up to 10 MB.
+The authenticated account and active workspace are resolved server-side; only
+Admin, Manufacturer, and Distributor workspaces can update their own avatar.
+Uploads use the verified image-upload middleware and Cloudinary, while the
+account stores the resulting URL and asset ID for all of its workspaces.
 
 Manifest route-order proposals use `POST /api/distributor/logistics/manifests/:manifestId/optimize`
 and apply only after explicit review through `PATCH` on the same path. Both
