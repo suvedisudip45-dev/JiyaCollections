@@ -70,13 +70,13 @@ import AccessPermissions from "./pages/AccessPermissions";
 import AuditHistory from "./pages/AuditHistory";
 import NotFound from "./pages/NotFound";
 import { ADMIN_ROUTE_PERMISSIONS } from "./auth/adminRoutePermissions";
-import { ToastContainer } from "react-toastify";
+import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { installAuthInterceptor } from "./api/authInterceptor";
 
 installAuthInterceptor();
 
-export const backendUrl = import.meta.env.VITE_BACKEND_URL ;
+export const backendUrl = String(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000").replace(/\/+$/, "");
 export const currency = "Rs ";
 
 const AccessRoute = ({ requiredPermissions = [], children }) => {
@@ -143,64 +143,73 @@ const App = () => {
     }
 
     setAuthLoading(true);
-    axios.get(`${backendUrl}/api/auth/me`).then((response) => {
-      if (!response.data?.success || response.data?.account?.role?.toUpperCase() !== "ADMIN") {
-        throw new Error("An active admin session is required.");
-      }
-      if (active) {
-        sessionValidated.current = true;
-        setSessionAccount(response.data.account);
-        setPermissions(response.data.account.permissions || []);
-        setPasswordChangeRequired(Boolean(response.data.account.mustChangePassword));
-      }
-    }).catch(() => {
-      sessionValidated.current = false;
-      clearAuthTokens();
-      if (active) {
-        setToken("");
-        setSessionAccount(null);
-        setPermissions([]);
-        setPasswordChangeRequired(false);
-      }
-    }).finally(() => {
-      if (active) setAuthLoading(false);
-    });
+      axios.get(`${backendUrl}/api/auth/me`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          token,
+        },
+      }).then((response) => {
+        if (!response.data?.success || response.data?.account?.role?.toUpperCase() !== "ADMIN") {
+          throw new Error("An active admin session is required.");
+        }
+        if (active) {
+          sessionValidated.current = true;
+          setSessionAccount(response.data.account);
+          setPermissions(response.data.account.permissions || []);
+          setPasswordChangeRequired(Boolean(response.data.account.mustChangePassword));
+        }
+      }).catch((error) => {
+        sessionValidated.current = false;
+        clearAuthTokens();
+        if (active) {
+          toast.error(error?.response?.data?.message || error?.message || "Session validation failed. Please sign in again.");
+          setToken("");
+          setSessionAccount(null);
+          setPermissions([]);
+          setPasswordChangeRequired(false);
+        }
+      }).finally(() => {
+        if (active) setAuthLoading(false);
+      });
 
-    return () => {
-      active = false;
-    };
-  }, [token]);
+      return () => {
+        active = false;
+      };
+    }, [token]);
 
-  return (
-    <div className="admin-shell min-h-screen bg-surface-base">
-      <ToastContainer />
-      {authLoading ? (
-        <div className="min-h-[70vh] flex items-center justify-center text-sm text-slate-500">Checking session...</div>
-      ) : token === "" ? (
-        <Login setToken={setToken} />
-      ) : (
-        <PermissionsProvider account={sessionAccount} permissions={permissions}>
-          <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
-          {passwordChangeRequired ? (
-            <main className="min-h-[calc(100vh-65px)] p-4 sm:p-6 lg:p-8">
+    const isCheckingSession = authLoading || (Boolean(token) && !sessionValidated.current);
+
+    return (
+      <div className="admin-shell min-h-screen bg-surface-base">
+        <ToastContainer />
+          {
+            isCheckingSession?(
+        <div className = "min-h-[70vh] flex items-center justify-center text-sm text-slate-500" > Checking session...</div>
+    ) : token === "" ? (
+      <Login setToken={setToken} />
+    ) : (
+      <PermissionsProvider account={sessionAccount} permissions={permissions}>
+        <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
+        {passwordChangeRequired ? (
+          <main className="min-h-[calc(100vh-65px)] p-4 sm:p-6 lg:p-8">
+            <div className="max-w-7xl mx-auto">
+              <ChangePassword
+                token={token}
+                forced
+                onPasswordChanged={() => {
+                  setPasswordChangeRequired(false);
+                  navigate("/list", { replace: true });
+                }}
+              />
+            </div>
+          </main>
+        ) : (
+          <div className="flex w-full min-h-[calc(100vh-65px)]">
+            <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
+            <main className="min-w-0 flex-1 overflow-x-hidden bg-surface-base p-4 sm:p-6 lg:p-8">
               <div className="max-w-7xl mx-auto">
-                <ChangePassword
-                  token={token}
-                  forced
-                  onPasswordChanged={() => {
-                    setPasswordChangeRequired(false);
-                    navigate("/list", { replace: true });
-                  }}
-                />
-              </div>
-            </main>
-          ) : (
-            <div className="flex w-full min-h-[calc(100vh-65px)]">
-              <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
-              <main className="min-w-0 flex-1 overflow-x-hidden bg-surface-base p-4 sm:p-6 lg:p-8">
-                <div className="max-w-7xl mx-auto">
-                  <Breadcrumbs />
-                  <Routes>
+                <Breadcrumbs />
+                <Routes>
                   <Route path="/" element={<Navigate to="/orders" replace />} />
                   <Route path="/finance" element={withPermission("/finance", <FinanceDashboard token={token} />)} />
                   <Route path="/treasury" element={withPermission("/treasury", <TreasuryCash token={token} />)} />
@@ -266,14 +275,15 @@ const App = () => {
                   <Route path="/access-control/permissions" element={withPermission("/access-control/permissions", <AccessPermissions token={token} />)} />
                   <Route path="/audit-history" element={withPermission("/audit-history", <AuditHistory token={token} />)} />
                   <Route path="*" element={<NotFound />} />
-                  </Routes>
-                </div>
-              </main>
-            </div>
-          )}
-        </PermissionsProvider>
-      )}
-    </div>
+                </Routes>
+              </div>
+            </main>
+          </div>
+        )}
+      </PermissionsProvider>
+    )
+  }
+    </div >
   );
 };
 
